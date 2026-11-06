@@ -1,0 +1,25 @@
+# Local reference material and scratch Hermes homes (never commit)
+.local/
+.scratch/
+
+# Secrets (never read or commit)
+.env
+.env.*
+!*.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+
+.DS_Store
