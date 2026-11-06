@@ -1,0 +1,15 @@
+# Scratch config for the whos-listening spike. Fake local model server only; no real keys.
+model:
+  provider: cfg-route
+  default: cfg-model
+providers:
+  cfg-route:
+    base_url: "http://127.0.0.1:8765/cfg/v1"
+    key_env: SPIKE_DUMMY_KEY
+  chat-route:
+    base_url: "http://127.0.0.1:8765/chat/v1"
+    key_env: SPIKE_DUMMY_KEY
+memory:
+  provider: spike-mem
+  memory_enabled: false
+  user_profile_enabled: false

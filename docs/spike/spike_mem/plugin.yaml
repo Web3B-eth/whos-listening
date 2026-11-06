@@ -1,0 +1,8 @@
+name: spike-mem
+version: 0.0.1
+description: "Spike only: logs what memory-provider hooks, middleware and PluginLlm see."
+kind: exclusive
+hooks:
+  - pre_api_request
+  - pre_llm_call
+  - on_session_start
