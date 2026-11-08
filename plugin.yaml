@@ -1,0 +1,15 @@
+name: whos-listening
+version: 0.1.0
+description: "Memory that knows who's listening: Private memories only go to models you trust, Shared ones go anywhere."
+author: Web3B-eth
+license: MIT
+homepage: https://github.com/Web3B-eth/whos-listening
+kind: exclusive
+requires_hermes: ">=0.23.0"
+provides_tools:
+  - wl_remember
+  - wl_recall
+  - wl_forget
+provides_hooks:
+  - pre_llm_call
+  - pre_api_request

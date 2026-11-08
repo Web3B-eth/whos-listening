@@ -27,7 +27,7 @@ Checks, once the code exists:
 python -m pytest
 ```
 
-plus `hermes plugins validate --install-deps` and `hermes plugins doctor --ci`, run with a scratch `HERMES_HOME`. The exact forms are recorded in the README once confirmed.
+plus `hermes plugins validate --install-deps` and `hermes plugins doctor --ci`, run with a scratch `HERMES_HOME` on a clean copy of the tracked files. The exact commands are in the README under **Development**.
 
 ## Where to record things
 
