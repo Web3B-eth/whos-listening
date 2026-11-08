@@ -2,7 +2,7 @@
 
 **whos-listening** is a memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It stores short facts about the user in SQLite under `$HERMES_HOME`. Each memory is **Private** or **Shared**, and the model route decides which ones a request may carry: Private memories never go to a Shared route. It is a standalone Python plugin; it does not need any other app or server.
 
-Read before coding: [`README.md`](README.md), `docs/spike.md` once it exists (what we checked about Hermes and what it means for the design) and [`CHANGELOG.md`](CHANGELOG.md). If a doc and the code disagree, check the code and fix the doc in the same PR. Write in simple, everyday language.
+Read before coding: [`README.md`](README.md), [`docs/spike.md`](docs/spike.md) (what we checked about Hermes 0.23.0 and what it means for the design) and [`CHANGELOG.md`](CHANGELOG.md). If a doc and the code disagree, check the code and fix the doc in the same PR. Write in simple, everyday language.
 
 ## Non-negotiables
 
