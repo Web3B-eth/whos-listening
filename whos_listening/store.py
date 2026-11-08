@@ -27,7 +27,7 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def now_iso() -> str:
@@ -56,7 +56,27 @@ class Memory:
     created_at: str
     updated_at: str
     provenance: Provenance = field(default_factory=Provenance)
-    pending_reason: str = ""
+    pending_reason: str = ""       # why a pending memory waits for the user
+    forget_reason: str = ""        # set when the assistant asked to forget it and the user must OK it
+
+
+@dataclass(frozen=True)
+class Event:
+    """One change to a memory, for ``/memories undo`` and the history in ``show``."""
+
+    id: int
+    memory_id: int
+    action: str        # see EVENT_ACTIONS
+    actor: str         # "assistant" or "user"
+    at: str
+    undone: bool = False
+
+
+# saved: became active. held: saved as pending. forgot: forgotten. forget_requested: the
+# assistant asked to forget and it waits for the user. approved / rejected: the user decided a
+# pending save or a forget request. restored: a forget was undone. undo: an undo (not undoable).
+EVENT_ACTIONS = ("saved", "held", "forgot", "forget_requested", "approved", "approved_forget",
+                 "rejected", "rejected_forget", "restored", "undo")
 
 
 class StoreError(ValueError):
@@ -146,6 +166,34 @@ class Store(ABC):
 
     @abstractmethod
     def is_forgotten_text(self, text: str) -> bool: ...
+
+    @abstractmethod
+    def request_forget(self, memory_id: int, reason: str) -> Memory:
+        """The assistant asked to forget a memory; it stays active until the user decides."""
+
+    @abstractmethod
+    def clear_forget_request(self, memory_id: int) -> Memory: ...
+
+    @abstractmethod
+    def forget_requests(self) -> list[Memory]: ...
+
+    @abstractmethod
+    def log_event(self, memory_id: int, action: str, actor: str) -> Event: ...
+
+    @abstractmethod
+    def events(self, *, memory_id: Optional[int] = None, limit: int = 20) -> list[Event]:
+        """Newest first."""
+
+    @abstractmethod
+    def mark_undone(self, event_id: int) -> None: ...
+
+    @abstractmethod
+    def mark_outside(self, session_id: str, tool: str) -> None:
+        """Remember that a chat read outside content (the first tool that brought it in)."""
+
+    @abstractmethod
+    def outside_tool(self, session_id: str) -> str:
+        """The tool that first brought outside content into this chat, or ``""``."""
 
     @abstractmethod
     def close(self) -> None: ...
@@ -246,6 +294,26 @@ class SQLiteStore(Store):
                 for row in self._db.execute(
                         "SELECT id, text, tier FROM memories WHERE status = 'forgotten'").fetchall():
                     self._tombstone(row["text"], row["id"], row["tier"])
+            if version < 3:
+                self._db.executescript(
+                    """
+                    ALTER TABLE memories ADD COLUMN forget_reason TEXT NOT NULL DEFAULT '';
+                    CREATE TABLE IF NOT EXISTS events (
+                        id INTEGER PRIMARY KEY,
+                        memory_id INTEGER NOT NULL,
+                        action TEXT NOT NULL,
+                        actor TEXT NOT NULL,
+                        at TEXT NOT NULL,
+                        undone INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE INDEX IF NOT EXISTS events_memory ON events (memory_id);
+                    CREATE TABLE IF NOT EXISTS outside_content (
+                        session_id TEXT PRIMARY KEY,
+                        tool TEXT NOT NULL,
+                        at TEXT NOT NULL
+                    );
+                    """
+                )
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- helpers -----------------------------------------------------------
@@ -255,7 +323,7 @@ class SQLiteStore(Store):
         return Memory(
             id=row["id"], text=row["text"], tier=row["tier"], status=row["status"],
             created_at=row["created_at"], updated_at=row["updated_at"],
-            pending_reason=row["pending_reason"],
+            pending_reason=row["pending_reason"], forget_reason=row["forget_reason"],
             provenance=Provenance(
                 written_by=row["written_by"], via=row["via"], route=row["route"],
                 route_tier=row["route_tier"], session_id=row["session_id"], turn=row["turn"],
@@ -364,7 +432,7 @@ class SQLiteStore(Store):
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             self._db.execute("UPDATE memories SET status = 'forgotten', pending_reason = '', "
-                             "updated_at = ? WHERE id = ?", (now_iso(), m.id))
+                             "forget_reason = '', updated_at = ? WHERE id = ?", (now_iso(), m.id))
             self._tombstone(m.text, m.id, m.tier)
             return self.get(m.id)
 
@@ -408,6 +476,65 @@ class SQLiteStore(Store):
         with self._lock:
             return self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?",
                                     (fingerprint(text),)).fetchone() is not None
+
+    def request_forget(self, memory_id, reason):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if m is None or m.status == FORGOTTEN:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._db.execute("UPDATE memories SET forget_reason = ?, updated_at = ? WHERE id = ?",
+                             (str(reason or "Waiting for you.").strip()[:300], now_iso(), m.id))
+            return self.get(m.id)
+
+    def clear_forget_request(self, memory_id):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if m is None:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._db.execute("UPDATE memories SET forget_reason = '' WHERE id = ?", (m.id,))
+            return self.get(m.id)
+
+    def forget_requests(self):
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM memories WHERE forget_reason != '' AND status != 'forgotten' "
+                                    "ORDER BY updated_at DESC, id DESC").fetchall()
+        return [self._row(r) for r in rows]
+
+    def log_event(self, memory_id, action, actor):
+        if action not in EVENT_ACTIONS:
+            raise StoreError(f"Unknown event {action!r}.")
+        stamp = now_iso()
+        with self._lock, self._db:
+            cur = self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                   (int(memory_id), action, str(actor or "user"), stamp))
+            return Event(cur.lastrowid, int(memory_id), action, str(actor or "user"), stamp)
+
+    def events(self, *, memory_id=None, limit=20):
+        sql, args = "SELECT * FROM events", []
+        if memory_id is not None:
+            sql, args = sql + " WHERE memory_id = ?", [int(memory_id)]
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, int(limit))).fetchall()
+        return [Event(r["id"], r["memory_id"], r["action"], r["actor"], r["at"], bool(r["undone"])) for r in rows]
+
+    def mark_undone(self, event_id):
+        with self._lock, self._db:
+            self._db.execute("UPDATE events SET undone = 1 WHERE id = ?", (int(event_id),))
+
+    def mark_outside(self, session_id, tool):
+        if not session_id:
+            return
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO outside_content (session_id, tool, at) VALUES (?,?,?)",
+                             (str(session_id), str(tool or "a tool"), now_iso()))
+
+    def outside_tool(self, session_id):
+        if not session_id:
+            return ""
+        with self._lock:
+            row = self._db.execute("SELECT tool FROM outside_content WHERE session_id = ?",
+                                   (str(session_id),)).fetchone()
+        return row["tool"] if row else ""
 
     def close(self):
         with self._lock:

@@ -12,5 +12,6 @@ provides_tools:
   - wl_forget
 provides_hooks:
   - pre_llm_call
+  - post_tool_call
 provides_middleware:
   - llm_request

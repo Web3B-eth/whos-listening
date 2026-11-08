@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from . import guard, recall, tools
+from . import commands, guard, recall, review, tools
 from .routes import (
     Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config,
 )
@@ -27,6 +27,8 @@ SETTINGS_FILE = "settings.json"
 # Routes seen per session id. Module-level because Hermes hooks are plain functions, but it is
 # keyed by session id and holds route names only, never memory text or profile paths.
 ROUTES = RouteBook()
+# Chats that have read outside content (tool names only). Saves and forgets in them wait.
+OUTSIDE = review.OutsideBook()
 
 
 def _config_default_route() -> Optional[Route]:
@@ -141,13 +143,52 @@ class WhosListeningProvider(MemoryProvider):
                 route_tier=verdict.tier, session_id=self._session_id, turn=self._turn, author=self._author,
             )
 
-        return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance)
+        return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
+                            outside_tool=self._outside_tool())
+
+    # -- outside content ---------------------------------------------------
+
+    def _outside_tool(self, session_id: str = "") -> str:
+        """The tool that first brought outside content into this chat ("" if none). Also keeps
+        the flag in the store, so a resumed chat still counts after Hermes restarts."""
+        sid = session_id or self._session_id
+        seen = OUTSIDE.get(sid)
+        if self._store is None:
+            return seen
+        stored = self._store.outside_tool(sid)
+        if seen and not stored:
+            self._store.mark_outside(sid, seen)
+        return stored or seen
+
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **kwargs) -> None:
+        # Only a small local write: persist the outside-content flag for this chat.
+        try:
+            self._outside_tool(session_id)
+        except Exception as exc:
+            logger.debug("whos-listening: could not save the outside-content flag: %s", exc)
 
 
 # -- hooks: what model a turn starts with ------------------------------------
 
 def _on_pre_llm_call(**kwargs: Any) -> None:
     ROUTES.saw_turn_model(str(kwargs.get("session_id") or ""), str(kwargs.get("model") or ""))
+
+
+def _on_post_tool_call(**kwargs: Any) -> None:
+    tool = str(kwargs.get("tool_name") or "")
+    if review.is_outside_tool(tool):
+        OUTSIDE.saw(str(kwargs.get("session_id") or ""), tool)
+
+
+# -- /memories -------------------------------------------------------------------
+
+def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> str:
+    """The ``/memories`` slash command. Private text only shows on local platforms."""
+    home = _active_home()
+    if home is None:
+        return "whos-listening can't tell which Hermes profile this is."
+    return commands.open_and_run(lambda: SQLiteStore(home / DATA_DIR / DB_FILE), raw_args,
+                                 show_private=commands.shows_private(platform))
 
 
 # -- the guard: the hard line ------------------------------------------------
@@ -187,4 +228,8 @@ def register_hooks(ctx) -> None:
     once-per-process flag could leave a reloaded plugin manager with no guard at all.
     """
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_middleware("llm_request", _on_llm_request)
+    ctx.register_command("memories", _memories_command,
+                         description="Review what whos-listening remembers: pending, approve, undo, forget, show",
+                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT]")

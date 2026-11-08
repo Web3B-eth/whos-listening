@@ -63,8 +63,12 @@ def test_register_wires_provider_and_hooks(entry):
         def register_middleware(self, kind, fn):
             calls.append(("middleware", kind))
 
+        def register_command(self, name, fn, **kw):
+            calls.append(("command", name))
+
     entry.register(Ctx())
-    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("middleware", "llm_request")]
+    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("hook", "post_tool_call"),
+                     ("middleware", "llm_request"), ("command", "memories")]
 
 
 def test_store_lives_in_profile_home(provider, tmp_path):
@@ -238,3 +242,46 @@ def test_guard_through_hermes_middleware_chain(plugin, provider, monkeypatch, tm
         assert "canoe" not in sent and "jazz" in sent
     finally:
         mgr._middleware["llm_request"] = saved
+
+
+# -- outside content and /memories -------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def fresh_outside(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "OUTSIDE", plugin.review.OutsideBook())
+
+
+def test_outside_content_holds_saves_and_survives_restart(plugin, provider, tmp_path, monkeypatch):
+    see(plugin, "http://127.0.0.1:9/v1")
+    assert tool(provider, "wl_remember", {"text": "Likes jazz"})["saved"]
+    plugin._on_post_tool_call(tool_name="wl_recall", session_id="sess-1")       # ours: not outside
+    assert tool(provider, "wl_remember", {"text": "Collects stamps"})["saved"]
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")
+    held = tool(provider, "wl_remember", {"text": "Prefers window seats"})
+    assert held["pending"] and "read_file" in held["note"]
+    # Hermes restarts: the in-process flag is gone, the stored one isn't
+    provider.sync_turn("u", "a", session_id="sess-1")
+    monkeypatch.setattr(plugin, "OUTSIDE", plugin.review.OutsideBook())
+    p2 = plugin.WhosListeningProvider()
+    p2.initialize("sess-1", hermes_home=str(tmp_path), platform="cli")
+    assert tool(p2, "wl_remember", {"text": "Bakes bread"})["pending"]
+    p2.shutdown()
+
+
+def test_memories_command(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "wl_remember", {"text": "Has a peanut allergy"})
+    assert "peanut" in plugin._memories_command("", platform="cli")
+    assert "peanut" not in plugin._memories_command("", platform="telegram")
+    monkeypatch.setattr(plugin, "_active_home", lambda: None)
+    assert "can't tell" in plugin._memories_command("")
+
+
+def test_memories_command_through_hermes_dispatch(plugin, tmp_path, monkeypatch):
+    from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    out = invoke_plugin_command(plugin._memories_command, "add shared Likes jazz",
+                                source="cli", session_id="s", session_key="k", platform="cli")
+    assert out.startswith("Saved")
