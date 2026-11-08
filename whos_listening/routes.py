@@ -97,11 +97,13 @@ class RouteSettings:
     - ``routes``: ``{"<provider>": tier, "<provider>/<model>": tier, "*/<model>": tier}``
     - ``private_hosts`` / ``shared_hosts``: extra hosts (a domain also covers its subdomains).
       ``shared_hosts`` wins over every default, so a user can turn a default Private host Shared.
+    - ``review``: ``"ask"`` (default) or ``"auto"`` for Auto-review (see autoreview.py).
     """
 
     routes: Mapping[str, str] = field(default_factory=dict)
     private_hosts: tuple[str, ...] = ()
     shared_hosts: tuple[str, ...] = ()
+    review: str = "ask"      # "ask": held saves wait for the user. "auto": Auto-review checks them.
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":
@@ -114,11 +116,13 @@ class RouteSettings:
         def hosts(key: str) -> tuple[str, ...]:
             return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
 
-        return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"))
+        review = str(data.get("review") or "ask").strip().lower()
+        return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
+                   review=review if review in ("ask", "auto") else "ask")
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
-                "shared_hosts": list(self.shared_hosts)}
+                "shared_hosts": list(self.shared_hosts), "review": self.review}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":
@@ -199,6 +203,43 @@ def default_route_from_config(config: Any) -> Optional[Route]:
             # Hermes reports named custom endpoints as provider "custom" (docs/spike.md).
             provider = "custom" if base_url else provider
     return Route(provider=provider, model=model, base_url=base_url)
+
+
+def _fallback_entries(config: Mapping) -> list[Mapping]:
+    out = []
+    for key in ("fallback_providers", "fallback_model"):
+        raw = config.get(key)
+        for entry in ([raw] if isinstance(raw, Mapping) else raw if isinstance(raw, list) else []):
+            if isinstance(entry, Mapping) and str(entry.get("provider") or "").strip():
+                out.append(entry)
+    return out
+
+
+def side_call_routes_private(config: Any, settings: Optional[RouteSettings] = None) -> Verdict:
+    """Whether every route a Hermes side call could end up on is Private.
+
+    A plugin's side call (PluginLlm) runs on the chat's model, but if that fails Hermes tries the
+    ``fallback_providers`` from config.yaml, or, with no main provider set, any logged-in
+    provider. Side calls skip middleware, so the guard can't clean them (docs/spike.md).
+    """
+    if not isinstance(config, Mapping):
+        return Verdict(SHARED, "config.yaml could not be read")
+    model_cfg = config.get("model")
+    main = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, Mapping) else ""
+    if main in ("", "auto"):
+        return Verdict(SHARED, "Hermes picks the provider itself (provider: auto), so a side call could go anywhere")
+    providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
+    for entry in _fallback_entries(config):
+        provider = str(entry.get("provider") or "").strip()
+        base_url = str(entry.get("base_url") or "").strip()
+        named = providers.get(provider) if isinstance(providers, Mapping) else None
+        if not base_url and isinstance(named, Mapping):
+            base_url = str(named.get("base_url") or named.get("api_base") or "").strip()
+            provider = "custom" if base_url else provider
+        verdict = classify(Route(provider, str(entry.get("model") or ""), base_url), settings)
+        if verdict.tier != PRIVATE:
+            return Verdict(SHARED, f"a fallback provider is shared ({verdict.reason})")
+    return Verdict(PRIVATE, "the chat's route and every fallback are private")
 
 
 class RouteBook:

@@ -84,11 +84,14 @@ def _shared_route_saved(tier: str, hold: Optional[str]) -> str:
 
 
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
-           provenance: Callable[[], Provenance], outside_tool: str = "") -> str:
+           provenance: Callable[[], Provenance], outside_tool: str = "",
+           on_outside_hold: Optional[Callable[[Memory], bool]] = None) -> str:
     """Run one tool call. Always returns a JSON string; never raises.
 
     ``outside_tool`` names the tool that first brought outside content into this chat ("" if
-    none): from then on saves and forgets wait for the user (see review.py)."""
+    none): from then on saves and forgets wait for the user (see review.py).
+    ``on_outside_hold`` is called with a save held only because of outside content (not by the
+    rule screen); it returns True if Auto-review will check it."""
     args = args if isinstance(args, dict) else {}
     try:
         if name == REMEMBER:
@@ -109,10 +112,18 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 # forgotten: answer exactly like a save (nothing is saved).
                 return _shared_route_saved(tier, hold)
             store.log_event(m.id, "held" if hold else "saved", "assistant")
+            reviewing = False
+            # Auto-review only for a hold that came from outside content alone, never the rule screen.
+            if hold and outside_tool and on_outside_hold is not None and not review.rule_concern(screened):
+                try:
+                    reviewing = bool(on_outside_hold(m))
+                except Exception:
+                    reviewing = False
             if route_tier != PRIVATE:
                 return _shared_route_saved(m.tier, hold)
             if hold:
-                return _ok(pending=_public(m), note=_held_note(hold, m.id))
+                note = _held_note(hold, m.id) + (" Auto-review is checking it now." if reviewing else "")
+                return _ok(pending=_public(m), note=note)
             return _ok(saved=_public(m), note="")
 
         if name == RECALL:

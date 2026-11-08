@@ -192,6 +192,15 @@ class Store(ABC):
     def mark_undone(self, event_id: int) -> None: ...
 
     @abstractmethod
+    def last_event_id(self, memory_id: int) -> int:
+        """The newest event id for this memory (0 if none)."""
+
+    @abstractmethod
+    def apply_review(self, memory_id: int, since_event: int, save: bool, reason: str) -> bool:
+        """Apply an Auto-review verdict in one step, and only if the memory is still pending and
+        nothing has happened to it since ``since_event``. Returns whether it applied."""
+
+    @abstractmethod
     def mark_outside(self, session_id: str, tool: str) -> None:
         """Remember that a chat read outside content (the first tool that brought it in)."""
 
@@ -568,6 +577,45 @@ class SQLiteStore(Store):
     def mark_undone(self, event_id):
         with self._lock, self._db:
             self._db.execute("UPDATE events SET undone = 1 WHERE id = ?", (int(event_id),))
+
+    def last_event_id(self, memory_id):
+        with self._lock:
+            row = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?", (int(memory_id),)).fetchone()
+        return int(row[0] or 0)
+
+    def apply_review(self, memory_id, since_event, save, reason):
+        with self._lock:
+            old_isolation = self._db.isolation_level
+            self._db.isolation_level = None
+            try:
+                # IMMEDIATE: no other connection (a /memories command, the CLI) can change the
+                # memory between our check and our write.
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    row = self._db.execute("SELECT status, pending_reason FROM memories WHERE id = ?",
+                                           (int(memory_id),)).fetchone()
+                    latest = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?",
+                                              (int(memory_id),)).fetchone()[0] or 0
+                    if row is None or row["status"] != PENDING or latest != since_event:
+                        self._db.execute("ROLLBACK")
+                        return False
+                    stamp = now_iso()
+                    if save:
+                        self._db.execute("UPDATE memories SET status = 'active', pending_reason = '', "
+                                         "updated_at = ? WHERE id = ?", (stamp, int(memory_id)))
+                        self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                         (int(memory_id), "approved", "auto-review", stamp))
+                    else:
+                        self._db.execute("UPDATE memories SET pending_reason = ?, updated_at = ? WHERE id = ?",
+                                         ((row["pending_reason"] + " Auto-review: " + reason).strip()[:600],
+                                          stamp, int(memory_id)))
+                    self._db.execute("COMMIT")
+                    return True
+                except BaseException:
+                    self._db.execute("ROLLBACK")
+                    raise
+            finally:
+                self._db.isolation_level = old_isolation
 
     def mark_outside(self, session_id, tool):
         if not session_id:

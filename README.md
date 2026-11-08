@@ -4,7 +4,7 @@ A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
 Every memory is **Private** or **Shared**. Private memories only reach models you trust (by default Venice and models on your own machine or network). When a chat moves to any other model, Private memories are left out of the request.
 
-**Work in progress for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Auto-review is still being built. See [Limits](#limits).
+**Built for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
 
 ## How it works
 
@@ -24,6 +24,9 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
   - **Outside content.** Once a chat has read anything from outside (a web page, a file, a terminal, any tool but whos-listening's own), text in it could be steering the assistant. From then on, its saves in that chat wait for you, and so do its forgets.
 
   A waiting memory is never added to a request. See `/memories pending`.
+- **Auto-review (optional).** With `"review": "auto"` in settings, a save that waits only because of outside content gets a second look: one request on the chat's own model, which sees only the memory and your three newest messages (not the outside content, not other people's messages in a group chat). If it says the memory is a lasting fact you stated yourself, the memory applies; otherwise, or if the check fails, times out or is answered by a different model, it keeps waiting with the check's reason. Saves the rule screen held, and every forget, always wait for you. `/memories undo` reverses an Auto-review approval, and anything you do to a memory while it's being checked wins.
+
+  The check is a side call, which skips the guard, and Hermes retries a failed side call on your `fallback_providers`. So Auto-review only runs when that can't send anything somewhere less trusted: on a Private route, only if Hermes' main provider is set (not `auto`) and every fallback is Private too; on a Shared route, only for Shared memories. Otherwise the memory waits, and `/memories pending` says why. It checks at most 3 saves a turn.
 - **Forget means forget.** When a memory is forgotten, whos-listening keeps a tombstone: a hash of its words, not the words. The same fact (ignoring case, spacing and punctuation) can't be saved again from chat. The forgotten text stays in the local file so a forget can be undone, until it is purged.
 - **Provenance.** Every memory records who wrote it, with which tool, on which route (and that route's tier), and in which session and turn.
 
@@ -71,13 +74,15 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
     "openrouter": "shared"
   },
   "private_hosts": ["models.example.org"],
-  "shared_hosts": ["api.venice.ai"]
+  "shared_hosts": ["api.venice.ai"],
+  "review": "auto"
 }
 ```
 
 - `routes` sets a tier by `provider/model`, by `*/model` (any provider) or by `provider`, checked in that order. Named custom endpoints all show up as provider `custom` in Hermes 0.23.0, so use hosts for those.
 - `private_hosts` adds hosts (a domain covers its subdomains). `shared_hosts` wins over every default, so you can make a default Private host Shared.
-- If the file can't be read, every route counts as Shared until it is fixed.
+- `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
+- If the file can't be read, every route counts as Shared and every held save waits for you until it is fixed.
 
 ## Development
 
@@ -98,7 +103,7 @@ End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in
 Two runs show the checks have teeth:
 
 - `--control` keeps the guard but switches off its clean-up. The route-switch checks should fail: the Private memory reaches the Shared model through the replayed turn.
-- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the checks that expect a Private memory in a request (and the "guard left a marker" check) fail, and the leak checks pass.
+- `--no-guard` doesn't register the guard at all. No route is then believed Private, so recall never adds a Private memory: the checks that need a Private route (a Private memory in a request, the "guard left a marker" check, and Auto-review, which never runs while the route is unknown) fail, and the leak checks pass.
 
 Add `--hermes PATH` to use another Hermes build.
 
@@ -118,7 +123,7 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins validate --install-deps "
 HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 ```
 
-Both warn that `provides_tools` lists tools that `register()` didn't register. That's expected for now: a memory provider's tools come from `get_tool_schemas()`, not `register()`, and we list them so the manifest shows every tool the model can call.
+`plugin.yaml` declares the hooks and middleware `register()` adds, which is what `hermes plugins validate` checks against. `register()` also adds the memory provider and the `/memories` command. The three memory tools come from the provider's `get_tool_schemas()`, so `provides_tools` stays empty.
 
 ## Limits
 
@@ -128,7 +133,7 @@ Be clear about what whos-listening does not protect (yet):
   - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.
   - **The summary Hermes writes when a turn hits its tool-call limit.** It is sent on the chat's current route.
   - **Mixture of agents (`moa`).** It builds its requests from a copy made before middleware runs. whos-listening treats a `moa` route as Shared whatever the settings say, but memories added on earlier Private turns are still in the history it sends.
-  - **Side calls** such as naming the chat. In our tests they carried the plain chat, not the memory block.
+  - **Side calls** such as naming the chat. In our tests they carried the plain chat, not the memory block. whos-listening's own Auto-review check is a side call too, which is why it is gated on your fallbacks (above).
 - **Only tagged text is removed.** On a Shared route the guard removes tagged Private memories, and the text of replayed `wl_remember` calls and `wl_recall` queries. It can't remove what the assistant said about a Private memory in its own words, what you typed yourself, or model reasoning that Hermes replays to a later model.
 - **Other plugins** with request middleware that runs after ours could put text back, and other plugins' execution middleware can see the request as it was before the guard.
 - **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
@@ -137,6 +142,7 @@ Be clear about what whos-listening does not protect (yet):
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
 - **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.
 - **Outside content is noticed through tools.** Anything you paste or attach yourself counts as your own words, so a planted line in pasted text isn't held unless the rule screen catches it.
+- **Auto-review is a model's judgement.** It can be wrong in either direction, and a planted text written to look like your own words could pass it. A file or document you paste or attach yourself counts as your own words. It needs Hermes' default in-process plugin mode; under `plugins.isolation: host` the check can't reach a model, so held saves just wait for you. Each check is one extra request on the chat's model, run in a background thread.
 - **The rule screen is a short list of patterns.** It catches common shapes of planted text and secrets, not all of them.
 
 License: MIT.

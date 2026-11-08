@@ -1,0 +1,9 @@
+[
+  {"raw": "{\"save\": true, \"reason\": \"You said it.\"}", "save": true, "reason": "You said it."},
+  {"raw": "Sure! {\"save\": true, \"reason\": \"Stated by you\"} hope that helps", "save": true, "reason": "Stated by you"},
+  {"raw": "{\"save\": \"true\", \"reason\": \"x\"}", "save": false, "reason": "x"},
+  {"raw": "{\"save\": false}", "save": false, "reason": "The check was not sure."},
+  {"raw": "yes", "save": false, "reason": "The check gave no clear answer."},
+  {"raw": "[true]", "save": false, "reason": "The check gave no clear answer."},
+  {"raw": "", "save": false, "reason": "The check gave no clear answer."}
+]

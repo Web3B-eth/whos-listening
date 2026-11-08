@@ -6,10 +6,6 @@ license: MIT
 homepage: https://github.com/Web3B-eth/whos-listening
 kind: exclusive
 requires_hermes: ">=0.23.0"
-provides_tools:
-  - wl_remember
-  - wl_recall
-  - wl_forget
 provides_hooks:
   - pre_llm_call
   - post_tool_call

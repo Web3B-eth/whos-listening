@@ -49,6 +49,22 @@ def plan_reply(messages: list) -> dict:
     return {"text": ANSWER}
 
 
+CHECK_RE = re.compile(r"<<memory>>\n(.*?)\n<</memory>>.*?<<user-messages>>\n(.*?)\n<</user-messages>>", re.DOTALL)
+
+
+def side_reply(messages: list) -> str:
+    """A request without tools: a title, or whos-listening's Auto-review check. The fake check
+    says yes only if the memory's text appears in the user's own words (scripted calls removed)."""
+    text = " ".join(_text(m.get("content")) for m in messages)
+    found = CHECK_RE.search(text)
+    if "You check one memory" in text and found:
+        memory, users = found.group(1).strip().lower(), CALL_RE.sub("", found.group(2)).lower()
+        if memory and memory in users:
+            return '{"save": true, "reason": "You said this yourself."}'
+        return '{"save": false, "reason": "You never said this."}'
+    return ANSWER
+
+
 class Handler(BaseHTTPRequestHandler):
     log_path = "requests.jsonl"
 
@@ -73,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
             f.write(json.dumps({"path": self.path, "model": body.get("model"), "n_messages": len(messages),
                                 "has_tools": bool(body.get("tools")),
                                 "text": json.dumps(body, ensure_ascii=False, default=str)}) + "\n")
-        reply = plan_reply(messages) if body.get("tools") else {"text": ANSWER}
+        reply = plan_reply(messages) if body.get("tools") else {"text": side_reply(messages)}
         model = body.get("model") or "unknown"
         stamp = int(time.time())
         if "tool" in reply:
