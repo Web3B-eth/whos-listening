@@ -75,3 +75,42 @@ def test_client_objects_pass_through():
     marker = object()
     out = guard.guard_request({"messages": [{"role": "user", "content": BLOCK}], "extra": marker}, "shared")
     assert out["extra"] is marker
+
+
+# -- replayed calls to our tools ---------------------------------------------------
+
+def test_redacts_replayed_remember_and_recall_calls():
+    req = {"messages": [
+        {"role": "assistant", "tool_calls": [
+            {"id": "a", "type": "function", "function": {
+                "name": "wl_remember", "arguments": json.dumps({"text": "Has a peanut allergy"})}},
+            {"id": "b", "type": "function", "function": {
+                "name": "wl_remember", "arguments": json.dumps({"text": "Likes jazz", "tier": "shared"})}},
+            {"id": "c", "type": "function", "function": {
+                "name": "wl_recall", "arguments": json.dumps({"query": "peanut"})}},
+            {"id": "d", "type": "function", "function": {"name": "web_search", "arguments": '{"q": "peanut"}'}},
+        ]}]}
+    out = guard.guard_request(req, "shared")
+    calls = out["messages"][0]["tool_calls"]
+    assert "peanut" not in calls[0]["function"]["arguments"]
+    assert "Likes jazz" in calls[1]["function"]["arguments"]       # a Shared save stays
+    assert "peanut" not in calls[2]["function"]["arguments"]
+    assert calls[3] == req["messages"][0]["tool_calls"][3]         # other tools untouched
+    assert guard.guard_request(req, "private") is None
+
+
+def test_redacts_calls_in_responses_and_anthropic_shapes():
+    responses = {"input": [{"type": "function_call", "name": "wl_remember", "call_id": "x",
+                            "arguments": '{"text": "Has a peanut allergy", "tier": "private"}'}]}
+    anthropic = {"messages": [{"role": "assistant", "content": [
+        {"type": "tool_use", "id": "x", "name": "wl_remember", "input": {"text": "Has a peanut allergy"}}]}]}
+    broken = {"input": [{"type": "function_call", "name": "wl_remember", "arguments": "{not json peanut"}]}
+    for req in (responses, anthropic, broken):
+        assert "peanut" not in json.dumps(guard.guard_request(req, "shared"))
+
+
+def test_orphan_closing_tag():
+    text = "- #3 Has a peanut allergy</wl-private>\n- #4 Likes jazz"
+    out = guard.guard_request(chat(text), "shared")
+    sent = json.dumps(out)
+    assert "peanut" not in sent and "jazz" in sent

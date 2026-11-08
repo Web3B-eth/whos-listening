@@ -56,6 +56,7 @@ memory:
   memory_enabled: false
   user_profile_enabled: false
 """
+ENV_ALLOW = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM")
 SETTINGS = {"routes": {"custom/shared-model": "shared", "*/shared-model": "shared"}}
 
 
@@ -71,7 +72,9 @@ class Run:
         self.results: list[tuple[str, bool, str]] = []
 
     def env(self) -> dict:
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("HERMES_", "OPENAI_", "ANTHROPIC_"))}
+        """A small allowlisted environment: no model keys or Hermes settings from the shell can
+        reach this Hermes, so nothing but the fake server is ever called."""
+        env = {k: os.environ[k] for k in ENV_ALLOW if k in os.environ}
         # Every Hermes install for this OS user shares one gateway lock folder by default
         # (~/.local/state/hermes/gateway-locks). Keep ours inside the scratch home.
         env.update(HERMES_HOME=str(self.home), WL_E2E_DUMMY_KEY="dummy-not-a-secret",
@@ -115,9 +118,19 @@ def has(requests: list[dict], word: str) -> bool:
     return any(word in r["text"] for r in requests)
 
 
-def stop_gateway(home: Path, hermes: str) -> None:
-    """Stop the background gateway our chats started: its PID is in the scratch home, and we
-    only signal it if that PID really runs our Hermes build."""
+def _started_at(pid: int) -> float:
+    """When ``pid`` started (seconds since the epoch), or 0 if unknown."""
+    out = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True,
+                         env={"LC_ALL": "C", "PATH": os.environ.get("PATH", "")}).stdout.strip()
+    try:
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return 0.0
+
+
+def stop_gateway(home: Path, hermes: str, since: float) -> None:
+    """Stop the background gateway our chats started. Its PID is in the scratch home; we only
+    signal it if that process runs our Hermes build and started after this run began."""
     try:
         pid = int(json.loads((home / "gateway_state.json").read_text()).get("pid") or 0)
     except Exception:
@@ -125,20 +138,28 @@ def stop_gateway(home: Path, hermes: str) -> None:
     if pid <= 0:
         return
     cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
-    venv = str(Path(hermes).resolve().parent.parent)
-    if venv in cmd:
+    venv_bin = str(Path(hermes).resolve().parent) + "/"
+    started = _started_at(pid)
+    if venv_bin in cmd and started and started >= since - 1:
         os.kill(pid, signal.SIGTERM)
         print(f"stopped gateway pid {pid}")
+    else:
+        print(f"left pid {pid} alone: not clearly started by this run")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--hermes", default=str(ROOT / ".local/venv-023/bin/hermes"))
     ap.add_argument("--keep", action="store_true", help="keep the scratch home afterwards")
-    ap.add_argument("--control", action="store_true",
-                    help="run with the guard switched off, to show the route-switch check catches a leak")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--control", action="store_true",
+                      help="keep the guard but switch off its clean-up: the route-switch checks should "
+                           "fail, which shows they catch a real leak")
+    mode.add_argument("--no-guard", action="store_true",
+                      help="don't register the guard at all: recall should then never add a Private memory")
     args = ap.parse_args()
 
+    t0 = time.time()
     scratch = ROOT / ".scratch"
     home = scratch / "e2e-home"
     if home.exists():
@@ -153,13 +174,19 @@ def main() -> int:
             (plugin_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, plugin_dir / rel)
 
-    if args.control:
+    if args.control or args.no_guard:
         provider_py = plugin_dir / "whos_listening" / "provider.py"
         code = provider_py.read_text()
-        line = '    ctx.register_middleware("llm_request", _on_llm_request)'
+        if args.control:
+            line, swap = "    cleaned = guard.guard_request(request, tier)", "    cleaned = None  # e2e --control"
+            print("CONTROL RUN: the guard runs but removes nothing; the route-switch leak checks should fail.\n")
+        else:
+            line = '    ctx.register_middleware("llm_request", _on_llm_request)'
+            swap = "    pass  # e2e --no-guard"
+            print("NO-GUARD RUN: the guard is not registered; no Private memory should ever be added,\n"
+                  "so the 'carries the Private memory' check should fail and the leak checks pass.\n")
         assert line in code
-        provider_py.write_text(code.replace(line, "    pass  # e2e --control: guard off"))
-        print("CONTROL RUN: the guard is switched off; the route-switch leak check should fail.\n")
+        provider_py.write_text(code.replace(line, swap))
 
     port = free_port()
     (home / "config.yaml").write_text(CONFIG.format(port=port))
@@ -184,6 +211,11 @@ def main() -> int:
                 break
             except OSError:
                 time.sleep(0.1)
+
+        # 0. A fresh gateway's first turn carries Shared memories only: recall doesn't trust any
+        #    route until the guard has run once in the process.
+        _, reqs = run.chat(QUESTION, provider="private-sim", model="private-model")
+        run.check("cold start: no Private memory before the guard has run", not has(reqs, PRIVATE_WORD))
 
         # 1. Private route: the chat sees both memories.
         sid, reqs = run.chat(QUESTION, provider="private-sim", model="private-model")
@@ -221,7 +253,7 @@ def main() -> int:
         store.close()
         run.check("forget: store has only the Private memory", active == [PRIVATE_TEXT], repr(active))
     finally:
-        stop_gateway(home, args.hermes)
+        stop_gateway(home, args.hermes, t0)
         fake.terminate()
         try:
             fake.wait(timeout=5)

@@ -35,8 +35,15 @@ def provider(plugin, tmp_path, monkeypatch):
 
 
 def see(plugin, base_url, model="m", session="sess-1"):
+    """A turn starts, then the guard checks its request (which records the real route)."""
     plugin._on_pre_llm_call(session_id=session, model=model)
-    plugin._on_pre_api_request(session_id=session, provider="custom", model=model, base_url=base_url)
+    plugin._on_llm_request(request={"messages": []}, session_id=session, provider="custom",
+                           model=model, base_url=base_url)
+
+
+@pytest.fixture(autouse=True)
+def fresh_routes(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "ROUTES", plugin.RouteBook())
 
 
 def tool(p, name, args):
@@ -57,8 +64,7 @@ def test_register_wires_provider_and_hooks(entry):
             calls.append(("middleware", kind))
 
     entry.register(Ctx())
-    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("hook", "pre_api_request"),
-                     ("middleware", "llm_request")]
+    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("middleware", "llm_request")]
 
 
 def test_store_lives_in_profile_home(provider, tmp_path):
@@ -89,6 +95,10 @@ def test_first_turn_uses_config_default(plugin, tmp_path, monkeypatch):
     p.initialize("sess-new", hermes_home=str(tmp_path), platform="cli")
     p._store.add("Collects stamps", "private", plugin.Provenance())
     plugin._on_pre_llm_call(session_id="sess-new", model="cfg-model")
+    # until the guard has run once in this process, even the config default isn't trusted
+    assert "stamps" not in p.prefetch("hobbies", session_id="sess-new")
+    plugin._on_llm_request(request={"messages": []}, session_id="other", provider="custom",
+                           model="x", base_url="https://api.example.com/v1")
     assert "stamps" in p.prefetch("hobbies", session_id="sess-new")
     plugin._on_pre_llm_call(session_id="sess-new", model="other-model")
     assert "stamps" not in p.prefetch("hobbies", session_id="sess-new")

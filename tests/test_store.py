@@ -146,3 +146,12 @@ def test_migrates_v1_and_backfills_tombstones(tmp_path):
     db = sqlite3.connect(path)
     assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     db.close()
+
+
+def test_restore_keeps_a_tombstone_another_memory_needs(store, prov):
+    a = store.add("Likes jazz", "shared", prov)
+    store.forget(a.id)
+    b = store.add("Likes jazz", "shared", prov, allow_forgotten=True)
+    store.forget(b.id)
+    store.restore(a.id)
+    assert store.is_forgotten_text("Likes jazz")   # b is still forgotten

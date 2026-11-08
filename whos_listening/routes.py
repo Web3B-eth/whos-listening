@@ -24,6 +24,9 @@ from .store import PRIVATE, SHARED, TIERS
 DEFAULT_PRIVATE_DOMAINS = ("venice.ai",)
 LOCAL_NAMES = ("localhost",)
 LOCAL_SUFFIXES = (".localhost", ".local")
+# Providers that are Shared whatever the settings say, because the guard can't check what
+# they send. Hermes' MoA builds its requests from a copy made before middleware runs.
+ALWAYS_SHARED_PROVIDERS = {"moa": "MoA sends the chat to several models the guard can't check"}
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,8 @@ def classify(route: Optional[Route], settings: Optional[RouteSettings] = None) -
     provider = (route.provider or "").strip().lower()
     model = (route.model or "").strip().lower()
     host = route.host
+    if provider in ALWAYS_SHARED_PROVIDERS:
+        return Verdict(SHARED, ALWAYS_SHARED_PROVIDERS[provider])
 
     for key in (f"{provider}/{model}" if provider and model else None,
                 f"*/{model}" if model else None,
@@ -199,7 +204,9 @@ def default_route_from_config(config: Any) -> Optional[Route]:
 class RouteBook:
     """What each session's route is believed to be, from the hooks we see.
 
-    - ``pre_api_request`` (and later the guard) records the real route of a request.
+    - The guard records the real route of each request it checks. Only the guard does, so
+      a route is only ever "known" if the guard is really running: if Hermes failed to
+      register it, every route stays unknown (Shared) and no Private memory is added.
     - ``pre_llm_call`` records the model a turn starts with.
 
     Keyed by session id; holds route names only, never memory text. Bounded so a long-lived
@@ -211,6 +218,12 @@ class RouteBook:
         self._seen: OrderedDict[str, Route] = OrderedDict()
         self._turn_model: OrderedDict[str, str] = OrderedDict()
         self._max = max_sessions
+        self._guard_ran = False
+
+    @property
+    def guard_ran(self) -> bool:
+        """Whether the guard has checked any request in this process yet."""
+        return self._guard_ran
 
     def _put(self, d: OrderedDict, key: str, value) -> None:
         d[key] = value
@@ -219,8 +232,10 @@ class RouteBook:
             d.popitem(last=False)
 
     def saw_request(self, session_id: str, route: Route) -> None:
-        if session_id:
-            with self._lock:
+        """Called by the guard for every request it checks."""
+        with self._lock:
+            self._guard_ran = True
+            if session_id:
                 self._put(self._seen, session_id, route)
 
     def saw_turn_model(self, session_id: str, model: str) -> None:
@@ -236,14 +251,18 @@ class RouteBook:
         """Best guess at the route of the next request, and where the guess came from.
 
         1. The route of the last request this session sent, if the turn's model still matches.
-        2. On a first turn, the ``config.yaml`` default, if the turn's model matches it.
+        2. On a first turn, the ``config.yaml`` default, if the turn's model matches it and the
+           guard has already run in this process (so we know it is there to check).
         3. Otherwise nothing, which classifies as Shared.
         """
         with self._lock:
             seen = self._seen.get(session_id)
             turn_model = self._turn_model.get(session_id)
+            guard_ran = self._guard_ran
         if seen is not None and (turn_model is None or turn_model == seen.model):
             return seen, "last request in this session"
+        if seen is None and not guard_ran:
+            return None, "the guard has not run yet"
         if seen is None and config_default is not None and turn_model is not None \
                 and config_default.model and turn_model == config_default.model:
             return config_default, "config.yaml default route"

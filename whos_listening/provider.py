@@ -144,18 +144,10 @@ class WhosListeningProvider(MemoryProvider):
         return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance)
 
 
-# -- hooks: what route a session is on -------------------------------------
+# -- hooks: what model a turn starts with ------------------------------------
 
 def _on_pre_llm_call(**kwargs: Any) -> None:
     ROUTES.saw_turn_model(str(kwargs.get("session_id") or ""), str(kwargs.get("model") or ""))
-
-
-def _on_pre_api_request(**kwargs: Any) -> None:
-    ROUTES.saw_request(
-        str(kwargs.get("session_id") or ""),
-        Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
-              base_url=str(kwargs.get("base_url") or "")),
-    )
 
 
 # -- the guard: the hard line ------------------------------------------------
@@ -185,11 +177,14 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
 def register_hooks(ctx) -> None:
     """Hooks and the guard. Safe to call many times.
 
+    Only the guard records routes (see ``RouteBook``), so if Hermes fails to register it (a
+    memory provider's extra registrations only log a warning on failure), recall never
+    believes a route is Private.
+
     Hermes drops and re-adds a memory provider's hooks on each load. Middleware piles up
     instead (docs/spike.md), so the guard may run more than once per request. That is harmless:
     a cleaned request has nothing left to clean. We don't skip later registrations, because a
     once-per-process flag could leave a reloaded plugin manager with no guard at all.
     """
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    ctx.register_hook("pre_api_request", _on_pre_api_request)
     ctx.register_middleware("llm_request", _on_llm_request)

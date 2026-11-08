@@ -84,8 +84,12 @@ def test_default_route_from_config():
 def test_route_book_beliefs():
     cfg = Route("custom", "cfg-model", "http://127.0.0.1:1/v1")
     book = RouteBook(max_sessions=2)
-    # first turn: believe the config default only when the turn's model matches it
     book.saw_turn_model("s1", "cfg-model")
+    # nothing is believed until the guard has run once in this process
+    assert book.believed("s1", cfg) == (None, "the guard has not run yet")
+    book.saw_request("", Route())
+    assert book.guard_ran
+    # first turn: believe the config default only when the turn's model matches it
     assert book.believed("s1", cfg)[0] == cfg
     book.saw_turn_model("s2", "other-model")
     assert book.believed("s2", cfg)[0] is None

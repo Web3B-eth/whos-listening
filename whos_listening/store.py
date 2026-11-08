@@ -9,6 +9,7 @@ import hashlib
 import re
 import sqlite3
 import threading
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -63,7 +64,13 @@ class StoreError(ValueError):
 
 
 class ForgottenError(StoreError):
-    """The text matches a memory the user had forgotten (its tombstone blocks re-saving)."""
+    """The text matches a memory the user had forgotten (its tombstone blocks re-saving).
+    ``tier`` is the forgotten memory's tier, so callers on a Shared route can avoid
+    confirming that a Private fact was once saved."""
+
+    def __init__(self, message: str, tier: str = PRIVATE):
+        super().__init__(message)
+        self.tier = tier
 
 
 def clean_text(text: str) -> str:
@@ -81,8 +88,14 @@ def fingerprint(text: str) -> str:
     Case, punctuation and spacing don't matter, so "Likes jazz." and "likes  JAZZ" match.
     A reworded memory does not match (see README, Limits).
     """
-    words = " ".join(_WORD.findall(str(text or "").casefold()))
+    norm = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    norm = norm.translate(_QUOTES)
+    words = " ".join(w.strip("'") for w in _WORD.findall(norm) if w.strip("'"))
     return hashlib.sha256(("wl1:" + words).encode("utf-8")).hexdigest()
+
+
+# Curly and other look-alike apostrophes count as a plain one.
+_QUOTES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u2032": "'", "`": "'"})
 
 
 def check_tier(tier: str) -> str:
@@ -225,13 +238,14 @@ class SQLiteStore(Store):
                     CREATE TABLE IF NOT EXISTS tombstones (
                         fingerprint TEXT PRIMARY KEY,
                         memory_id INTEGER,
+                        tier TEXT NOT NULL DEFAULT 'private',
                         created_at TEXT NOT NULL
                     );
                     """
                 )
-                for row in self._db.execute("SELECT id, text FROM memories WHERE status = 'forgotten'").fetchall():
-                    self._db.execute("INSERT OR REPLACE INTO tombstones VALUES (?,?,?)",
-                                     (fingerprint(row["text"]), row["id"], now_iso()))
+                for row in self._db.execute(
+                        "SELECT id, text, tier FROM memories WHERE status = 'forgotten'").fetchall():
+                    self._tombstone(row["text"], row["id"], row["tier"])
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- helpers -----------------------------------------------------------
@@ -267,10 +281,12 @@ class SQLiteStore(Store):
         p = provenance
         fp = fingerprint(text)
         with self._lock, self._db:
-            if self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone():
+            tomb = self._db.execute("SELECT tier FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone()
+            if tomb:
                 if not allow_forgotten:
                     raise ForgottenError(
-                        "This was forgotten at the user's request, so it can't be saved again from chat.")
+                        "This was forgotten at the user's request, so it can't be saved again from chat.",
+                        tier=tomb["tier"])
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             cur = self._db.execute(
                 """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
@@ -349,9 +365,17 @@ class SQLiteStore(Store):
                 raise StoreError(f"No memory #{memory_id}.")
             self._db.execute("UPDATE memories SET status = 'forgotten', pending_reason = '', "
                              "updated_at = ? WHERE id = ?", (now_iso(), m.id))
-            self._db.execute("INSERT OR REPLACE INTO tombstones VALUES (?,?,?)",
-                             (fingerprint(m.text), m.id, now_iso()))
+            self._tombstone(m.text, m.id, m.tier)
             return self.get(m.id)
+
+    def _tombstone(self, text: str, memory_id: int, tier: str) -> None:
+        # Keep the strictest tier if the same words were forgotten more than once.
+        fp = fingerprint(text)
+        old = self._db.execute("SELECT tier FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone()
+        if old and old["tier"] == PRIVATE:
+            tier = PRIVATE
+        self._db.execute("INSERT OR REPLACE INTO tombstones (fingerprint, memory_id, tier, created_at) "
+                         "VALUES (?,?,?,?)", (fp, memory_id, tier, now_iso()))
 
     def restore(self, memory_id):
         with self._lock, self._db:
@@ -360,7 +384,12 @@ class SQLiteStore(Store):
                 raise StoreError(f"No memory #{memory_id}.")
             if m.status != FORGOTTEN:
                 raise StoreError(f"Memory #{m.id} is not forgotten.")
-            self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fingerprint(m.text),))
+            fp = fingerprint(m.text)
+            others = self._db.execute(
+                "SELECT text FROM memories WHERE status = 'forgotten' AND id != ?", (m.id,)).fetchall()
+            if not any(fingerprint(r["text"]) == fp for r in others):
+                # Keep the tombstone if another forgotten memory has the same words.
+                self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             self._db.execute("UPDATE memories SET status = 'active', updated_at = ? WHERE id = ?",
                              (now_iso(), m.id))
             return self.get(m.id)

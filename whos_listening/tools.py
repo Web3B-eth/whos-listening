@@ -11,7 +11,7 @@ import json
 from typing import Any, Callable
 
 from .recall import allowed_tiers, format_line
-from .store import FORGOTTEN, PRIVATE, SHARED, Memory, Provenance, Store, StoreError
+from .store import FORGOTTEN, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError
 
 REMEMBER = "wl_remember"
 RECALL = "wl_recall"
@@ -64,6 +64,14 @@ def _public(m: Memory) -> dict:
     return {"id": m.id, "tier": m.tier, "line": format_line(m)}
 
 
+def _shared_route_saved(tier: str) -> str:
+    """What a save looks like on a Shared route: no number and no text, so a Shared model
+    can't tell a real save from one a tombstone turned away."""
+    note = ("Saved as private. This chat's route is shared, so it won't be shown here."
+            if tier == PRIVATE else "Saved.")
+    return _ok(saved={"tier": tier}, note=note)
+
+
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
            provenance: Callable[[], Provenance]) -> str:
     """Run one tool call. Always returns a JSON string; never raises."""
@@ -71,12 +79,17 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     try:
         if name == REMEMBER:
             tier = str(args.get("tier") or PRIVATE).strip().lower()
-            m = store.add(args.get("text", ""), tier, provenance())
-            note = ""
-            if m.tier == PRIVATE and route_tier != PRIVATE:
-                note = "Saved as private. This chat's route is shared, so it won't be shown here."
-            return _ok(saved=_public(m) if route_tier == PRIVATE or m.tier == SHARED
-                       else {"id": m.id, "tier": m.tier}, note=note)
+            try:
+                m = store.add(args.get("text", ""), tier, provenance())
+            except ForgottenError as exc:
+                if route_tier == PRIVATE or exc.tier == SHARED:
+                    raise
+                # On a Shared route, don't confirm that a Private fact was once saved and
+                # forgotten: answer exactly like a save (nothing is saved).
+                return _shared_route_saved(tier)
+            if route_tier != PRIVATE:
+                return _shared_route_saved(m.tier)
+            return _ok(saved=_public(m), note="")
 
         if name == RECALL:
             tiers = allowed_tiers(route_tier)

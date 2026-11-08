@@ -26,9 +26,11 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
 
 Hermes tells a memory plugin the request's address only after the memories are added (see [`docs/spike.md`](docs/spike.md)). So recall guesses, and guesses safe (the guard then checks the real route of every request):
 
-1. The route of this session's last request, if the turn still uses the same model.
+1. The route of this session's last request (as the guard saw it), if the turn still uses the same model.
 2. On a first turn, the default route in `config.yaml`, if the turn's model matches it.
 3. Otherwise the route counts as unknown, which means Shared.
+
+Only the guard records routes. So if the guard isn't running (Hermes only logs a warning when a memory plugin's extra registrations fail), no route is ever believed Private and no Private memory is added. For the same reason, the first turn after Hermes starts carries Shared memories only.
 
 ## Settings
 
@@ -66,7 +68,12 @@ End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in
 .local/venv-023/bin/python e2e/run.py
 ```
 
-Add `--control` to run with the guard switched off: the route-switch checks should then fail, which shows they catch a real leak. Add `--hermes PATH` to use another Hermes build.
+Two runs show the checks have teeth:
+
+- `--control` keeps the guard but switches off its clean-up. The route-switch checks should fail: the Private memory reaches the Shared model through the replayed turn.
+- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the "carries the Private memory" and "guard left a marker" checks fail and the leak checks pass.
+
+Add `--hermes PATH` to use another Hermes build.
 
 Shared test cases (routes, stripping, tombstone matching) live as JSON in [`tests/vectors/`](tests/vectors/).
 
@@ -90,11 +97,16 @@ Both warn that `provides_tools` lists tools that `register()` didn't register. T
 
 Be clear about what whos-listening does not protect (yet):
 
-- **Only tagged text is protected.** The guard removes Private memories by their tags. If the assistant repeats a Private memory in its own words, that text stays in the chat history and can reach a Shared model later.
-- **Side calls aren't filtered.** Hermes' own extra model calls (such as naming the chat) skip plugin middleware. In our tests they carried the plain chat, not the memory block, so only what the assistant said reaches them.
+- **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
+  - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.
+  - **The summary Hermes writes when a turn hits its tool-call limit.** It is sent on the chat's current route.
+  - **Mixture of agents (`moa`).** It builds its requests from a copy made before middleware runs. whos-listening treats a `moa` route as Shared whatever the settings say, but memories added on earlier Private turns are still in the history it sends.
+  - **Side calls** such as naming the chat. In our tests they carried the plain chat, not the memory block.
+- **Only tagged text is removed.** On a Shared route the guard removes tagged Private memories, and the text of replayed `wl_remember` calls and `wl_recall` queries. It can't remove what the assistant said about a Private memory in its own words, what you typed yourself, or model reasoning that Hermes replays to a later model.
 - **Other plugins** with request middleware that runs after ours could put text back, and other plugins' execution middleware can see the request as it was before the guard.
+- **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
 - **The guard runs more than once.** Hermes adds a memory plugin's middleware again each time it loads the plugin, so in a long-running gateway the guard runs several times per request. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
-- **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." but not "Enjoys jazz".
+- **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged, so a forget can be undone. There is no purge command yet.
 
 License: MIT.

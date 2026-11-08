@@ -1,13 +1,37 @@
 [
-  {"name": "nothing tagged", "text": "Plan a picnic", "shared": "Plan a picnic"},
-  {"name": "one private line", "text": "- #1 <wl-private id=\"1\">Keeps a vegetarian diet on weekdays</wl-private>\n- #2 Likes spicy food",
-   "shared": "- #1 [private memory withheld]\n- #2 Likes spicy food"},
-  {"name": "two spans", "text": "<wl-private id=\"1\">a</wl-private> and <wl-private id=\"2\">b</wl-private>",
-   "shared": "[private memory withheld] and [private memory withheld]"},
-  {"name": "multi-line span", "text": "x <wl-private id=\"3\">line one\nline two</wl-private> y",
-   "shared": "x [private memory withheld] y"},
-  {"name": "cut-off span", "text": "x <wl-private id=\"4\">no closing tag here",
-   "shared": "x [private memory withheld]"},
-  {"name": "inside a JSON tool result", "text": "{\"line\": \"- #5 <wl-private id=\\\"5\\\">Collects stamps</wl-private>\"}",
-   "shared": "{\"line\": \"- #5 [private memory withheld]\"}"}
+  {
+    "name": "nothing tagged",
+    "text": "Plan a picnic",
+    "shared": "Plan a picnic"
+  },
+  {
+    "name": "one private line",
+    "text": "- #1 <wl-private id=\"1\">Keeps a vegetarian diet on weekdays</wl-private>\n- #2 Likes spicy food",
+    "shared": "- #1 [private memory withheld]\n- #2 Likes spicy food"
+  },
+  {
+    "name": "two spans",
+    "text": "<wl-private id=\"1\">a</wl-private> and <wl-private id=\"2\">b</wl-private>",
+    "shared": "[private memory withheld] and [private memory withheld]"
+  },
+  {
+    "name": "multi-line span",
+    "text": "x <wl-private id=\"3\">line one\nline two</wl-private> y",
+    "shared": "x [private memory withheld] y"
+  },
+  {
+    "name": "cut-off span",
+    "text": "x <wl-private id=\"4\">no closing tag here",
+    "shared": "x [private memory withheld]"
+  },
+  {
+    "name": "inside a JSON tool result",
+    "text": "{\"line\": \"- #5 <wl-private id=\\\"5\\\">Collects stamps</wl-private>\"}",
+    "shared": "{\"line\": \"- #5 [private memory withheld]\"}"
+  },
+  {
+    "name": "orphan closing tag",
+    "text": "- #6 Has a peanut allergy</wl-private>\n- #7 Likes jazz",
+    "shared": "[private memory withheld]\n- #7 Likes jazz"
+  }
 ]

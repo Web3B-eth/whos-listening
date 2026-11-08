@@ -56,3 +56,14 @@ def test_forget_then_resave_is_blocked(store):
     assert out["ok"] is True and "won't be saved again" in out["note"]
     again = call(store, "wl_remember", {"text": "likes jazz", "tier": "shared"}, "private")
     assert again["ok"] is False and "forgotten" in again["error"]
+
+
+def test_shared_route_never_confirms_a_forgotten_private_fact(store):
+    saved = call(store, "wl_remember", {"text": "Has a peanut allergy"}, "private")["saved"]
+    call(store, "wl_forget", {"id": saved["id"]}, "private")
+    guess = call(store, "wl_remember", {"text": "has a peanut allergy"}, "shared")
+    fresh = call(store, "wl_remember", {"text": "Collects stamps"}, "shared")
+    assert guess == fresh                      # same answer, so nothing is confirmed
+    assert store.count() == 1                  # only the fresh one was really saved
+    # on the Private route the user still gets the honest answer
+    assert call(store, "wl_remember", {"text": "has a peanut allergy"}, "private")["ok"] is False

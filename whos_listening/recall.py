@@ -23,6 +23,9 @@ PRIVATE_CLOSE = "</wl-private>"
 PRIVATE_SPAN_RE = re.compile(r"<wl-private\b[^>]*>.*?</wl-private>", re.DOTALL)
 # An opening tag with no closing tag (a cut-off reply, say): remove to the end.
 PRIVATE_UNCLOSED_RE = re.compile(r"<wl-private\b[^>]*>.*\Z", re.DOTALL)
+# A closing tag with no opening tag (the start was trimmed off, say): memory text is one line,
+# so remove from the start of that line to the closing tag.
+PRIVATE_ORPHAN_CLOSE_RE = re.compile(r"[^\n]*</wl-private>")
 BLOCK_RE = re.compile(r"<whos-listening-memory>.*?(?:</whos-listening-memory>|\Z)", re.DOTALL)
 
 SMALL_STORE = 30       # up to this many memories, prefetch carries all of them
@@ -80,8 +83,9 @@ def select_for_prefetch(store: Store, query: str, route_tier: str) -> list[Memor
 
 
 def strip_private(text: str) -> str:
-    """Remove every tagged Private span (and any cut-off one) from ``text``."""
+    """Remove every tagged Private span (and any cut-off one, at either end) from ``text``."""
     text = PRIVATE_SPAN_RE.sub("[private memory withheld]", text)
+    text = PRIVATE_ORPHAN_CLOSE_RE.sub("[private memory withheld]", text)
     return PRIVATE_UNCLOSED_RE.sub("[private memory withheld]", text)
 
 
