@@ -35,8 +35,15 @@ def provider(plugin, tmp_path, monkeypatch):
 
 
 def see(plugin, base_url, model="m", session="sess-1"):
+    """A turn starts, then the guard checks its request (which records the real route)."""
     plugin._on_pre_llm_call(session_id=session, model=model)
-    plugin._on_pre_api_request(session_id=session, provider="custom", model=model, base_url=base_url)
+    plugin._on_llm_request(request={"messages": []}, session_id=session, provider="custom",
+                           model=model, base_url=base_url)
+
+
+@pytest.fixture(autouse=True)
+def fresh_routes(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "ROUTES", plugin.RouteBook())
 
 
 def tool(p, name, args):
@@ -53,8 +60,11 @@ def test_register_wires_provider_and_hooks(entry):
         def register_hook(self, name, fn):
             calls.append(("hook", name))
 
+        def register_middleware(self, kind, fn):
+            calls.append(("middleware", kind))
+
     entry.register(Ctx())
-    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("hook", "pre_api_request")]
+    assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("middleware", "llm_request")]
 
 
 def test_store_lives_in_profile_home(provider, tmp_path):
@@ -85,6 +95,10 @@ def test_first_turn_uses_config_default(plugin, tmp_path, monkeypatch):
     p.initialize("sess-new", hermes_home=str(tmp_path), platform="cli")
     p._store.add("Collects stamps", "private", plugin.Provenance())
     plugin._on_pre_llm_call(session_id="sess-new", model="cfg-model")
+    # until the guard has run once in this process, even the config default isn't trusted
+    assert "stamps" not in p.prefetch("hobbies", session_id="sess-new")
+    plugin._on_llm_request(request={"messages": []}, session_id="other", provider="custom",
+                           model="x", base_url="https://api.example.com/v1")
     assert "stamps" in p.prefetch("hobbies", session_id="sess-new")
     plugin._on_pre_llm_call(session_id="sess-new", model="other-model")
     assert "stamps" not in p.prefetch("hobbies", session_id="sess-new")
@@ -127,3 +141,100 @@ def test_works_through_memory_manager(plugin, tmp_path, monkeypatch):
     out = json.loads(mgr.handle_tool_call("wl_remember", {"text": "Waters plants on Mondays", "tier": "shared"}))
     assert out["ok"] is True
     mgr.shutdown_all()
+
+
+# -- the guard ------------------------------------------------------------------
+
+def _request(*texts):
+    return {"model": "m", "stream": True,
+            "messages": [{"role": "system", "content": texts[0]},
+                         *({"role": "user", "content": t} for t in texts[1:])]}
+
+
+def mw(plugin, request, base_url, session="sess-1", model="m"):
+    return plugin._on_llm_request(request=request, original_request=request, session_id=session,
+                                  provider="custom", model=model, base_url=base_url, platform="cli")
+
+
+def test_guard_strips_private_on_shared_route(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})
+    tool(provider, "wl_remember", {"text": "Likes jazz", "tier": "shared"})
+    block = provider.prefetch("weekend plans", session_id="sess-1")
+    req = _request("sys", block, "What should I do this weekend?")
+
+    assert mw(plugin, req, "http://127.0.0.1:9/v1") is None          # Private route: unchanged
+    out = mw(plugin, req, "https://openrouter.ai/api/v1")            # Shared route: cleaned
+    sent = json.dumps(out["request"])
+    assert "canoe" not in sent and "jazz" in sent and "withheld" in sent
+    assert out["request"]["stream"] is True and out["source"] == "whos-listening"
+    # the guard also tells prefetch what route the session is really on
+    assert plugin.ROUTES.last_seen("sess-1").host == "openrouter.ai"
+
+
+def test_guard_cleans_replayed_turns_and_tool_results(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})
+    recall_result = provider.handle_tool_call("wl_recall", {"query": "canoe"})
+    assert "canoe" in recall_result
+    req = {"model": "m", "messages": [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": provider.prefetch("canoe", session_id="sess-1") + "\nhi"},
+        {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "wl_recall", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": recall_result},
+        {"role": "user", "content": [{"type": "text", "text": "new question"}]},
+    ]}
+    out = mw(plugin, req, "https://api.example.com/v1")
+    assert "canoe" not in json.dumps(out["request"])
+    assert out["request"]["messages"][4]["content"][0]["text"] == "new question"
+
+
+def test_guard_fails_closed_when_profile_unknown(plugin, provider, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: None)
+    req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private>', "hi")
+    out = mw(plugin, req, "http://127.0.0.1:9/v1")   # even a Private host: profile unknown means Shared
+    assert "canoe" not in json.dumps(out["request"])
+
+
+def test_guard_fails_closed_on_broken_settings(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    (tmp_path / "whos-listening" / "settings.json").write_text("{not json")
+    req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private>', "hi")
+    assert "canoe" not in json.dumps(mw(plugin, req, "http://127.0.0.1:9/v1")["request"])
+
+
+def test_guard_never_raises(plugin, monkeypatch):
+    def boom():
+        raise RuntimeError("no")
+    monkeypatch.setattr(plugin, "_active_home", boom)
+    req = _request('<wl-private id="1">Is saving up for a canoe</wl-private>')
+    out = plugin._on_llm_request(request=req)          # missing context and a failing lookup
+    assert "canoe" not in json.dumps(out["request"])
+    assert plugin._on_llm_request() is None            # no request at all: nothing to send
+
+
+def test_guard_through_hermes_middleware_chain(plugin, provider, monkeypatch, tmp_path):
+    """Run the guard the way Hermes does, twice over (registrations pile up), next to a plugin
+    that raises."""
+    from hermes_cli import plugins as hp
+    from hermes_cli.middleware import apply_llm_request_middleware
+
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    mgr = hp.get_plugin_manager()
+
+    def broken(**_):
+        raise RuntimeError("another plugin failing")
+
+    saved = list(mgr._middleware.get("llm_request", []))
+    mgr._middleware["llm_request"] = [plugin._on_llm_request, broken, plugin._on_llm_request]
+    monkeypatch.setattr(hp, "_delivery_manager", lambda: mgr, raising=False)
+    try:
+        req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private> - #2 Likes jazz', "hi")
+        res = apply_llm_request_middleware(req, session_id="sess-1", model="m", provider="custom",
+                                           base_url="https://api.example.com/v1", platform="cli")
+        sent = json.dumps(res.payload)
+        assert "canoe" not in sent and "jazz" in sent
+    finally:
+        mgr._middleware["llm_request"] = saved

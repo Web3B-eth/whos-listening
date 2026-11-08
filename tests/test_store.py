@@ -75,3 +75,83 @@ def test_reopen_keeps_data(tmp_path, prov):
     s2 = SQLiteStore(path)
     assert [m.text for m in s2.search("tomatoes")] == ["Grows tomatoes"]
     s2.close()
+
+
+# -- tombstones -------------------------------------------------------------------
+
+def test_forget_leaves_a_tombstone(store, prov):
+    from whos_listening.store import FORGOTTEN, ForgottenError
+
+    m = store.add("Likes jazz", "shared", prov)
+    assert store.forget(m.id).status == FORGOTTEN
+    assert store.search("jazz") == [] and store.count() == 0
+    with pytest.raises(ForgottenError):
+        store.add("likes JAZZ.", "private", prov)
+    # the user's own command may save it again, which lifts the tombstone
+    again = store.add("Likes jazz", "shared", prov, allow_forgotten=True)
+    assert again.status == "active" and not store.is_forgotten_text("Likes jazz")
+
+
+def test_set_status_forgotten_also_tombstones(store, prov):
+    m = store.add("Waters plants on Mondays", "shared", prov)
+    store.set_status(m.id, "forgotten")
+    assert store.is_forgotten_text("Waters plants on Mondays")
+
+
+def test_restore_undoes_a_forget(store, prov):
+    m = store.add("Likes jazz", "shared", prov)
+    store.forget(m.id)
+    assert store.restore(m.id).status == "active"
+    assert not store.is_forgotten_text("Likes jazz") and store.search("jazz")[0].id == m.id
+    with pytest.raises(StoreError):
+        store.restore(m.id)
+
+
+def test_purge_deletes_text_but_keeps_tombstone(store, prov, tmp_path):
+    m = store.add("Collects stamps", "private", prov)
+    with pytest.raises(StoreError):
+        store.purge(m.id)          # forget first
+    store.forget(m.id)
+    store.purge(m.id)
+    assert store.get(m.id) is None and store.is_forgotten_text("Collects stamps")
+    store.close()
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "memories.sqlite")
+    rows = db.execute("SELECT text FROM memories").fetchall()
+    tomb = db.execute("SELECT fingerprint, memory_id FROM tombstones").fetchall()
+    db.close()
+    assert rows == [] and len(tomb) == 1 and tomb[0][1] is None and "stamps" not in tomb[0][0]
+
+
+def test_migrates_v1_and_backfills_tombstones(tmp_path):
+    import sqlite3
+    from whos_listening.store import SCHEMA_VERSION, SQLiteStore
+
+    path = tmp_path / "old.sqlite"
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, tier TEXT NOT NULL,
+            status TEXT NOT NULL, pending_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, written_by TEXT NOT NULL DEFAULT 'unknown', via TEXT NOT NULL DEFAULT '',
+            route TEXT NOT NULL DEFAULT '', route_tier TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+            turn TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '');
+        INSERT INTO memories (text, tier, status, created_at, updated_at)
+            VALUES ('Likes jazz', 'shared', 'forgotten', 'x', 'x');
+        PRAGMA user_version = 1;
+    """)
+    db.close()
+    s = SQLiteStore(path)
+    assert s.is_forgotten_text("Likes jazz")
+    s.close()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    db.close()
+
+
+def test_restore_keeps_a_tombstone_another_memory_needs(store, prov):
+    a = store.add("Likes jazz", "shared", prov)
+    store.forget(a.id)
+    b = store.add("Likes jazz", "shared", prov, allow_forgotten=True)
+    store.forget(b.id)
+    store.restore(a.id)
+    assert store.is_forgotten_text("Likes jazz")   # b is still forgotten

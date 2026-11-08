@@ -4,7 +4,7 @@ A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
 Every memory is **Private** or **Shared**. Private memories only reach models you trust (by default Venice and models on your own machine or network). When a chat moves to any other model, Private memories are left out of the request.
 
-**Work in progress for the Hermes Agent Plugin Hackathon. Not ready to install yet:** the request guard that makes the Private rule hold for every request is not built yet (see [Limits](#limits)).
+**Work in progress for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request. The review queue (pending memories, Undo) and the `/memories` commands are still being built, so it is not ready for everyday use yet. See [Limits](#limits).
 
 ## How it works
 
@@ -18,15 +18,19 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
   - `wl_recall`: search memories (Private ones only on a Private route).
   - `wl_forget`: forget a memory by number.
   Only the main chat can save or forget; subagents and scheduled jobs can only read.
+- **The guard.** Just before each main chat request leaves, whos-listening checks that request's real route. On a Shared route it removes every tagged Private memory from every part of the request: the system prompt, earlier turns Hermes replays from history, and tool results. If that clean-up fails, it removes all memories. If even that fails, it sends a short notice instead of the conversation. It never lets an error send the request unchecked.
+- **Forget means forget.** When a memory is forgotten, whos-listening keeps a tombstone: a hash of its words, not the words. The same fact (ignoring case, spacing and punctuation) can't be saved again from chat. The forgotten text stays in the local file so a forget can be undone, until it is purged.
 - **Provenance.** Every memory records who wrote it, with which tool, on which route (and that route's tier), and in which session and turn.
 
 ### Which route is a turn on?
 
-Hermes tells a memory plugin the request's address only after the memories are added (see [`docs/spike.md`](docs/spike.md)). So whos-listening guesses, and guesses safe:
+Hermes tells a memory plugin the request's address only after the memories are added (see [`docs/spike.md`](docs/spike.md)). So recall guesses, and guesses safe (the guard then checks the real route of every request):
 
-1. The route of this session's last request, if the turn still uses the same model.
+1. The route of this session's last request (as the guard saw it), if the turn still uses the same model.
 2. On a first turn, the default route in `config.yaml`, if the turn's model matches it.
 3. Otherwise the route counts as unknown, which means Shared.
+
+Only the guard records routes. So if the guard isn't running (Hermes only logs a warning when a memory plugin's extra registrations fail), no route is ever believed Private and no Private memory is added. For the same reason, the first turn after Hermes starts carries Shared memories only.
 
 ## Settings
 
@@ -58,6 +62,21 @@ python -m pytest
 
 Run Hermes for testing with a scratch `HERMES_HOME`, never your real one. See [`AGENTS.md`](AGENTS.md).
 
+End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in a fresh scratch home under `.scratch/`, with made-up memories. They cover recall on a Private and a Shared route, a chat that switches from a Private to a Shared route (the guard must strip the replayed Private memory), and forget plus a blocked re-save. They take about a minute:
+
+```bash
+.local/venv-023/bin/python e2e/run.py
+```
+
+Two runs show the checks have teeth:
+
+- `--control` keeps the guard but switches off its clean-up. The route-switch checks should fail: the Private memory reaches the Shared model through the replayed turn.
+- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the "carries the Private memory" and "guard left a marker" checks fail and the leak checks pass.
+
+Add `--hermes PATH` to use another Hermes build.
+
+Shared test cases (routes, stripping, tombstone matching) live as JSON in [`tests/vectors/`](tests/vectors/).
+
 The Hermes checks scan every file under the folder you give them, so run them on a clean copy of the tracked files (not a checkout with ignored folders such as `.local/`):
 
 ```bash
@@ -78,9 +97,16 @@ Both warn that `provides_tools` lists tools that `register()` didn't register. T
 
 Be clear about what whos-listening does not protect (yet):
 
-- **No request guard yet.** Today only recall and the tools filter by route, based on the guess above. If a chat switches to a Shared route in a way the guess misses, Private memories added earlier in the chat are still in its history. The planned `llm_request` guard will check the real route of every request and strip tagged Private text, and remove all memories if anything goes wrong.
-- **Side calls aren't filtered.** Hermes' own extra model calls (such as naming the chat) skip plugin middleware.
-- **Paraphrases aren't tagged.** If the assistant repeats a Private memory in its own words, that text stays in the chat history and can reach a Shared model later.
-- **Other plugins** with request middleware could undo what whos-listening changes.
+- **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
+  - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.
+  - **The summary Hermes writes when a turn hits its tool-call limit.** It is sent on the chat's current route.
+  - **Mixture of agents (`moa`).** It builds its requests from a copy made before middleware runs. whos-listening treats a `moa` route as Shared whatever the settings say, but memories added on earlier Private turns are still in the history it sends.
+  - **Side calls** such as naming the chat. In our tests they carried the plain chat, not the memory block.
+- **Only tagged text is removed.** On a Shared route the guard removes tagged Private memories, and the text of replayed `wl_remember` calls and `wl_recall` queries. It can't remove what the assistant said about a Private memory in its own words, what you typed yourself, or model reasoning that Hermes replays to a later model.
+- **Other plugins** with request middleware that runs after ours could put text back, and other plugins' execution middleware can see the request as it was before the guard.
+- **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
+- **The guard runs more than once.** Hermes adds a memory plugin's middleware again each time it loads the plugin, so in a long-running gateway the guard runs several times per request. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
+- **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
+- **Forgotten text stays on disk** in `memories.sqlite` until it is purged, so a forget can be undone. There is no purge command yet.
 
 License: MIT.

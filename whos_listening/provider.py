@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from . import recall, tools
+from . import guard, recall, tools
 from .routes import (
     Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config,
 )
@@ -36,6 +36,29 @@ def _config_default_route() -> Optional[Route]:
     except Exception as exc:
         logger.debug("whos-listening: could not read the default route: %s", exc)
         return None
+
+
+def _active_home() -> Optional[Path]:
+    """The Hermes home of the profile this request runs under (Hermes keeps it per context)."""
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception as exc:
+        logger.debug("whos-listening: could not tell the active profile: %s", exc)
+        return None
+
+
+def tier_for(route: Optional[Route], home: Optional[Path]) -> Verdict:
+    """The tier of ``route`` under the settings of the profile at ``home``.
+    No home, or a settings file that can't be read, means Shared."""
+    if home is None:
+        return Verdict(SHARED, "profile unknown")
+    try:
+        settings = RouteSettings.load(Path(home) / DATA_DIR / SETTINGS_FILE)
+    except Exception as exc:
+        logger.warning("whos-listening: settings file unreadable, treating every route as Shared: %s", exc)
+        return Verdict(SHARED, "settings file unreadable")
+    return classify(route, settings)
 
 
 class WhosListeningProvider(MemoryProvider):
@@ -76,20 +99,10 @@ class WhosListeningProvider(MemoryProvider):
 
     # -- routes ------------------------------------------------------------
 
-    def _settings(self) -> Optional[RouteSettings]:
-        try:
-            return RouteSettings.load(self._dir / SETTINGS_FILE)
-        except Exception as exc:
-            logger.warning("whos-listening: settings file unreadable, treating every route as Shared: %s", exc)
-            return None
-
     def _route(self, session_id: str = "") -> tuple[Optional[Route], Verdict]:
         sid = session_id or self._session_id
         route, why = ROUTES.believed(sid, _config_default_route())
-        settings = self._settings()
-        if settings is None:
-            return route, Verdict(SHARED, "settings file unreadable")
-        verdict = classify(route, settings)
+        verdict = tier_for(route, self._dir.parent if self._dir else None)
         return route, Verdict(verdict.tier, f"{verdict.reason} ({why})")
 
     # -- recall ------------------------------------------------------------
@@ -131,21 +144,47 @@ class WhosListeningProvider(MemoryProvider):
         return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance)
 
 
-# -- hooks: what route a session is on -------------------------------------
+# -- hooks: what model a turn starts with ------------------------------------
 
 def _on_pre_llm_call(**kwargs: Any) -> None:
     ROUTES.saw_turn_model(str(kwargs.get("session_id") or ""), str(kwargs.get("model") or ""))
 
 
-def _on_pre_api_request(**kwargs: Any) -> None:
-    ROUTES.saw_request(
-        str(kwargs.get("session_id") or ""),
-        Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
-              base_url=str(kwargs.get("base_url") or "")),
-    )
+# -- the guard: the hard line ------------------------------------------------
+
+def _on_llm_request(**kwargs: Any) -> Optional[dict]:
+    """``llm_request`` middleware. Runs on every main chat request with its real route.
+
+    Hermes sends the request unchanged if this raises, so it never raises: any error means
+    the route counts as Shared and Private text is removed (see guard.guard_request).
+    """
+    request = kwargs.get("request")
+    tier = None
+    try:
+        route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
+                      base_url=str(kwargs.get("base_url") or ""))
+        ROUTES.saw_request(str(kwargs.get("session_id") or ""), route)
+        tier = tier_for(route, _active_home()).tier
+    except Exception as exc:
+        logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",
+                       type(exc).__name__)
+    cleaned = guard.guard_request(request, tier)
+    if cleaned is None:
+        return None
+    return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}
 
 
 def register_hooks(ctx) -> None:
-    # Hermes drops and re-adds a memory provider's hooks on each load, so this is safe to repeat.
+    """Hooks and the guard. Safe to call many times.
+
+    Only the guard records routes (see ``RouteBook``), so if Hermes fails to register it (a
+    memory provider's extra registrations only log a warning on failure), recall never
+    believes a route is Private.
+
+    Hermes drops and re-adds a memory provider's hooks on each load. Middleware piles up
+    instead (docs/spike.md), so the guard may run more than once per request. That is harmless:
+    a cleaned request has nothing left to clean. We don't skip later registrations, because a
+    once-per-process flag could leave a reloaded plugin manager with no guard at all.
+    """
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    ctx.register_hook("pre_api_request", _on_pre_api_request)
+    ctx.register_middleware("llm_request", _on_llm_request)
