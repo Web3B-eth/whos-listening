@@ -28,7 +28,7 @@ HELP = """\
 HIDDEN = "(private: shown only in the terminal or the local app)"
 
 # Hermes platforms where the reply stays on this computer.
-LOCAL_PLATFORMS = frozenset({"", "cli", "local", "tui", "desktop"})
+LOCAL_PLATFORMS = frozenset({"cli", "local", "tui", "desktop"})   # an unknown or empty one is not local
 
 
 def shows_private(platform: str) -> bool:
@@ -79,6 +79,10 @@ def cmd_pending(store: Store, show_private: bool) -> str:
 
 def cmd_approve(store: Store, arg: str, show_private: bool) -> str:
     m = _get(store, arg)
+    if m.tier == PRIVATE and not show_private and (m.status == PENDING or m.forget_reason):
+        # Don't let anyone approve a Private memory they can't see here.
+        return (f"#{m.id} is private, so its text isn't shown here. Approve it in the terminal or the "
+                f"local app, where you can read it first.")
     if m.status == PENDING:
         store.set_status(m.id, ACTIVE)
         store.log_event(m.id, "approved", "user")
@@ -119,11 +123,12 @@ def cmd_restore(store: Store, arg: str, show_private: bool) -> str:
     return f"Restored {_line(store.get(m.id), show_private)}"
 
 
-def cmd_add(store: Store, args: list[str], show_private: bool, via: str) -> str:
-    tier = PRIVATE
-    if args and args[0].lower() in (PRIVATE, SHARED):
-        tier, args = args[0].lower(), args[1:]
-    m = store.add(" ".join(args), tier, Provenance(written_by="user", via=via), allow_forgotten=True)
+def cmd_add(store: Store, text: str, show_private: bool, via: str) -> str:
+    """``text`` exactly as typed after ``add`` (no shell-style quoting, so "don't" stays)."""
+    tier, words = PRIVATE, text.split(None, 1)
+    if words and words[0].lower() in (PRIVATE, SHARED):
+        tier, text = words[0].lower(), (words[1] if len(words) > 1 else "")
+    m = store.add(text, tier, Provenance(written_by="user", via=via), allow_forgotten=True)
     store.log_event(m.id, "saved", "user")
     return f"Saved {_line(m, show_private)}"
 
@@ -177,6 +182,9 @@ def cmd_undo(store: Store, show_private: bool) -> str:
     for e in store.events(limit=50):
         if e.undone or e.action == "undo":
             continue
+        if store.get(e.memory_id) is None:          # purged: nothing left to undo
+            store.mark_undone(e.id)
+            continue
         msg = _undo(store, e, show_private)
         store.mark_undone(e.id)
         store.log_event(e.memory_id, "undo", "user")
@@ -186,11 +194,13 @@ def cmd_undo(store: Store, show_private: bool) -> str:
 
 def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memories") -> str:
     """Run one ``/memories`` command and return the reply. Never raises."""
+    head = (raw_args or "").split(None, 1)
+    cmd = head[0].lower() if head else "list"
+    tail = head[1] if len(head) > 1 else ""
     try:
-        args = shlex.split(raw_args or "")
+        rest = shlex.split(tail) if cmd != "add" else []
     except ValueError:
-        args = (raw_args or "").split()
-    cmd, rest = (args[0].lower(), args[1:]) if args else ("list", [])
+        rest = tail.split()
 
     def one() -> str:
         if len(rest) != 1:
@@ -215,7 +225,7 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
         if cmd == "show":
             return cmd_show(store, one(), show_private)
         if cmd == "add":
-            return cmd_add(store, rest, show_private, via)
+            return cmd_add(store, tail, show_private, via)
         if cmd in ("help", "-h", "--help"):
             return HELP
         return f"Unknown command {cmd!r}.\n\n{HELP}"

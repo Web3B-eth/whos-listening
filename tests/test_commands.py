@@ -95,3 +95,40 @@ def test_bad_input_answers(store):
     assert "Unknown command" in run(store, "dance")
     assert "/memories pending" in run(store, "help")
     assert run(store, 'add "unclosed') .startswith("Saved")
+
+
+def test_undo_of_a_forgotten_pending_memory_keeps_it_pending(store):
+    m = store.add("Prefers window seats", "private", assistant(), status=PENDING, pending_reason="outside")
+    store.log_event(m.id, "held", "assistant")
+    store.forget(m.id)
+    store.log_event(m.id, "forgot", "assistant")
+    run(store, "undo")
+    assert store.get(m.id).status == "pending"
+    run(store, f"forget {m.id}")
+    run(store, f"restore {m.id}")
+    assert store.get(m.id).status == "pending"
+
+
+def test_undo_skips_purged_memories(store):
+    run(store, "add Likes jazz")
+    run(store, "add Collects stamps")
+    stamps = [m for m in store.list() if "stamps" in m.text][0]
+    run(store, f"forget {stamps.id}")
+    store.purge(stamps.id)
+    assert "forgot" in run(store, "undo")       # reaches the jazz save past the purged events
+    assert store.count() == 0
+
+
+def test_add_keeps_the_text_as_typed(store):
+    run(store, "add I don't eat pork and won't start")
+    run(store, "add shared Keeps notes in C:\\Users\\me")
+    texts = sorted(m.text for m in store.list())
+    assert texts == ["I don't eat pork and won't start", "Keeps notes in C:\\Users\\me"]
+
+
+def test_private_memories_are_approved_only_where_they_can_be_read(store):
+    m = store.add("Has a peanut allergy", "private", assistant(), status=PENDING, pending_reason="r")
+    out = run(store, f"approve {m.id}", show_private=False)
+    assert "terminal" in out and store.get(m.id).status == "pending"
+    assert "Saved" in run(store, f"approve {m.id}", show_private=True)
+    assert not commands.shows_private("") and not commands.shows_private(None)

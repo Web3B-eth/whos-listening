@@ -39,7 +39,7 @@ RULES: tuple[tuple[re.Pattern, str], ...] = (
 )
 
 # Tools whose results are not outside content: ours, and Hermes' own bookkeeping tools.
-TRUSTED_TOOLS = frozenset({"wl_remember", "wl_recall", "wl_forget", "todo", "clarify"})
+TRUSTED_TOOLS = frozenset({"wl_remember", "wl_recall", "wl_forget", "todo", "todo_list", "clarify"})
 
 REVIEW_MODES = ("ask", "auto")      # "auto" is Auto-review (see autoreview.py)
 

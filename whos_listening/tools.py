@@ -14,6 +14,7 @@ from . import review
 from .recall import allowed_tiers, format_line
 from .store import (
     FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
+    clean_text,
 )
 
 REMEMBER = "wl_remember"
@@ -93,7 +94,11 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
         if name == REMEMBER:
             tier = str(args.get("tier") or PRIVATE).strip().lower()
             text = args.get("text", "")
-            hold = review.save_hold_reason(str(text or ""), outside_tool)
+            try:
+                screened = clean_text(text)        # screen exactly what would be saved
+            except StoreError as exc:
+                return _err(str(exc))
+            hold = review.save_hold_reason(screened, outside_tool)
             try:
                 m = store.add(text, tier, provenance(), status=PENDING if hold else "active",
                               pending_reason=hold or "")

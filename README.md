@@ -41,7 +41,7 @@ Type these in any Hermes chat:
 | `/memories show N` | Tier, status, who wrote it, with which tool, on which route, and its history. |
 | `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
 
-Private text is shown only in the terminal and the local apps. In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)".
+Private text is shown only in the terminal and the local apps. In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
 
 The same commands work from a terminal, plus `purge N`, which deletes a forgotten memory's text from the file for good (it is only there, not in chat):
 
@@ -135,6 +135,7 @@ Be clear about what whos-listening does not protect (yet):
 - **The guard runs more than once.** Hermes adds a memory plugin's middleware again each time it loads the plugin, so in a long-running gateway the guard runs several times per request. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
 - **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
+- **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.
 - **Outside content is noticed through tools.** Anything you paste or attach yourself counts as your own words, so a planted line in pasted text isn't held unless the rule screen catches it.
 - **The rule screen is a short list of patterns.** It catches common shapes of planted text and secrets, not all of them.
 

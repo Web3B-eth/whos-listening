@@ -285,3 +285,26 @@ def test_memories_command_through_hermes_dispatch(plugin, tmp_path, monkeypatch)
     out = invoke_plugin_command(plugin._memories_command, "add shared Likes jazz",
                                 source="cli", session_id="s", session_key="k", platform="cli")
     assert out.startswith("Saved")
+
+
+def test_outside_flag_follows_compression_and_branch(plugin, provider):
+    plugin._on_post_tool_call(tool_name="web_extract", session_id="sess-1")
+    provider.on_session_switch("sess-2", parent_session_id="sess-1", reset=False)
+    see(plugin, "http://127.0.0.1:9/v1", session="sess-2")
+    assert tool(provider, "wl_remember", {"text": "Prefers window seats"})["pending"]
+    provider.on_session_switch("sess-3", parent_session_id="sess-2", reset=True)   # /new: a clean start
+    see(plugin, "http://127.0.0.1:9/v1", session="sess-3")
+    assert tool(provider, "wl_remember", {"text": "Bakes bread"})["saved"]
+
+
+def test_outside_flag_is_stored_by_the_hook(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-9")
+    assert provider._store.outside_tool("sess-9") == "read_file"   # no wl_* call or turn end needed
+
+
+def test_tool_call_session_id_counts(plugin, provider):
+    plugin._on_post_tool_call(tool_name="read_file", session_id="other-id")
+    see(plugin, "http://127.0.0.1:9/v1")
+    out = json.loads(provider.handle_tool_call("wl_remember", {"text": "Likes jazz"}, session_id="other-id"))
+    assert out["pending"]

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import sys
 from pathlib import Path
 
@@ -59,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(purge(store, args.command[1]))
         else:
-            print(commands.run(store, shlex.join(args.command), show_private=True, via="cli"))
+            print(commands.run(store, " ".join(args.command), show_private=True, via="cli"))
     finally:
         store.close()
     return 0
