@@ -108,7 +108,9 @@ class RouteSettings:
             tier = str(tier).strip().lower()
             if tier in TIERS and str(key).strip():
                 routes[str(key).strip().lower()] = tier
-        hosts = lambda k: tuple(str(h).strip().lower() for h in (data.get(k) or []) if str(h).strip())
+        def hosts(key: str) -> tuple[str, ...]:
+            return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
+
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"))
 
     def to_dict(self) -> dict:

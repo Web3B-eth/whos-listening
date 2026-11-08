@@ -95,12 +95,12 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             m = store.get(memory_id)
             if m is None or m.status == FORGOTTEN:
                 return _err(f"No memory #{memory_id}.")
+            store.forget(memory_id)
+            note = "It won't be saved again from chat."
             if m.tier == PRIVATE and route_tier != PRIVATE:
                 # Don't confirm what a Private memory says on a Shared route; forgetting is still fine.
-                store.set_status(memory_id, FORGOTTEN)
-                return _ok(forgotten={"id": memory_id, "tier": PRIVATE})
-            store.set_status(memory_id, FORGOTTEN)
-            return _ok(forgotten=_public(m))
+                return _ok(forgotten={"id": memory_id, "tier": PRIVATE}, note=note)
+            return _ok(forgotten=_public(m), note=note)
 
         return _err(f"Unknown tool {name}.")
     except StoreError as exc:

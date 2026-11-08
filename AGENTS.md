@@ -7,7 +7,7 @@ Read before coding: [`README.md`](README.md), [`docs/spike.md`](docs/spike.md) (
 ## Non-negotiables
 
 - **This repo is public.** Use made-up data only, in tests, fixtures, docs and the demo. Never copy real memories, health details, Hermes memory files, hostnames, IP addresses, tokens or anything from another private project into it.
-- **Never use the real Hermes home.** Run Hermes for testing with a scratch `HERMES_HOME` (for example `.scratch/hermes-home/`, which is ignored), never `~/.hermes` and never a server. Do not run `hermes update` on the user's own install.
+- **Never use the real Hermes home.** Run Hermes for testing with a scratch `HERMES_HOME` (for example `.scratch/hermes-home/`, which is ignored), never `~/.hermes` and never a server. Do not run `hermes update` on the user's own install. Also set `HERMES_GATEWAY_LOCK_DIR` and `XDG_STATE_HOME` inside `.scratch/`: by default every Hermes install for this OS user shares one gateway lock folder (`~/.local/state/hermes/gateway-locks`). `e2e/run.py` does this for you.
 - **Use cheap models for AI testing.** Test turns, smoke tests, evals and the demo use GPT-6 Luna or GLM 5.3 Flash, on the Nous Portal or Venice, whichever is available. Use a pricier model only when the user asks for it for that task.
 - **Stop only what you started.** Kill processes by the PID you started, never by name or pattern.
 - **Never merge without the user's explicit OK** for that PR. A passing check, a label or an agent comment is not an OK.
@@ -27,7 +27,7 @@ Checks, once the code exists:
 python -m pytest
 ```
 
-plus `hermes plugins validate --install-deps` and `hermes plugins doctor --ci`, run with a scratch `HERMES_HOME` on a clean copy of the tracked files. The exact commands are in the README under **Development**.
+plus `python e2e/run.py` (real Hermes against a fake local model server), and `hermes plugins validate --install-deps` and `hermes plugins doctor --ci`, run with a scratch `HERMES_HOME` on a clean copy of the tracked files. The exact commands are in the README under **Development**.
 
 ## Where to record things
 

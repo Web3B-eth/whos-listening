@@ -1,0 +1,6 @@
+[
+  {"forgotten": "Likes jazz", "new": "Likes jazz", "blocked": true},
+  {"forgotten": "Likes jazz.", "new": "  likes   JAZZ ", "blocked": true},
+  {"forgotten": "Likes jazz", "new": "Likes jazz a lot", "blocked": false},
+  {"forgotten": "Likes jazz", "new": "Enjoys jazz", "blocked": false}
+]

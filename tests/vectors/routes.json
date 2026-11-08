@@ -1,0 +1,23 @@
+[
+  {"name": "venice api", "route": {"provider": "custom", "model": "glm-5.3-flash", "base_url": "https://api.venice.ai/api/v1"}, "tier": "private"},
+  {"name": "venice subdomain", "route": {"provider": "custom", "base_url": "https://x.venice.ai/v1"}, "tier": "private"},
+  {"name": "lookalike domain", "route": {"provider": "custom", "base_url": "https://notvenice.ai/v1"}, "tier": "shared"},
+  {"name": "venice as a path", "route": {"provider": "custom", "base_url": "https://proxy.example.com/venice.ai/v1"}, "tier": "shared"},
+  {"name": "localhost", "route": {"provider": "custom", "base_url": "http://localhost:11434/v1"}, "tier": "private"},
+  {"name": "loopback", "route": {"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, "tier": "private"},
+  {"name": "ipv6 loopback", "route": {"provider": "custom", "base_url": "http://[::1]:8080/v1"}, "tier": "private"},
+  {"name": "lan", "route": {"provider": "custom", "base_url": "http://192.168.1.20:8080/v1"}, "tier": "private"},
+  {"name": "dot local", "route": {"provider": "custom", "base_url": "http://studio.local:8080/v1"}, "tier": "private"},
+  {"name": "documentation range is not lan", "route": {"provider": "custom", "base_url": "http://203.0.113.5/v1"}, "tier": "shared"},
+  {"name": "nous portal", "route": {"provider": "nous", "model": "gpt-6-luna", "base_url": "https://inference-api.nousresearch.com/v1"}, "tier": "shared"},
+  {"name": "no base_url", "route": {"provider": "openrouter", "model": "x"}, "tier": "shared"},
+  {"name": "no route", "route": null, "tier": "shared"},
+  {"name": "model setting", "route": {"provider": "nous", "model": "gpt-6-luna", "base_url": "https://inference-api.nousresearch.com/v1"},
+   "settings": {"routes": {"nous/gpt-6-luna": "private"}}, "tier": "private"},
+  {"name": "any-provider model setting", "route": {"provider": "openrouter", "model": "glm-5.3-flash", "base_url": "https://openrouter.ai/api/v1"},
+   "settings": {"routes": {"*/glm-5.3-flash": "private"}}, "tier": "private"},
+  {"name": "shared host beats default", "route": {"provider": "custom", "base_url": "https://api.venice.ai/api/v1"},
+   "settings": {"shared_hosts": ["api.venice.ai"]}, "tier": "shared"},
+  {"name": "private host", "route": {"provider": "custom", "base_url": "https://models.example.org/v1"},
+   "settings": {"private_hosts": ["example.org"]}, "tier": "private"}
+]

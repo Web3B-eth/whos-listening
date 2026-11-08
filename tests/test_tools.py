@@ -48,3 +48,11 @@ def test_bad_input_returns_error_json(store):
     assert call(store, tools.REMEMBER, {"text": ""}, PRIVATE)["ok"] is False
     assert call(store, tools.REMEMBER, {"text": "x", "tier": "top-secret"}, PRIVATE)["ok"] is False
     assert call(store, "nope", {}, PRIVATE)["ok"] is False
+
+
+def test_forget_then_resave_is_blocked(store):
+    saved = call(store, "wl_remember", {"text": "Likes jazz", "tier": "shared"}, "private")["saved"]
+    out = call(store, "wl_forget", {"id": saved["id"]}, "private")
+    assert out["ok"] is True and "won't be saved again" in out["note"]
+    again = call(store, "wl_remember", {"text": "likes jazz", "tier": "shared"}, "private")
+    assert again["ok"] is False and "forgotten" in again["error"]

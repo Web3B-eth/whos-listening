@@ -13,3 +13,5 @@ provides_tools:
 provides_hooks:
   - pre_llm_call
   - pre_api_request
+provides_middleware:
+  - llm_request
