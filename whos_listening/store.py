@@ -221,11 +221,14 @@ class SQLiteStore(Store):
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
-            self._db.execute("PRAGMA journal_mode = WAL")
+            try:
+                self._db.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass  # another process is switching it at the same moment; one is enough
         self._fts = self._has_fts5()
         self._migrate()
 
