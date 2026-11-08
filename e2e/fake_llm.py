@@ -2,9 +2,9 @@
 
 - Logs every request to a JSON-lines file: path, model, number of messages and the full text.
   The checks only ever use made-up memories, so logging the text is fine here.
-- Answers with a fixed sentence, or, when the newest user message holds a line like
-  ``[[call wl_remember {"text": "Likes spicy food", "tier": "shared"}]]``, asks for that tool
-  call first and answers after the tool result comes back. That lets a check drive the
+- Answers with a fixed sentence, or, when the newest user message holds lines like
+  ``[[call wl_remember {"text": "Likes spicy food", "tier": "shared"}]]``, asks for those tool
+  calls in order, one per step, and answers after the last result comes back. That lets a check drive the
   memory tools without a real model.
 
 Usage: python fake_llm.py PORT LOGFILE
@@ -32,15 +32,20 @@ def _text(content) -> str:
 
 
 def plan_reply(messages: list) -> dict:
-    """What the fake model says next: a tool call or plain text."""
-    last = messages[-1] if messages else {}
-    if last.get("role") == "tool":
-        return {"text": "Done. " + _text(last.get("content"))[:200]}
-    users = [m for m in messages if m.get("role") == "user"]
-    calls = CALL_RE.findall(_text(users[-1].get("content"))) if users else []
-    if calls:
-        name, args = calls[0]
+    """What the fake model says next: the next scripted tool call, or plain text.
+
+    The newest user message may script several ``[[call ...]]`` lines; they run in order, one
+    per step, counting the tool results that came back since that message."""
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    if last_user < 0:
+        return {"text": ANSWER}
+    calls = CALL_RE.findall(_text(messages[last_user].get("content")))
+    done = sum(1 for m in messages[last_user + 1:] if m.get("role") == "tool")
+    if done < len(calls):
+        name, args = calls[done]
         return {"tool": name, "args": args}
+    if done:
+        return {"text": "Done. " + _text(messages[-1].get("content"))[:300]}
     return {"text": ANSWER}
 
 

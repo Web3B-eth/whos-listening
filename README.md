@@ -4,7 +4,7 @@ A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
 Every memory is **Private** or **Shared**. Private memories only reach models you trust (by default Venice and models on your own machine or network). When a chat moves to any other model, Private memories are left out of the request.
 
-**Work in progress for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request. The review queue (pending memories, Undo) and the `/memories` commands are still being built, so it is not ready for everyday use yet. See [Limits](#limits).
+**Work in progress for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Auto-review is still being built. See [Limits](#limits).
 
 ## How it works
 
@@ -19,8 +19,35 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
   - `wl_forget`: forget a memory by number.
   Only the main chat can save or forget; subagents and scheduled jobs can only read.
 - **The guard.** Just before each main chat request leaves, whos-listening checks that request's real route. On a Shared route it removes every tagged Private memory from every part of the request: the system prompt, earlier turns Hermes replays from history, and tool results. If that clean-up fails, it removes all memories. If even that fails, it sends a short notice instead of the conversation. It never lets an error send the request unchecked.
+- **You stay in charge of what's saved.** Two checks run on every save the assistant makes:
+  - **The rule screen** holds anything with a link, an email address, a long number, an instruction to assistants ("always recommend…"), or a password or key.
+  - **Outside content.** Once a chat has read anything from outside (a web page, a file, a terminal, any tool but whos-listening's own), text in it could be steering the assistant. From then on, its saves in that chat wait for you, and so do its forgets.
+
+  A waiting memory is never added to a request. See `/memories pending`.
 - **Forget means forget.** When a memory is forgotten, whos-listening keeps a tombstone: a hash of its words, not the words. The same fact (ignoring case, spacing and punctuation) can't be saved again from chat. The forgotten text stays in the local file so a forget can be undone, until it is purged.
 - **Provenance.** Every memory records who wrote it, with which tool, on which route (and that route's tier), and in which session and turn.
+
+### `/memories`
+
+Type these in any Hermes chat:
+
+| Command | What it does |
+| --- | --- |
+| `/memories` | List what is remembered. |
+| `/memories pending` | Saves and forgets waiting for you, and why each waits. |
+| `/memories approve N` / `reject N` | Let a waiting save or forget apply, or turn it down. A turned-down save can't be saved again from chat. |
+| `/memories undo` | Undo the last change (a save, forget, approval, …). |
+| `/memories forget N` / `restore N` | Forget a memory, or undo a forget. |
+| `/memories show N` | Tier, status, who wrote it, with which tool, on which route, and its history. |
+| `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
+
+Private text is shown only in the terminal and the local apps. In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
+
+The same commands work from a terminal, plus `purge N`, which deletes a forgotten memory's text from the file for good (it is only there, not in chat):
+
+```bash
+cd "$HERMES_HOME/plugins/whos-listening" && python -m whos_listening.cli pending
+```
 
 ### Which route is a turn on?
 
@@ -62,7 +89,7 @@ python -m pytest
 
 Run Hermes for testing with a scratch `HERMES_HOME`, never your real one. See [`AGENTS.md`](AGENTS.md).
 
-End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in a fresh scratch home under `.scratch/`, with made-up memories. They cover recall on a Private and a Shared route, a chat that switches from a Private to a Shared route (the guard must strip the replayed Private memory), and forget plus a blocked re-save. They take about a minute:
+End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in a fresh scratch home under `.scratch/`, with made-up memories. The fake model makes scripted tool calls. The checks cover recall on a Private and a Shared route, a chat that switches from a Private to a Shared route (the guard must strip the replayed Private memory), forget plus a blocked re-save, a planted "remember…" line in a file (the save must wait), the rule screen, `/memories pending` in a chat, and approving from the CLI. They take about two minutes:
 
 ```bash
 .local/venv-023/bin/python e2e/run.py
@@ -71,7 +98,7 @@ End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in
 Two runs show the checks have teeth:
 
 - `--control` keeps the guard but switches off its clean-up. The route-switch checks should fail: the Private memory reaches the Shared model through the replayed turn.
-- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the "carries the Private memory" and "guard left a marker" checks fail and the leak checks pass.
+- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the checks that expect a Private memory in a request (and the "guard left a marker" check) fail, and the leak checks pass.
 
 Add `--hermes PATH` to use another Hermes build.
 
@@ -107,6 +134,9 @@ Be clear about what whos-listening does not protect (yet):
 - **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
 - **The guard runs more than once.** Hermes adds a memory plugin's middleware again each time it loads the plugin, so in a long-running gateway the guard runs several times per request. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
 - **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
-- **Forgotten text stays on disk** in `memories.sqlite` until it is purged, so a forget can be undone. There is no purge command yet.
+- **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
+- **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.
+- **Outside content is noticed through tools.** Anything you paste or attach yourself counts as your own words, so a planted line in pasted text isn't held unless the rule screen catches it.
+- **The rule screen is a short list of patterns.** It catches common shapes of planted text and secrets, not all of them.
 
 License: MIT.

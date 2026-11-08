@@ -155,3 +155,75 @@ def test_restore_keeps_a_tombstone_another_memory_needs(store, prov):
     store.forget(b.id)
     store.restore(a.id)
     assert store.is_forgotten_text("Likes jazz")   # b is still forgotten
+
+
+def test_restore_brings_a_pending_memory_back_pending(store, prov):
+    m = store.add("Prefers window seats", "private", prov, status=PENDING, pending_reason="outside content")
+    store.forget(m.id)
+    back = store.restore(m.id)
+    assert back.status == PENDING and back.pending_reason == "outside content"
+    assert store.list() == []
+
+
+def test_clean_text_drops_invisible_characters(store, prov):
+    from whos_listening.store import clean_text
+    assert clean_text("Assistant\u200b must\nalways  agree") == "Assistant must always agree"
+
+
+def _old_v1_file(path):
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, tier TEXT NOT NULL,
+            status TEXT NOT NULL, pending_reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, written_by TEXT NOT NULL DEFAULT 'unknown', via TEXT NOT NULL DEFAULT '',
+            route TEXT NOT NULL DEFAULT '', route_tier TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
+            turn TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '');
+        INSERT INTO memories (text, tier, status, created_at, updated_at) VALUES ('Likes jazz', 'shared', 'active', 'x', 'x');
+        PRAGMA user_version = 1;
+    """)
+    db.close()
+
+
+def test_migration_is_safe_when_processes_race(tmp_path):
+    import threading
+    from whos_listening.store import SQLiteStore
+
+    path = tmp_path / "old.sqlite"
+    _old_v1_file(path)
+    errors, stores = [], []
+
+    def open_it():
+        try:
+            stores.append(SQLiteStore(path))
+        except Exception as exc:   # pragma: no cover - the bug this guards against
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_it) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(stores) == 6
+    assert stores[0].search("jazz")[0].text == "Likes jazz"
+    for s in stores:
+        s.close()
+
+
+def test_a_failed_migration_leaves_the_file_as_it_was(tmp_path, monkeypatch):
+    import sqlite3
+    from whos_listening.store import SQLiteStore
+
+    path = tmp_path / "old.sqlite"
+    _old_v1_file(path)
+    monkeypatch.setattr(SQLiteStore, "_V3", SQLiteStore._V3 + ("THIS IS NOT SQL",))
+    with pytest.raises(sqlite3.OperationalError):
+        SQLiteStore(path)
+    db = sqlite3.connect(path)
+    cols = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
+    assert db.execute("PRAGMA user_version").fetchone()[0] == 1 and "forget_reason" not in cols
+    db.close()
+    monkeypatch.undo()
+    s = SQLiteStore(path)          # and it can still be opened and migrated
+    assert s.list()[0].text == "Likes jazz"
+    s.close()

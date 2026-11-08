@@ -27,7 +27,7 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def now_iso() -> str:
@@ -56,7 +56,28 @@ class Memory:
     created_at: str
     updated_at: str
     provenance: Provenance = field(default_factory=Provenance)
-    pending_reason: str = ""
+    pending_reason: str = ""       # why a pending memory waits for the user
+    forget_reason: str = ""        # set when the assistant asked to forget it and the user must OK it
+    forgotten_from: str = ""       # the status it had before it was forgotten
+
+
+@dataclass(frozen=True)
+class Event:
+    """One change to a memory, for ``/memories undo`` and the history in ``show``."""
+
+    id: int
+    memory_id: int
+    action: str        # see EVENT_ACTIONS
+    actor: str         # "assistant" or "user"
+    at: str
+    undone: bool = False
+
+
+# saved: became active. held: saved as pending. forgot: forgotten. forget_requested: the
+# assistant asked to forget and it waits for the user. approved / rejected: the user decided a
+# pending save or a forget request. restored: a forget was undone. undo: an undo (not undoable).
+EVENT_ACTIONS = ("saved", "held", "forgot", "forget_requested", "approved", "approved_forget",
+                 "rejected", "rejected_forget", "restored", "undo")
 
 
 class StoreError(ValueError):
@@ -74,7 +95,10 @@ class ForgottenError(StoreError):
 
 
 def clean_text(text: str) -> str:
-    text = " ".join(str(text or "").split())
+    """One line of visible text: whitespace collapsed, invisible format characters (zero-width
+    spaces and the like) removed, so what is screened is what is saved."""
+    text = "".join(ch for ch in str(text or "") if unicodedata.category(ch) != "Cf")
+    text = " ".join(text.split())
     if not text:
         raise StoreError("A memory needs some text.")
     if len(text) > MAX_TEXT:
@@ -148,6 +172,34 @@ class Store(ABC):
     def is_forgotten_text(self, text: str) -> bool: ...
 
     @abstractmethod
+    def request_forget(self, memory_id: int, reason: str) -> Memory:
+        """The assistant asked to forget a memory; it stays active until the user decides."""
+
+    @abstractmethod
+    def clear_forget_request(self, memory_id: int) -> Memory: ...
+
+    @abstractmethod
+    def forget_requests(self) -> list[Memory]: ...
+
+    @abstractmethod
+    def log_event(self, memory_id: int, action: str, actor: str) -> Event: ...
+
+    @abstractmethod
+    def events(self, *, memory_id: Optional[int] = None, limit: int = 20) -> list[Event]:
+        """Newest first."""
+
+    @abstractmethod
+    def mark_undone(self, event_id: int) -> None: ...
+
+    @abstractmethod
+    def mark_outside(self, session_id: str, tool: str) -> None:
+        """Remember that a chat read outside content (the first tool that brought it in)."""
+
+    @abstractmethod
+    def outside_tool(self, session_id: str) -> str:
+        """The tool that first brought outside content into this chat, or ``""``."""
+
+    @abstractmethod
     def close(self) -> None: ...
 
 
@@ -169,11 +221,14 @@ class SQLiteStore(Store):
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
-            self._db.execute("PRAGMA journal_mode = WAL")
+            try:
+                self._db.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass  # another process is switching it at the same moment; one is enough
         self._fts = self._has_fts5()
         self._migrate()
 
@@ -187,66 +242,121 @@ class SQLiteStore(Store):
         except sqlite3.OperationalError:
             return False
 
+    _V1 = (
+        """CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY,
+            text TEXT NOT NULL,
+            tier TEXT NOT NULL CHECK (tier IN ('private', 'shared')),
+            status TEXT NOT NULL CHECK (status IN ('active', 'pending', 'forgotten')),
+            pending_reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            written_by TEXT NOT NULL DEFAULT 'unknown',
+            via TEXT NOT NULL DEFAULT '',
+            route TEXT NOT NULL DEFAULT '',
+            route_tier TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '',
+            turn TEXT NOT NULL DEFAULT '',
+            author TEXT NOT NULL DEFAULT ''
+        )""",
+        "CREATE INDEX IF NOT EXISTS memories_status_tier ON memories (status, tier)",
+    )
+    _V1_FTS = (
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, content='memories', content_rowid='id')",
+        """CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+        END""",
+        """CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        END""",
+        """CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF text ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+            INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+        END""",
+    )
+    # Tombstones keep a hash of a forgotten memory's words, never its text.
+    _V2 = (
+        """CREATE TABLE IF NOT EXISTS tombstones (
+            fingerprint TEXT PRIMARY KEY,
+            memory_id INTEGER,
+            tier TEXT NOT NULL DEFAULT 'private',
+            created_at TEXT NOT NULL
+        )""",
+    )
+    _V3 = (
+        """CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY,
+            memory_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            at TEXT NOT NULL,
+            undone INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS events_memory ON events (memory_id)",
+        """CREATE TABLE IF NOT EXISTS outside_content (
+            session_id TEXT PRIMARY KEY,
+            tool TEXT NOT NULL,
+            at TEXT NOT NULL
+        )""",
+    )
+    # Columns added in version 3: (name, definition).
+    _V3_COLUMNS = (
+        ("forget_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("forgotten_from", "TEXT NOT NULL DEFAULT ''"),   # the status before a forget, for restore
+    )
+
+    def _version(self) -> int:
+        return self._db.execute("PRAGMA user_version").fetchone()[0]
+
+    def _has_column(self, table: str, column: str) -> bool:
+        return any(r[1] == column for r in self._db.execute(f"PRAGMA table_info({table})").fetchall())
+
     def _migrate(self) -> None:
-        with self._lock, self._db:
-            version = self._db.execute("PRAGMA user_version").fetchone()[0]
+        """Bring the file up to SCHEMA_VERSION in one ``BEGIN IMMEDIATE`` transaction, so two
+        processes opening an old file at once can't both migrate it, and a migration that stops
+        halfway leaves the file as it was."""
+        with self._lock:
+            version = self._version()
             if version > SCHEMA_VERSION:
                 raise StoreError(f"{self.path} was made by a newer whos-listening (schema {version}).")
-            if version < 1:
-                self._db.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS memories (
-                        id INTEGER PRIMARY KEY,
-                        text TEXT NOT NULL,
-                        tier TEXT NOT NULL CHECK (tier IN ('private', 'shared')),
-                        status TEXT NOT NULL CHECK (status IN ('active', 'pending', 'forgotten')),
-                        pending_reason TEXT NOT NULL DEFAULT '',
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        written_by TEXT NOT NULL DEFAULT 'unknown',
-                        via TEXT NOT NULL DEFAULT '',
-                        route TEXT NOT NULL DEFAULT '',
-                        route_tier TEXT NOT NULL DEFAULT '',
-                        session_id TEXT NOT NULL DEFAULT '',
-                        turn TEXT NOT NULL DEFAULT '',
-                        author TEXT NOT NULL DEFAULT ''
-                    );
-                    CREATE INDEX IF NOT EXISTS memories_status_tier ON memories (status, tier);
-                    """
-                )
-                if self._fts:
-                    self._db.executescript(
-                        """
-                        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-                            USING fts5(text, content='memories', content_rowid='id');
-                        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                            INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
-                        END;
-                        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                            INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
-                        END;
-                        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF text ON memories BEGIN
-                            INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
-                            INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
-                        END;
-                        """
-                    )
-            if version < 2:
-                # Tombstones keep a hash of a forgotten memory's words, never its text.
-                self._db.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS tombstones (
-                        fingerprint TEXT PRIMARY KEY,
-                        memory_id INTEGER,
-                        tier TEXT NOT NULL DEFAULT 'private',
-                        created_at TEXT NOT NULL
-                    );
-                    """
-                )
-                for row in self._db.execute(
-                        "SELECT id, text, tier FROM memories WHERE status = 'forgotten'").fetchall():
-                    self._tombstone(row["text"], row["id"], row["tier"])
-            self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            if version == SCHEMA_VERSION:
+                return
+            old_isolation = self._db.isolation_level
+            self._db.isolation_level = None          # we manage the transaction ourselves
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._migrate_locked(self._version())   # re-read: another process may have won
+                    self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    self._db.execute("COMMIT")
+                except BaseException:
+                    self._db.execute("ROLLBACK")
+                    raise
+            finally:
+                self._db.isolation_level = old_isolation
+
+    def _migrate_locked(self, version: int) -> None:
+        if version < 1:
+            for sql in self._V1 + (self._V1_FTS if self._fts else ()):
+                self._db.execute(sql)
+        if version < 2:
+            for sql in self._V2:
+                self._db.execute(sql)
+            for row in self._db.execute(
+                    "SELECT id, text, tier FROM memories WHERE status = 'forgotten'").fetchall():
+                self._tombstone(row["text"], row["id"], row["tier"])
+        if version < 3:
+            for name, definition in self._V3_COLUMNS:
+                if not self._has_column("memories", name):
+                    self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {definition}")
+            for sql in self._V3:
+                self._db.execute(sql)
+        if self._fts and not self._db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'memories_fts'").fetchone():
+            # A file made where FTS5 was missing, or damaged: build the search index now.
+            for sql in self._V1_FTS:
+                self._db.execute(sql)
+            self._db.execute("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')")
 
     # -- helpers -----------------------------------------------------------
 
@@ -255,7 +365,8 @@ class SQLiteStore(Store):
         return Memory(
             id=row["id"], text=row["text"], tier=row["tier"], status=row["status"],
             created_at=row["created_at"], updated_at=row["updated_at"],
-            pending_reason=row["pending_reason"],
+            pending_reason=row["pending_reason"], forget_reason=row["forget_reason"],
+            forgotten_from=row["forgotten_from"],
             provenance=Provenance(
                 written_by=row["written_by"], via=row["via"], route=row["route"],
                 route_tier=row["route_tier"], session_id=row["session_id"], turn=row["turn"],
@@ -363,8 +474,10 @@ class SQLiteStore(Store):
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            self._db.execute("UPDATE memories SET status = 'forgotten', pending_reason = '', "
-                             "updated_at = ? WHERE id = ?", (now_iso(), m.id))
+            if m.status == FORGOTTEN:
+                return m
+            self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, "
+                             "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, now_iso(), m.id))
             self._tombstone(m.text, m.id, m.tier)
             return self.get(m.id)
 
@@ -390,8 +503,10 @@ class SQLiteStore(Store):
             if not any(fingerprint(r["text"]) == fp for r in others):
                 # Keep the tombstone if another forgotten memory has the same words.
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
-            self._db.execute("UPDATE memories SET status = 'active', updated_at = ? WHERE id = ?",
-                             (now_iso(), m.id))
+            # Back to what it was: a forgotten pending memory comes back pending, never active.
+            back = PENDING if m.forgotten_from == PENDING else ACTIVE
+            self._db.execute("UPDATE memories SET status = ?, forgotten_from = '', updated_at = ? WHERE id = ?",
+                             (back, now_iso(), m.id))
             return self.get(m.id)
 
     def purge(self, memory_id):
@@ -402,12 +517,72 @@ class SQLiteStore(Store):
             if m.status != FORGOTTEN:
                 raise StoreError(f"Forget memory #{m.id} before purging it.")
             self._db.execute("UPDATE tombstones SET memory_id = NULL WHERE memory_id = ?", (m.id,))
+            self._db.execute("UPDATE events SET undone = 1 WHERE memory_id = ?", (m.id,))   # nothing to undo
             self._db.execute("DELETE FROM memories WHERE id = ?", (m.id,))
 
     def is_forgotten_text(self, text):
         with self._lock:
             return self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?",
                                     (fingerprint(text),)).fetchone() is not None
+
+    def request_forget(self, memory_id, reason):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if m is None or m.status == FORGOTTEN:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._db.execute("UPDATE memories SET forget_reason = ?, updated_at = ? WHERE id = ?",
+                             (str(reason or "Waiting for you.").strip()[:300], now_iso(), m.id))
+            return self.get(m.id)
+
+    def clear_forget_request(self, memory_id):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if m is None:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._db.execute("UPDATE memories SET forget_reason = '' WHERE id = ?", (m.id,))
+            return self.get(m.id)
+
+    def forget_requests(self):
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM memories WHERE forget_reason != '' AND status != 'forgotten' "
+                                    "ORDER BY updated_at DESC, id DESC").fetchall()
+        return [self._row(r) for r in rows]
+
+    def log_event(self, memory_id, action, actor):
+        if action not in EVENT_ACTIONS:
+            raise StoreError(f"Unknown event {action!r}.")
+        stamp = now_iso()
+        with self._lock, self._db:
+            cur = self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                   (int(memory_id), action, str(actor or "user"), stamp))
+            return Event(cur.lastrowid, int(memory_id), action, str(actor or "user"), stamp)
+
+    def events(self, *, memory_id=None, limit=20):
+        sql, args = "SELECT * FROM events", []
+        if memory_id is not None:
+            sql, args = sql + " WHERE memory_id = ?", [int(memory_id)]
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, int(limit))).fetchall()
+        return [Event(r["id"], r["memory_id"], r["action"], r["actor"], r["at"], bool(r["undone"])) for r in rows]
+
+    def mark_undone(self, event_id):
+        with self._lock, self._db:
+            self._db.execute("UPDATE events SET undone = 1 WHERE id = ?", (int(event_id),))
+
+    def mark_outside(self, session_id, tool):
+        if not session_id:
+            return
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO outside_content (session_id, tool, at) VALUES (?,?,?)",
+                             (str(session_id), str(tool or "a tool"), now_iso()))
+
+    def outside_tool(self, session_id):
+        if not session_id:
+            return ""
+        with self._lock:
+            row = self._db.execute("SELECT tool FROM outside_content WHERE session_id = ?",
+                                   (str(session_id),)).fetchone()
+        return row["tool"] if row else ""
 
     def close(self):
         with self._lock:

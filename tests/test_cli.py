@@ -1,0 +1,29 @@
+"""The command line. All data is made up."""
+
+from whos_listening import cli
+from whos_listening.store import Provenance, SQLiteStore
+
+
+def test_cli_runs_commands_and_purges(tmp_path, capsys):
+    store = SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite")
+    m = store.add("Has a peanut allergy", "private", Provenance())
+    store.close()
+    assert cli.main(["--home", str(tmp_path)]) == 0
+    assert "peanut" in capsys.readouterr().out          # the owner sees Private text
+    assert cli.main(["--home", str(tmp_path), "purge", str(m.id)]) == 0
+    assert "Forget memory" in capsys.readouterr().out   # forget first
+    cli.main(["--home", str(tmp_path), "forget", str(m.id)])
+    cli.main(["--home", str(tmp_path), "purge", str(m.id)])
+    assert "Purged" in capsys.readouterr().out
+    cli.main(["--home", str(tmp_path), "add", "shared", "Likes jazz, a lot"])
+    assert "Likes jazz, a lot" in capsys.readouterr().out
+
+
+def test_cli_without_memories(tmp_path, capsys):
+    assert cli.main(["--home", str(tmp_path)]) == 1
+    assert "No whos-listening memories" in capsys.readouterr().err
+
+
+def test_default_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert cli.default_home() == tmp_path

@@ -8,10 +8,14 @@ back tagged so the guard can find them later.
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
+from . import review
 from .recall import allowed_tiers, format_line
-from .store import FORGOTTEN, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError
+from .store import (
+    FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
+    clean_text,
+)
 
 REMEMBER = "wl_remember"
 RECALL = "wl_recall"
@@ -64,31 +68,51 @@ def _public(m: Memory) -> dict:
     return {"id": m.id, "tier": m.tier, "line": format_line(m)}
 
 
-def _shared_route_saved(tier: str) -> str:
+def _held_note(reason: str, memory_id: Optional[int]) -> str:
+    how = f"/memories approve {memory_id}" if memory_id else "/memories pending"
+    return f"Not saved yet: {reason} The user can approve it with {how}."
+
+
+def _shared_route_saved(tier: str, hold: Optional[str]) -> str:
     """What a save looks like on a Shared route: no number and no text, so a Shared model
     can't tell a real save from one a tombstone turned away."""
+    if hold:
+        return _ok(pending={"tier": tier}, note=_held_note(hold, None))
     note = ("Saved as private. This chat's route is shared, so it won't be shown here."
             if tier == PRIVATE else "Saved.")
     return _ok(saved={"tier": tier}, note=note)
 
 
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
-           provenance: Callable[[], Provenance]) -> str:
-    """Run one tool call. Always returns a JSON string; never raises."""
+           provenance: Callable[[], Provenance], outside_tool: str = "") -> str:
+    """Run one tool call. Always returns a JSON string; never raises.
+
+    ``outside_tool`` names the tool that first brought outside content into this chat ("" if
+    none): from then on saves and forgets wait for the user (see review.py)."""
     args = args if isinstance(args, dict) else {}
     try:
         if name == REMEMBER:
             tier = str(args.get("tier") or PRIVATE).strip().lower()
+            text = args.get("text", "")
             try:
-                m = store.add(args.get("text", ""), tier, provenance())
+                screened = clean_text(text)        # screen exactly what would be saved
+            except StoreError as exc:
+                return _err(str(exc))
+            hold = review.save_hold_reason(screened, outside_tool)
+            try:
+                m = store.add(text, tier, provenance(), status=PENDING if hold else "active",
+                              pending_reason=hold or "")
             except ForgottenError as exc:
                 if route_tier == PRIVATE or exc.tier == SHARED:
                     raise
                 # On a Shared route, don't confirm that a Private fact was once saved and
                 # forgotten: answer exactly like a save (nothing is saved).
-                return _shared_route_saved(tier)
+                return _shared_route_saved(tier, hold)
+            store.log_event(m.id, "held" if hold else "saved", "assistant")
             if route_tier != PRIVATE:
-                return _shared_route_saved(m.tier)
+                return _shared_route_saved(m.tier, hold)
+            if hold:
+                return _ok(pending=_public(m), note=_held_note(hold, m.id))
             return _ok(saved=_public(m), note="")
 
         if name == RECALL:
@@ -108,7 +132,14 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             m = store.get(memory_id)
             if m is None or m.status == FORGOTTEN:
                 return _err(f"No memory #{memory_id}.")
+            hold = review.forget_hold_reason(outside_tool)
+            if hold and m.status != PENDING:
+                store.request_forget(memory_id, hold)
+                store.log_event(memory_id, "forget_requested", "assistant")
+                return _ok(forget_requested={"id": memory_id},
+                           note=f"Not forgotten yet: {hold} The user can approve it with /memories approve {memory_id}.")
             store.forget(memory_id)
+            store.log_event(memory_id, "forgot", "assistant")
             note = "It won't be saved again from chat."
             if m.tier == PRIVATE and route_tier != PRIVATE:
                 # Don't confirm what a Private memory says on a Shared route; forgetting is still fine.
