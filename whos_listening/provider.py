@@ -6,6 +6,7 @@ The only module in this package that imports Hermes.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,9 +14,9 @@ from agent.memory_provider import MemoryProvider
 
 from . import autoreview, commands, guard, recall, review, tools
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, side_call_routes_private,
 )
-from .store import ACTIVE, PENDING, SHARED, Memory, Provenance, SQLiteStore
+from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,23 @@ ROUTES = RouteBook()
 OUTSIDE = review.OutsideBook()
 
 
-def _config_default_route() -> Optional[Route]:
+def _config() -> Any:
+    """config.yaml, read-only. We use only route fields (model, providers' base_url, fallbacks),
+    never keys."""
     try:
         from hermes_cli.config import load_config_readonly
-        return default_route_from_config(load_config_readonly())
+        return load_config_readonly()
     except Exception as exc:
-        logger.debug("whos-listening: could not read the default route: %s", exc)
+        logger.debug("whos-listening: could not read config.yaml: %s", exc)
         return None
+
+
+def _config_default_route() -> Optional[Route]:
+    return default_route_from_config(_config())
+
+
+# "[Replying to Sam: "..."]": text the gateway quotes from someone else's message.
+_QUOTE_RE = re.compile(r'\[Replying to [^\]]*?(?:"\]|\])', re.DOTALL)
 
 
 def _active_home() -> Optional[Path]:
@@ -71,7 +82,8 @@ class WhosListeningProvider(MemoryProvider):
         self._agent_context = "primary"
         self._turn = ""
         self._author = ""
-        self._user_messages: list[str] = []   # the user's newest messages, for Auto-review
+        self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
+        self._checks_this_turn = 0
 
     @property
     def name(self) -> str:
@@ -97,6 +109,8 @@ class WhosListeningProvider(MemoryProvider):
         old = self._session_id
         self._session_id = new_session_id or self._session_id
         parent = str(kwargs.get("parent_session_id") or old or "")
+        if kwargs.get("reset"):
+            self._user_messages = []      # a new chat: the old chat's words don't count
         if kwargs.get("reset") or not new_session_id or parent == new_session_id:
             return
         # Compression, /branch and /resume keep the transcript (and any outside content in it)
@@ -113,8 +127,19 @@ class WhosListeningProvider(MemoryProvider):
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._turn = str(turn_number)
         self._author = str(kwargs.get("author_name") or "")
-        if isinstance(message, str) and message.strip():
-            self._user_messages = (self._user_messages + [message])[-autoreview.USER_MESSAGE_COUNT:]
+        self._checks_this_turn = 0
+        if kwargs.get("author_is_bot") or not isinstance(message, str):
+            return
+        text = _QUOTE_RE.sub("", message).strip()     # someone else's quoted words don't count
+        if text:
+            author = str(kwargs.get("author_id") or "")
+            self._user_messages = (self._user_messages + [(author, text)])[-10:]
+
+    def _own_words(self) -> list[str]:
+        """The newest messages from the current turn's author (other people in a group chat,
+        and bots, don't count as the user's own words)."""
+        author = self._user_messages[-1][0] if self._user_messages else ""
+        return [t for a, t in self._user_messages if a == author][-autoreview.USER_MESSAGE_COUNT:]
 
     # -- routes ------------------------------------------------------------
 
@@ -172,17 +197,44 @@ class WhosListeningProvider(MemoryProvider):
         except Exception:
             return "ask"
 
+    def _auto_review_blocker(self, memory: Memory) -> tuple[str, Optional[Route]]:
+        """Why Auto-review may not run for this memory ("" if it may), and the chat's route.
+
+        The check is a side call, which skips the guard, and Hermes may retry it on a fallback
+        provider. So on a Private route every fallback must be Private too, and on a Shared
+        route only a Shared memory may be checked."""
+        route, verdict = self._route()
+        if route is None:
+            return "the chat's route isn't known yet", None
+        if verdict.tier == PRIVATE:
+            side = side_call_routes_private(_config(), _settings_or_none(self._dir))
+            if side.tier != PRIVATE:
+                return side.reason, route
+        elif memory.tier == PRIVATE:
+            return "this chat's route is shared, and the memory is private", route
+        if self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            return f"it checks at most {autoreview.CHECKS_PER_TURN} saves a turn", route
+        return "", route
+
     def _start_auto_review(self, memory: Memory) -> bool:
-        """Check a held save in the background, on the chat's own model. Returns True if started."""
+        """Check a held save in the background, on the chat's own model. Returns True if started;
+        otherwise, in Auto-review mode, the memory's reason says why it didn't run."""
         if self._review_mode() != "auto" or self._store is None:
+            return False
+        blocker, route = self._auto_review_blocker(memory)
+        if blocker:
+            self._store.set_status(memory.id, PENDING,
+                                   pending_reason=f"{memory.pending_reason} Auto-review didn't run: {blocker}.")
             return False
         try:
             from agent.memory_provider import spawn_context_thread
         except Exception:
             return False
-        store, messages = self._store, list(self._user_messages)
+        self._checks_this_turn += 1
+        since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
-                             args=(store, memory.id, memory.text, messages)).start()
+                             args=(self._store, memory.id, memory.text, self._own_words(), since,
+                                   route.model if route else "")).start()
         return True
 
     # -- outside content ---------------------------------------------------
@@ -218,32 +270,37 @@ def _on_pre_llm_call(**kwargs: Any) -> None:
 AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keeps waiting
 
 
-def _ask_chat_model(prompt: str) -> str:
+def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
+    try:
+        return RouteSettings.load(Path(data_dir) / SETTINGS_FILE) if data_dir else None
+    except Exception:
+        return None
+
+
+def _ask_chat_model(prompt: str, expected_model: str = "") -> str:
     """One request on the chat's own model, through Hermes' PluginLlm (built directly: memory
-    providers don't get ``ctx.llm``; see docs/spike.md)."""
+    providers don't get ``ctx.llm``; see docs/spike.md). If Hermes answered from another model
+    (its fallback), the answer doesn't count."""
     from agent.plugin_llm import PluginLlm
 
     result = PluginLlm(plugin_id=PROVIDER_NAME).complete(
         messages=[{"role": "user", "content": prompt}], max_tokens=120, temperature=0,
         timeout=AUTO_REVIEW_TIMEOUT, purpose="whos-listening auto-review")
+    if expected_model and str(result.model or "") != expected_model:
+        raise RuntimeError("the check ran on a different model")
     return result.text
 
 
 def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: list[str],
-                 ask: Any = None) -> None:
-    """Run in a background thread. Applies the verdict only if the memory is still pending."""
-    verdict = autoreview.check(text, user_messages, ask or _ask_chat_model)
+                 since_event: int, expected_model: str = "", ask: Any = None) -> None:
+    """Run in a background thread. The verdict applies only if nothing happened to the memory
+    since the check started (the user's decision always wins)."""
+    asker = ask or (lambda prompt: _ask_chat_model(prompt, expected_model))
+    verdict = autoreview.check(text, user_messages, asker)
     try:
-        m = store.get(memory_id)
-        if m is None or m.status != PENDING:
-            return  # the user decided meanwhile
-        if verdict.save:
-            store.set_status(memory_id, ACTIVE)
-            store.log_event(memory_id, "approved", "auto-review")
-        else:
-            store.set_status(memory_id, PENDING, pending_reason=f"{m.pending_reason} Auto-review: {verdict.reason}")
+        store.apply_review(memory_id, since_event, verdict.save, verdict.reason)
     except Exception as exc:
-        logger.debug("whos-listening: could not apply the auto-review verdict: %s", exc)
+        logger.warning("whos-listening: could not apply the auto-review verdict: %s", type(exc).__name__)
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:

@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
 USER_MESSAGE_COUNT = 3
 USER_MESSAGE_MAX_CHARS = 4000
-MARKERS = re.compile(r"<</?(?:memory|user-messages)>>", re.I)
+CHECKS_PER_TURN = 3     # a planted page can't make the assistant run (and bill) many checks
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,10 @@ class Verdict:
 
 
 def _clean(text: str) -> str:
-    return MARKERS.sub("", str(text or "")).strip()
+    """Data for the prompt: invisible format characters removed, and every ``<<`` / ``>>``
+    escaped, so nothing inside can open or close one of our markers."""
+    text = "".join(ch for ch in str(text or "") if unicodedata.category(ch) != "Cf")
+    return text.replace("<<", "‹‹").replace(">>", "››").strip()
 
 
 def build_prompt(text: str, user_messages: Iterable[str]) -> str:

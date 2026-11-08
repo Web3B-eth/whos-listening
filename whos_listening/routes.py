@@ -205,6 +205,43 @@ def default_route_from_config(config: Any) -> Optional[Route]:
     return Route(provider=provider, model=model, base_url=base_url)
 
 
+def _fallback_entries(config: Mapping) -> list[Mapping]:
+    out = []
+    for key in ("fallback_providers", "fallback_model"):
+        raw = config.get(key)
+        for entry in ([raw] if isinstance(raw, Mapping) else raw if isinstance(raw, list) else []):
+            if isinstance(entry, Mapping) and str(entry.get("provider") or "").strip():
+                out.append(entry)
+    return out
+
+
+def side_call_routes_private(config: Any, settings: Optional[RouteSettings] = None) -> Verdict:
+    """Whether every route a Hermes side call could end up on is Private.
+
+    A plugin's side call (PluginLlm) runs on the chat's model, but if that fails Hermes tries the
+    ``fallback_providers`` from config.yaml, or, with no main provider set, any logged-in
+    provider. Side calls skip middleware, so the guard can't clean them (docs/spike.md).
+    """
+    if not isinstance(config, Mapping):
+        return Verdict(SHARED, "config.yaml could not be read")
+    model_cfg = config.get("model")
+    main = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, Mapping) else ""
+    if main in ("", "auto"):
+        return Verdict(SHARED, "Hermes picks the provider itself (provider: auto), so a side call could go anywhere")
+    providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
+    for entry in _fallback_entries(config):
+        provider = str(entry.get("provider") or "").strip()
+        base_url = str(entry.get("base_url") or "").strip()
+        named = providers.get(provider) if isinstance(providers, Mapping) else None
+        if not base_url and isinstance(named, Mapping):
+            base_url = str(named.get("base_url") or named.get("api_base") or "").strip()
+            provider = "custom" if base_url else provider
+        verdict = classify(Route(provider, str(entry.get("model") or ""), base_url), settings)
+        if verdict.tier != PRIVATE:
+            return Verdict(SHARED, f"a fallback provider is shared ({verdict.reason})")
+    return Verdict(PRIVATE, "the chat's route and every fallback are private")
+
+
 class RouteBook:
     """What each session's route is believed to be, from the hooks we see.
 

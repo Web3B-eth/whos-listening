@@ -113,7 +113,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 return _shared_route_saved(tier, hold)
             store.log_event(m.id, "held" if hold else "saved", "assistant")
             reviewing = False
-            if hold and on_outside_hold is not None and not review.rule_concern(str(text or "")):
+            # Auto-review only for a hold that came from outside content alone, never the rule screen.
+            if hold and outside_tool and on_outside_hold is not None and not review.rule_concern(screened):
                 try:
                     reviewing = bool(on_outside_hold(m))
                 except Exception:
