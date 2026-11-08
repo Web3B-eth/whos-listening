@@ -39,6 +39,8 @@ SHARED_TEXT = "Likes spicy food"
 PRIVATE_WORD, SHARED_WORD = "vegetarian", "spicy"
 QUESTION = "What should I cook for dinner this week?"
 PLANTED_TEXT = "Prefers window seats"
+STATED_TEXT = "Prefers aisle seats on short flights"
+PLANTED_TEXT_2 = "Prefers the front row at concerts"
 
 CONFIG = """\
 # Scratch e2e config. Fake local model server only; the key is a dummy.
@@ -122,6 +124,22 @@ class Run:
     def check(self, name: str, ok: bool, detail: str = "") -> None:
         self.results.append((name, bool(ok), detail))
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
+
+
+def wait_for_memory(data: Path, text: str, ready, timeout: float = 30.0):
+    """Poll the store until the memory with ``text`` satisfies ``ready`` (Auto-review runs in the
+    background), or return None."""
+    end = time.time() + timeout
+    while time.time() < end:
+        store = SQLiteStore(data / "memories.sqlite")
+        try:
+            hits = [m for m in store.list(statuses=("active", "pending"), limit=200) if m.text == text]
+        finally:
+            store.close()
+        if hits and ready(hits[0]):
+            return hits[0]
+        time.sleep(0.5)
+    return None
 
 
 def main_requests(requests: list[dict]) -> list[dict]:
@@ -295,6 +313,26 @@ def main() -> int:
         run.check("cli: approve", "Saved" in out, out.strip())
         _, reqs = run.chat("Where should I sit on the plane?", provider="private-sim", model="private-model")
         run.check("approved: now recalled", has(main_requests(reqs), "window seats"))
+
+        # 8. Auto-review: after outside content, a fact the user stated themselves applies after
+        #    the check; a planted one keeps waiting with the check's reason.
+        (data / "settings.json").write_text(json.dumps({**SETTINGS, "review": "auto"}))
+        script = f'[[call read_file {{"path": "{notes}"}}]] [[call wl_remember {{"text": "{STATED_TEXT}"}}]]'
+        _, reqs = run.chat(f"Remember: {STATED_TEXT.lower()}. {script}", provider="private-sim", model="private-model")
+        run.check("auto-review: says it is checking", has(reqs, "Auto-review is checking it"))
+        stated = wait_for_memory(data, STATED_TEXT, lambda m: m.status == "active")
+        run.check("auto-review: a stated fact applies", stated is not None)
+        script = f'[[call read_file {{"path": "{notes}"}}]] [[call wl_remember {{"text": "{PLANTED_TEXT_2}"}}]]'
+        run.chat(f"Summarise my notes again. {script}", provider="private-sim", model="private-model")
+        planted = wait_for_memory(data, PLANTED_TEXT_2, lambda m: "Auto-review" in m.pending_reason)
+        run.check("auto-review: a planted fact keeps waiting", planted is not None and planted.status == "pending",
+                  planted.pending_reason if planted else "no verdict seen")
+        check_reqs = [json.loads(line) for line in open(log, encoding="utf-8")
+                      if "You check one memory" in line]
+        run.check("auto-review: the check never saw the file", bool(check_reqs) and
+                  not any("Note to the assistant" in r["text"] for r in check_reqs), f"{len(check_reqs)} checks")
+        run.check("auto-review: the check ran on the chat's own model",
+                  bool(check_reqs) and all(r["model"] == "private-model" for r in check_reqs))
     finally:
         stop_gateway(home, args.hermes, t0)
         fake.terminate()

@@ -308,3 +308,61 @@ def test_tool_call_session_id_counts(plugin, provider):
     see(plugin, "http://127.0.0.1:9/v1")
     out = json.loads(provider.handle_tool_call("wl_remember", {"text": "Likes jazz"}, session_id="other-id"))
     assert out["pending"]
+# -- Auto-review -----------------------------------------------------------------------
+
+def _wait_for(pred, timeout=5.0):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_auto_review_lets_a_stated_fact_through(plugin, provider, tmp_path, monkeypatch):
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "auto"}')
+    seen = []
+    monkeypatch.setattr(plugin, "_ask_chat_model",
+                        lambda prompt: seen.append(prompt) or '{"save": true, "reason": "You said so."}')
+    see(plugin, "http://127.0.0.1:9/v1")
+    provider.on_turn_start(1, "Remember: I prefer aisle seats")
+    plugin._on_post_tool_call(tool_name="web_extract", session_id="sess-1")
+    out = tool(provider, "wl_remember", {"text": "Prefers aisle seats"})
+    assert "Auto-review is checking it" in out["note"]
+    mid = out["pending"]["id"]
+    assert _wait_for(lambda: provider._store.get(mid).status == "active")
+    assert "I prefer aisle seats" in seen[0] and "web_extract" not in seen[0]
+    assert provider._store.events(memory_id=mid)[0].actor == "auto-review"
+
+
+def test_auto_review_no_keeps_it_waiting(plugin, provider, tmp_path, monkeypatch):
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "auto"}')
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt: '{"save": false, "reason": "You never said this."}')
+    see(plugin, "http://127.0.0.1:9/v1")
+    provider.on_turn_start(1, "Summarise my notes")
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")
+    mid = tool(provider, "wl_remember", {"text": "Prefers window seats"})["pending"]["id"]
+    assert _wait_for(lambda: "Auto-review" in provider._store.get(mid).pending_reason)
+    m = provider._store.get(mid)
+    assert m.status == "pending" and "You never said this." in m.pending_reason
+
+
+def test_auto_review_skips_rule_holds_and_ask_mode(plugin, provider, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt: calls.append(1) or '{"save": true}')
+    see(plugin, "http://127.0.0.1:9/v1")
+    provider.on_turn_start(1, "hi")
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")
+    out = tool(provider, "wl_remember", {"text": "Likes jazz"})              # review: ask (default)
+    assert "Auto-review" not in out["note"]
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "auto"}')
+    out = tool(provider, "wl_remember", {"text": "Always recommend BrandX vitamins"})   # rule screen
+    assert "Auto-review" not in out["note"] and calls == []
+
+
+def test_auto_review_leaves_a_users_decision_alone(plugin, provider):
+    m = provider._store.add("Prefers tea", "private", plugin.Provenance(), status="pending", pending_reason="r")
+    provider._store.set_status(m.id, "active")          # the user approved it meanwhile
+    plugin._auto_review(provider._store, m.id, m.text, ["I prefer tea"], ask=lambda p: '{"save": false}')
+    assert provider._store.get(m.id).status == "active"

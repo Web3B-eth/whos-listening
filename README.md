@@ -4,7 +4,7 @@ A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
 Every memory is **Private** or **Shared**. Private memories only reach models you trust (by default Venice and models on your own machine or network). When a chat moves to any other model, Private memories are left out of the request.
 
-**Work in progress for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Auto-review is still being built. See [Limits](#limits).
+**Built for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
 
 ## How it works
 
@@ -24,6 +24,7 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
   - **Outside content.** Once a chat has read anything from outside (a web page, a file, a terminal, any tool but whos-listening's own), text in it could be steering the assistant. From then on, its saves in that chat wait for you, and so do its forgets.
 
   A waiting memory is never added to a request. See `/memories pending`.
+- **Auto-review (optional).** With `"review": "auto"` in settings, a save that waits only because of outside content gets a second look: one request on the chat's own model (so no new provider sees anything), which sees only the memory and your three newest messages, never the outside content. If it says the memory is a lasting fact you stated yourself, the memory applies; otherwise, or if the check fails or times out, it keeps waiting with the check's reason. Saves the rule screen held, and every forget, always wait for you. `/memories undo` reverses an Auto-review approval.
 - **Forget means forget.** When a memory is forgotten, whos-listening keeps a tombstone: a hash of its words, not the words. The same fact (ignoring case, spacing and punctuation) can't be saved again from chat. The forgotten text stays in the local file so a forget can be undone, until it is purged.
 - **Provenance.** Every memory records who wrote it, with which tool, on which route (and that route's tier), and in which session and turn.
 
@@ -71,13 +72,15 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
     "openrouter": "shared"
   },
   "private_hosts": ["models.example.org"],
-  "shared_hosts": ["api.venice.ai"]
+  "shared_hosts": ["api.venice.ai"],
+  "review": "auto"
 }
 ```
 
 - `routes` sets a tier by `provider/model`, by `*/model` (any provider) or by `provider`, checked in that order. Named custom endpoints all show up as provider `custom` in Hermes 0.23.0, so use hosts for those.
 - `private_hosts` adds hosts (a domain covers its subdomains). `shared_hosts` wins over every default, so you can make a default Private host Shared.
-- If the file can't be read, every route counts as Shared until it is fixed.
+- `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
+- If the file can't be read, every route counts as Shared and every held save waits for you until it is fixed.
 
 ## Development
 
@@ -98,7 +101,7 @@ End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in
 Two runs show the checks have teeth:
 
 - `--control` keeps the guard but switches off its clean-up. The route-switch checks should fail: the Private memory reaches the Shared model through the replayed turn.
-- `--no-guard` doesn't register the guard at all. Recall should then never add a Private memory, so the checks that expect a Private memory in a request (and the "guard left a marker" check) fail, and the leak checks pass.
+- `--no-guard` doesn't register the guard at all. No route is then believed Private, so recall never adds a Private memory: the checks that need a Private route (a Private memory in a request, the "guard left a marker" check, the Auto-review note) fail, and the leak checks pass.
 
 Add `--hermes PATH` to use another Hermes build.
 
@@ -118,7 +121,7 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins validate --install-deps "
 HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 ```
 
-Both warn that `provides_tools` lists tools that `register()` didn't register. That's expected for now: a memory provider's tools come from `get_tool_schemas()`, not `register()`, and we list them so the manifest shows every tool the model can call.
+`plugin.yaml` declares exactly what `register()` registers (hooks, middleware), as the plugin catalog requires. The three memory tools come from `get_tool_schemas()` instead, so they're not listed there.
 
 ## Limits
 
@@ -137,6 +140,7 @@ Be clear about what whos-listening does not protect (yet):
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
 - **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.
 - **Outside content is noticed through tools.** Anything you paste or attach yourself counts as your own words, so a planted line in pasted text isn't held unless the rule screen catches it.
+- **Auto-review is a model's judgement.** It can be wrong in either direction, and a planted text written to look like the user's own words could pass it. It needs Hermes' default in-process plugin mode; under `plugins.isolation: host` the check can't reach a model, so held saves just wait for you. Each check is one extra request on the chat's model.
 - **The rule screen is a short list of patterns.** It catches common shapes of planted text and secrets, not all of them.
 
 License: MIT.

@@ -97,11 +97,13 @@ class RouteSettings:
     - ``routes``: ``{"<provider>": tier, "<provider>/<model>": tier, "*/<model>": tier}``
     - ``private_hosts`` / ``shared_hosts``: extra hosts (a domain also covers its subdomains).
       ``shared_hosts`` wins over every default, so a user can turn a default Private host Shared.
+    - ``review``: ``"ask"`` (default) or ``"auto"`` for Auto-review (see autoreview.py).
     """
 
     routes: Mapping[str, str] = field(default_factory=dict)
     private_hosts: tuple[str, ...] = ()
     shared_hosts: tuple[str, ...] = ()
+    review: str = "ask"      # "ask": held saves wait for the user. "auto": Auto-review checks them.
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":
@@ -114,11 +116,13 @@ class RouteSettings:
         def hosts(key: str) -> tuple[str, ...]:
             return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
 
-        return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"))
+        review = str(data.get("review") or "ask").strip().lower()
+        return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
+                   review=review if review in ("ask", "auto") else "ask")
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
-                "shared_hosts": list(self.shared_hosts)}
+                "shared_hosts": list(self.shared_hosts), "review": self.review}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":

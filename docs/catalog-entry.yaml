@@ -1,0 +1,40 @@
+# DRAFT entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml.
+# Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
+# Before submitting: set `sha` to the exact merged commit on main, re-run
+# `hermes plugins validate --install-deps` at that commit, and copy the capabilities
+# that validate reports.
+name: whos-listening
+title: whos-listening
+repo: https://github.com/Web3B-eth/whos-listening
+sha: 0000000000000000000000000000000000000000   # set at submission: full 40-hex SHA on main
+subdir: ""
+version: "0.1.0"
+description: >-
+  Memory that knows who's listening. Each memory is Private or Shared, and the model route
+  decides which ones a request may carry: Private memories go only to routes you trust
+  (Venice and models on your own machine or network by default) and are removed from every
+  request to any other route by an llm_request guard that fails closed. Saves after the chat
+  read outside content wait for your OK (/memories pending, approve, undo), with an optional
+  Auto-review on the chat's own model; forgotten facts can't be saved again from chat.
+  Disclosure — stores memories in SQLite in the active Hermes home only; no network calls of
+  its own except the optional Auto-review, which is one request on the chat's current model
+  through Hermes' PluginLlm. Rewrites outgoing main chat requests on Shared routes. Reads
+  model.provider/default/base_url from config.yaml (never keys). No credentials, telemetry,
+  self-updater or background daemon.
+maintainer: Web3B-eth
+tier: community
+category: memory
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/<sha>/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []
+known_issues:
+  - Hermes runs plugin middleware only on main chat requests. Compression, the tool-limit summary, mixture-of-agents and side calls skip the guard; see README Limits.
+  - Auto-review needs the default in-process plugin mode.
+  - The first turn after Hermes starts carries Shared memories only.
+requires_hermes: ">=0.23.0"
