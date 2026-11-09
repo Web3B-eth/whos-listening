@@ -132,3 +132,16 @@ def test_private_memories_are_approved_only_where_they_can_be_read(store):
     assert "terminal" in out and store.get(m.id).status == "pending"
     assert "Saved" in run(store, f"approve {m.id}", show_private=True)
     assert not commands.shows_private("") and not commands.shows_private(None)
+
+
+def test_platform_settings_decide_where_private_text_shows():
+    from whos_listening.routes import RouteSettings
+    s = RouteSettings.from_dict({"private_platforms": ["signal"], "shared_platforms": ["desktop"]})
+    assert commands.shows_private("signal", s) and not commands.shows_private("desktop", s)
+    assert commands.shows_private("cli", s) and not commands.shows_private("", s)
+
+
+def test_add_on_a_shared_gateway(store):
+    out = commands.run(store, "add Keeps bees", show_private=True, private_refused="No private memory was saved: x.")
+    assert "No private memory was saved" in out and "add shared" in out and store.count() == 0
+    assert "Saved" in commands.run(store, "add shared Likes jazz", show_private=True, private_refused="x")

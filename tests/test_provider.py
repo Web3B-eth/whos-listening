@@ -534,3 +534,31 @@ def test_guard_strips_private_on_a_chat_app_even_on_a_private_route(plugin, prov
     assert plugin._on_llm_request(**args, platform="") is None       # plain CLI: by route alone
     out = plugin._on_llm_request(**args, platform="telegram")
     assert "canoe" not in json.dumps(out["request"])
+
+
+def test_shared_gateway_means_no_private_memories_anywhere(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")                          # Private route, platform cli
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})
+    tool(provider, "wl_remember", {"text": "Likes jazz", "tier": "shared"})
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
+
+    block = provider.prefetch("plans", session_id="sess-1")
+    assert "canoe" not in block and "jazz" in block
+    refused = tool(provider, "wl_remember", {"text": "Keeps bees"})
+    assert refused["ok"] is False and "set to shared" in refused["error"]
+    req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private>', "hi")
+    assert "canoe" not in json.dumps(mw(plugin, req, "http://127.0.0.1:9/v1")["request"])
+    assert "No private memory was saved" in plugin._memories_command("add Keeps bees", platform="cli")
+
+
+def test_private_platforms_setting_lets_a_chat_app_see_private(plugin, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_config_default_route", lambda: None)
+    (tmp_path / "whos-listening").mkdir(exist_ok=True)
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"private_platforms": ["signal"]}')
+    p = plugin.WhosListeningProvider()
+    p.initialize("sess-1", hermes_home=str(tmp_path), platform="signal")
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(p, "wl_remember", {"text": "Is saving up for a canoe"})
+    assert "canoe" in p.prefetch("plans", session_id="sess-1")
+    p.shutdown()

@@ -2,17 +2,21 @@
 
 A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent) that knows **who is listening**.
 
-Every memory is **Private** or **Shared**. Private memories only reach models you trust (by default Venice and models on your own machine or network). When a chat moves to any other model, Private memories are left out of the request.
+Every memory is **Private** or **Shared**. Three things see a memory when it's used: the **gateway** (the machine running Hermes, which stores it), the **platform** you chat on (Desktop, Telegram, …) and the **model provider**. A Private memory is used only when all three are trusted: by default the gateway you installed it on, the local apps, and Venice or models on your own machine or network. Otherwise it is left out of the request. You decide each layer in [Settings](#settings).
 
 **Built for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
 
 ## How it works
 
 - **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request.
-- **Tiers follow the route.** A route is where a request goes: the provider, the model and the endpoint address (`base_url`). whos-listening classifies a route by the host in its address:
-  - **Private by default:** Venice (`venice.ai` and its subdomains) and local addresses: `localhost`, `127.0.0.1`, `::1`, private LAN ranges (`10.*`, `172.16-31.*`, `192.168.*`, `fc00::/7`), link-local addresses and `.local` names.
-  - **Shared:** everything else, and any route we can't identify.
-- **Chat apps are Shared-only.** On a messaging platform (Telegram, Signal, Slack, WhatsApp and the like) every route counts as Shared, even Venice or a local model, because the app's servers see the replies. Private memories only reach the terminal, the Hermes TUI, Desktop and `hermes chat` (Hermes platforms `cli`, `tui`, `desktop` and `local`). Any other platform, including the API server, the dashboard's web chat, scheduled jobs and subagents, is Shared too.
+- **Three layers, all must be Private.** A request may carry Private memories only if every layer is Private. Each is your call in [Settings](#settings):
+  - **Gateway:** the machine running Hermes, which stores the memories and builds every prompt. Private by default. Set it to Shared where you don't trust the machine (for example Hermes Cloud, or a server someone else runs); a Shared gateway also keeps no Private memories: `wl_remember` and `/memories add` refuse Private saves there. See [Where the backend runs](#where-the-backend-runs).
+  - **Platform:** where you chat. The terminal, the Hermes TUI, Desktop and `hermes chat` (Hermes platforms `cli`, `tui`, `desktop` and `local`) are Private by default. Every other platform is Shared: chat apps such as Telegram, Signal, Slack and WhatsApp, whose servers see the replies, and also the API server, the dashboard's web chat, scheduled jobs and subagents.
+  - **Model route:** where a request goes: the provider, the model and the endpoint address (`base_url`). whos-listening classifies a route by the host in its address:
+    - **Private by default:** Venice (`venice.ai` and its subdomains) and local addresses: `localhost`, `127.0.0.1`, `::1`, private LAN ranges (`10.*`, `172.16-31.*`, `192.168.*`, `fc00::/7`), link-local addresses and `.local` names.
+    - **Shared:** everything else, and any route we can't identify.
+
+  Below, "a Private route" means a request where all three layers are Private.
 - **Recall.** Before each turn, whos-listening adds the memories the route may see: Private and Shared on a Private route, Shared only otherwise. With 30 memories or fewer it adds them all; with more, the best matches for your message plus the 5 newest. Private lines are wrapped in `<wl-private>` tags so a later step can find and remove them anywhere in a request.
 - **Tools** the model can call:
   - `wl_remember`: save one short fact. Private unless you said it can be shared.
@@ -45,7 +49,7 @@ Type these in any Hermes chat. They need the plugin enabled with `hermes plugins
 | `/memories show N` | Tier, status, who wrote it, with which tool, on which route, and its history. |
 | `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
 
-Private text is shown only in the terminal and the local apps. In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
+Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
 
 The same commands work from a terminal, plus `purge N`, which deletes a forgotten memory's text from the file for good (it is only there, not in chat):
 
@@ -76,14 +80,28 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
   },
   "private_hosts": ["models.example.org"],
   "shared_hosts": ["api.venice.ai"],
+  "private_platforms": ["signal"],
+  "shared_platforms": ["webui"],
+  "gateway": "private",
   "review": "auto"
 }
 ```
 
 - `routes` sets a tier by `provider/model`, by `*/model` (any provider) or by `provider`, checked in that order. Named custom endpoints all show up as provider `custom` in Hermes 0.23.0, so use hosts for those.
 - `private_hosts` adds hosts (a domain covers its subdomains). `shared_hosts` wins over every default, so you can make a default Private host Shared.
+- `private_platforms` adds Hermes platforms that may see Private memories, for example `signal` if you trust its end-to-end encryption (messages are decrypted only on the gateway and your phone). `shared_platforms` wins over every default, so you can make `desktop` Shared too.
+- `gateway` is `"private"` (the default) or `"shared"`, for the machine this Hermes runs on. Any other value counts as Shared. whos-listening can't tell a laptop from a server, so only you can say whether you trust it.
 - `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
-- If the file can't be read, every route counts as Shared and every held save waits for you until it is fixed.
+- If the file can't be read, every route counts as Shared, no Private memory is saved, and every held save waits for you until it is fixed.
+
+## Where the backend runs
+
+Hermes Desktop is only an interface: the backend (the gateway, the agent and this plugin) can run on your computer, on a server you reach over SSH or a VPN such as Tailscale, or in Hermes Cloud. whos-listening runs inside that backend, so the gateway layer is about that machine:
+
+- **Storage is on the gateway.** `memories.sqlite` (Private text included, and forgotten text until it is purged) lives there, and so does Hermes' own chat history, which holds the memories that were added to each turn. Anyone with access to that machine can read them: on a rented server, that includes the hosting company and its backups or snapshots. On Hermes Cloud, Nous runs the machine.
+- **"Local network" is the gateway's network.** Routes are classified where the backend runs. On a server, `localhost` is the server and `10.*`, `172.16-31.*` and `192.168.*` are the hosting company's private network or Docker's, not your home network. A model on another server in that network counts as Private by default; list it in `shared_hosts` if you don't trust it.
+- **The link to Desktop is invisible to the plugin.** A chat from Desktop counts as the `desktop` platform wherever the backend is. Over SSH or Tailscale the link is encrypted; a remote gateway reached over plain `http://` across the internet sends your chats, Private memories included, in the clear.
+- **Only you can say whether you trust a gateway.** whos-listening can't tell a laptop from a server, or which company runs it. The gateway counts as Private unless you set `"gateway": "shared"`. If you trust a provider to host your backend (or to see your requests), say so in settings; that's a judgement whos-listening leaves to you.
 
 ## Development
 
@@ -132,6 +150,7 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 
 Be clear about what whos-listening does not protect (yet):
 
+- **The gateway is trusted unless you say otherwise.** Private memories are stored, and built into prompts, on whatever machine runs Hermes. whos-listening can't tell whether that's your laptop, a rented server or Hermes Cloud (see [Where the backend runs](#where-the-backend-runs)).
 - **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
   - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.
   - **The summary Hermes writes when a turn hits its tool-call limit.** It is sent on the chat's current route.
@@ -139,7 +158,7 @@ Be clear about what whos-listening does not protect (yet):
   - **Side calls** such as naming the chat. In our tests they carried the plain chat, not the memory block. whos-listening's own Auto-review check is a side call too, which is why it is gated on your fallbacks (above).
 - **Only tagged text is removed.** On a Shared route the guard removes tagged Private memories, and the text of replayed `wl_remember` calls and `wl_recall` queries. It can't remove what the assistant said about a Private memory in its own words, what you typed yourself, or model reasoning that Hermes replays to a later model.
 - **Other plugins** with request middleware that runs after ours could put text back, and other plugins' execution middleware can see the request as it was before the guard.
-- **No Private memories outside the local apps.** Chat apps, the API server, the web chat, scheduled jobs and subagents count as Shared on every route (see How it works). A subagent started from a Desktop chat gets Shared memories only too, because Hermes doesn't tell the plugin where its parent chat runs.
+- **No Private memories outside the local apps by default.** Chat apps, the API server, the web chat, scheduled jobs and subagents count as Shared on every route unless you list them in `private_platforms` (see How it works). A subagent started from a Desktop chat gets Shared memories only too, because Hermes doesn't tell the plugin where its parent chat runs.
 - **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
 - **The guard runs more than once.** Hermes loads the plugin twice (see Development) and adds a memory plugin's middleware again each time it loads the plugin, so the guard runs at least twice per request, and more in a long-running gateway. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
 - **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".

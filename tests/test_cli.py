@@ -27,3 +27,10 @@ def test_cli_without_memories(tmp_path, capsys):
 def test_default_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert cli.default_home() == tmp_path
+
+
+def test_cli_add_respects_a_shared_gateway(tmp_path, capsys):
+    SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    assert "No private memory was saved" in capsys.readouterr().out
