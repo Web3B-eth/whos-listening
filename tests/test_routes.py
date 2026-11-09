@@ -112,3 +112,39 @@ def test_messaging_platforms_are_shared():
     for chat_app in ("telegram", "signal", "slack", "api_server", "webui", "cron", "subagent"):
         v = platform_verdict(chat_app)
         assert v is not None and v.tier == SHARED and chat_app in v.reason
+
+
+def test_each_layer_is_the_users_call():
+    from whos_listening.routes import RouteSettings, layered_verdict
+    venice = Route("custom", "grok-4-5", "https://api.venice.ai/api/v1")
+    nous = Route("nous", "openai/gpt-6.1-terra", "")
+    default = RouteSettings()
+    assert layered_verdict(venice, "desktop", default).tier == PRIVATE      # all three Private
+    assert layered_verdict(nous, "desktop", default).tier == SHARED         # the model isn't
+    assert layered_verdict(venice, "signal", default).tier == SHARED        # the platform isn't
+
+    mine = RouteSettings.from_dict({"routes": {"nous": "private"}, "private_platforms": ["Signal"]})
+    assert layered_verdict(nous, "desktop", mine).tier == PRIVATE           # the user trusts Nous
+    assert layered_verdict(venice, "signal", mine).tier == PRIVATE          # ... and Signal
+
+    for strict in ({"gateway": "shared"}, {"gateway": "Privat"}, {"shared_platforms": ["desktop"]}):
+        s = RouteSettings.from_dict({**{"routes": {"nous": "private"}}, **strict})
+        assert layered_verdict(venice, "desktop", s).tier == SHARED         # any Shared layer wins
+    assert RouteSettings.from_dict({"gateway": " PRIVATE "}).gateway == PRIVATE
+    assert layered_verdict(venice, "", default).tier == PRIVATE             # no platform given: skip it
+
+
+def test_settings_round_trip_keeps_the_new_layers():
+    from whos_listening.routes import RouteSettings
+    s = RouteSettings.from_dict({"private_platforms": ["signal"], "shared_platforms": ["webui"], "gateway": "shared"})
+    assert RouteSettings.from_dict(s.to_dict()) == s
+
+
+def test_shared_gateway_keeps_no_private_memories(tmp_path):
+    from whos_listening.routes import private_storage_refusal
+    f = tmp_path / "settings.json"
+    assert private_storage_refusal(f) == ""                                 # no file: Private gateway
+    f.write_text('{"gateway": "shared"}')
+    assert "set to shared" in private_storage_refusal(f)
+    f.write_text("{not json")
+    assert "can't be read" in private_storage_refusal(f)

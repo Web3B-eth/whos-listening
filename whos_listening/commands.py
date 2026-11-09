@@ -8,8 +8,9 @@ not in a chat app such as Telegram, whose servers would see the reply.
 from __future__ import annotations
 
 import shlex
+from typing import Optional
 
-from .routes import LOCAL_PLATFORMS
+from .routes import RouteSettings, platform_verdict
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Event, ForgottenError, Memory, Provenance, Store,
     StoreError,
@@ -28,11 +29,12 @@ HELP = """\
 
 HIDDEN = "(private: shown only in the terminal or the local app)"
 
-# An unknown or empty platform does not show Private text (see routes.LOCAL_PLATFORMS).
 
 
-def shows_private(platform: str) -> bool:
-    return str(platform or "").strip().lower() in LOCAL_PLATFORMS
+def shows_private(platform: str, settings: Optional[RouteSettings] = None) -> bool:
+    """Whether replies on ``platform`` may show Private text: the same platform rule recall uses,
+    except that an empty platform does not."""
+    return bool(str(platform or "").strip()) and platform_verdict(platform, settings) is None
 
 
 def _text(m: Memory, show_private: bool) -> str:
@@ -123,11 +125,14 @@ def cmd_restore(store: Store, arg: str, show_private: bool) -> str:
     return f"Restored {_line(store.get(m.id), show_private)}"
 
 
-def cmd_add(store: Store, text: str, show_private: bool, via: str) -> str:
-    """``text`` exactly as typed after ``add`` (no shell-style quoting, so "don't" stays)."""
+def cmd_add(store: Store, text: str, show_private: bool, via: str, private_refused: str = "") -> str:
+    """``text`` exactly as typed after ``add`` (no shell-style quoting, so "don't" stays).
+    ``private_refused`` says why this gateway may not keep a Private memory ("" if it may)."""
     tier, words = PRIVATE, text.split(None, 1)
     if words and words[0].lower() in (PRIVATE, SHARED):
         tier, text = words[0].lower(), (words[1] if len(words) > 1 else "")
+    if tier == PRIVATE and private_refused:
+        return f"{private_refused} Use `add shared TEXT` for a memory any model may see."
     m = store.add(text, tier, Provenance(written_by="user", via=via), allow_forgotten=True)
     store.log_event(m.id, "saved", "user")
     return f"Saved {_line(m, show_private)}"
@@ -192,7 +197,8 @@ def cmd_undo(store: Store, show_private: bool) -> str:
     return "Nothing to undo."
 
 
-def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memories") -> str:
+def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memories",
+        private_refused: str = "") -> str:
     """Run one ``/memories`` command and return the reply. Never raises."""
     head = (raw_args or "").split(None, 1)
     cmd = head[0].lower() if head else "list"
@@ -225,7 +231,7 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
         if cmd == "show":
             return cmd_show(store, one(), show_private)
         if cmd == "add":
-            return cmd_add(store, tail, show_private, via)
+            return cmd_add(store, tail, show_private, via, private_refused)
         if cmd in ("help", "-h", "--help"):
             return HELP
         return f"Unknown command {cmd!r}.\n\n{HELP}"
@@ -237,13 +243,14 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
         return f"whos-listening hit an error: {type(exc).__name__}"
 
 
-def open_and_run(store_factory, raw_args: str, *, show_private: bool, via: str = "/memories") -> str:
+def open_and_run(store_factory, raw_args: str, *, show_private: bool, via: str = "/memories",
+                 private_refused: str = "") -> str:
     """Open the store, run one command, close it."""
     try:
         store = store_factory()
     except Exception as exc:
         return f"whos-listening could not open its memories: {type(exc).__name__}"
     try:
-        return run(store, raw_args, show_private=show_private, via=via)
+        return run(store, raw_args, show_private=show_private, via=via, private_refused=private_refused)
     finally:
         store.close()

@@ -16,8 +16,8 @@ from agent.memory_provider import MemoryProvider
 
 from . import autoreview, commands, guard, recall, review, tools
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, platform_verdict,
-    side_call_routes_private,
+    Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
+    private_storage_refusal, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
 
@@ -79,17 +79,32 @@ def _active_home() -> Optional[Path]:
         return None
 
 
-def tier_for(route: Optional[Route], home: Optional[Path]) -> Verdict:
-    """The tier of ``route`` under the settings of the profile at ``home``.
-    No home, or a settings file that can't be read, means Shared."""
+def _load_settings(home: Optional[Path]) -> tuple[Optional[RouteSettings], str]:
+    """The settings of the profile at ``home``, or None and why not."""
     if home is None:
-        return Verdict(SHARED, "profile unknown")
+        return None, "profile unknown"
     try:
-        settings = RouteSettings.load(Path(home) / DATA_DIR / SETTINGS_FILE)
+        return RouteSettings.load(Path(home) / DATA_DIR / SETTINGS_FILE), ""
     except Exception as exc:
         logger.warning("whos-listening: settings file unreadable, treating every route as Shared: %s", exc)
-        return Verdict(SHARED, "settings file unreadable")
-    return classify(route, settings)
+        return None, "settings file unreadable"
+
+
+def tier_for(route: Optional[Route], home: Optional[Path], platform: str = "") -> Verdict:
+    """The tier of a request: Private only if this gateway, the chat's platform (when given) and
+    the model route all are, under the settings of the profile at ``home``. No home, or a
+    settings file that can't be read, means Shared."""
+    settings, why = _load_settings(home)
+    if settings is None:
+        return Verdict(SHARED, why)
+    return layered_verdict(route, platform, settings)
+
+
+def _private_refused(home: Optional[Path]) -> str:
+    """Why the profile at ``home`` may not keep a new Private memory ("" if it may)."""
+    if home is None:
+        return "No private memory was saved: whos-listening can't tell which profile this is."
+    return private_storage_refusal(Path(home) / DATA_DIR / SETTINGS_FILE)
 
 
 class WhosListeningProvider(MemoryProvider):
@@ -168,10 +183,7 @@ class WhosListeningProvider(MemoryProvider):
     def _route(self, session_id: str = "") -> tuple[Optional[Route], Verdict]:
         sid = session_id or self._session_id
         route, why = ROUTES.believed(sid, _config_default_route())
-        on_platform = platform_verdict(self._platform)
-        if on_platform is not None:          # a chat app: Shared whatever the model
-            return route, on_platform
-        verdict = tier_for(route, self._dir.parent if self._dir else None)
+        verdict = tier_for(route, self._dir.parent if self._dir else None, self._platform)
         return route, Verdict(verdict.tier, f"{verdict.reason} ({why})")
 
     # -- recall ------------------------------------------------------------
@@ -215,6 +227,7 @@ class WhosListeningProvider(MemoryProvider):
             )
 
         return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
+                            private_refused=_private_refused(self._dir.parent if self._dir else None),
                             outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
                             on_outside_hold=self._start_auto_review)
 
@@ -356,12 +369,14 @@ def _on_post_tool_call(**kwargs: Any) -> None:
 # -- /memories -------------------------------------------------------------------
 
 def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> str:
-    """The ``/memories`` slash command. Private text only shows on local platforms."""
+    """The ``/memories`` slash command. Private text only shows on platforms that may see it."""
     home = _active_home()
     if home is None:
         return "whos-listening can't tell which Hermes profile this is."
+    settings, _ = _load_settings(home)
     return commands.open_and_run(lambda: SQLiteStore(home / DATA_DIR / DB_FILE), raw_args,
-                                 show_private=commands.shows_private(platform))
+                                 show_private=commands.shows_private(platform, settings),
+                                 private_refused=_private_refused(home))
 
 
 # -- the guard: the hard line ------------------------------------------------
@@ -378,9 +393,7 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
         route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
                       base_url=str(kwargs.get("base_url") or ""))
         ROUTES.saw_request(str(kwargs.get("session_id") or ""), route)
-        tier = tier_for(route, _active_home()).tier
-        if platform_verdict(str(kwargs.get("platform") or "")) is not None:
-            tier = SHARED                    # a chat app: Shared whatever the model
+        tier = tier_for(route, _active_home(), str(kwargs.get("platform") or "")).tier
     except Exception as exc:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",
                        type(exc).__name__)

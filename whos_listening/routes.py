@@ -33,14 +33,51 @@ ALWAYS_SHARED_PROVIDERS = {"moa": "MoA sends the chat to several models the guar
 LOCAL_PLATFORMS = frozenset({"cli", "local", "tui", "desktop"})
 
 
-def platform_verdict(platform: str) -> Optional["Verdict"]:
-    """Shared for a non-local platform; None for a local one, or when the platform isn't given
-    (the caller then goes by the route alone). Hermes' plain CLI passes an empty platform to
-    middleware; the provider itself always gets one (``cli`` by default)."""
+def platform_verdict(platform: str, settings: Optional["RouteSettings"] = None) -> Optional["Verdict"]:
+    """The platform layer: Shared for a non-local platform; None when it may see Private memories,
+    or when the platform isn't given (the caller then skips this layer). Hermes' plain CLI passes
+    an empty platform to middleware; the provider itself always gets one (``cli`` by default).
+    ``shared_platforms`` wins over the defaults and ``private_platforms``."""
     name = str(platform or "").strip().lower()
-    if not name or name in LOCAL_PLATFORMS:
+    if not name:
+        return None
+    settings = settings or RouteSettings()
+    if name in settings.shared_platforms:
+        return Verdict(SHARED, f"{name} is in shared_platforms")
+    if name in LOCAL_PLATFORMS or name in settings.private_platforms:
         return None
     return Verdict(SHARED, f"this chat is on {name}, whose servers see the replies")
+
+
+GATEWAY_SHARED = "this gateway is set to shared (\"gateway\" in settings.json)"
+
+
+def gateway_verdict(settings: Optional["RouteSettings"] = None) -> Optional["Verdict"]:
+    """The gateway layer: the machine running Hermes, which stores the memories and builds every
+    prompt. Private unless settings say otherwise; None means it may hold Private memories."""
+    if (settings or RouteSettings()).gateway != PRIVATE:
+        return Verdict(SHARED, GATEWAY_SHARED)
+    return None
+
+
+def private_storage_refusal(settings_path: str | Path) -> str:
+    """Why this gateway may not keep a new Private memory ("" if it may). An unreadable settings
+    file refuses too, since it might be the one that says this gateway is Shared."""
+    try:
+        settings = RouteSettings.load(settings_path)
+    except Exception:
+        return "No private memory was saved: the settings file can't be read."
+    if gateway_verdict(settings) is not None:
+        return f"No private memory was saved: {GATEWAY_SHARED}, so it keeps none."
+    return ""
+
+
+def layered_verdict(route: Optional[Route], platform: str, settings: Optional["RouteSettings"] = None) -> "Verdict":
+    """A request is Private only if the gateway, the platform and the model route all are."""
+    for layer in (gateway_verdict(settings), platform_verdict(platform, settings)):
+        if layer is not None:
+            return layer
+    return classify(route, settings)
 
 
 @dataclass(frozen=True)
@@ -111,12 +148,19 @@ class RouteSettings:
     - ``routes``: ``{"<provider>": tier, "<provider>/<model>": tier, "*/<model>": tier}``
     - ``private_hosts`` / ``shared_hosts``: extra hosts (a domain also covers its subdomains).
       ``shared_hosts`` wins over every default, so a user can turn a default Private host Shared.
+    - ``private_platforms`` / ``shared_platforms``: Hermes platforms added to, or taken off, the
+      ones that may see Private memories (``cli``, ``tui``, ``desktop``, ``local`` by default).
+    - ``gateway``: ``"private"`` (default) or ``"shared"`` for the machine this Hermes runs on. A
+      Shared gateway keeps no Private memories. Any other value counts as Shared.
     - ``review``: ``"ask"`` (default) or ``"auto"`` for Auto-review (see autoreview.py).
     """
 
     routes: Mapping[str, str] = field(default_factory=dict)
     private_hosts: tuple[str, ...] = ()
     shared_hosts: tuple[str, ...] = ()
+    private_platforms: tuple[str, ...] = ()
+    shared_platforms: tuple[str, ...] = ()
+    gateway: str = PRIVATE
     review: str = "ask"      # "ask": held saves wait for the user. "auto": Auto-review checks them.
 
     @classmethod
@@ -131,12 +175,16 @@ class RouteSettings:
             return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
 
         review = str(data.get("review") or "ask").strip().lower()
+        gateway = str(data.get("gateway") or PRIVATE).strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
+                   private_platforms=hosts("private_platforms"), shared_platforms=hosts("shared_platforms"),
+                   gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
                    review=review if review in ("ask", "auto") else "ask")
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
-                "shared_hosts": list(self.shared_hosts), "review": self.review}
+                "shared_hosts": list(self.shared_hosts), "private_platforms": list(self.private_platforms),
+                "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":

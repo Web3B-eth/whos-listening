@@ -86,8 +86,10 @@ def _shared_route_saved(tier: str, hold: Optional[str]) -> str:
 
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
            provenance: Callable[[], Provenance], outside_tool: str = "",
-           on_outside_hold: Optional[Callable[[Memory], bool]] = None) -> str:
+           on_outside_hold: Optional[Callable[[Memory], bool]] = None, private_refused: str = "") -> str:
     """Run one tool call. Always returns a JSON string; never raises.
+
+    ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
 
     ``outside_tool`` names the tool that first brought outside content into this chat ("" if
     none): from then on saves and forgets wait for the user (see review.py).
@@ -98,6 +100,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
         if name == REMEMBER:
             tier = str(args.get("tier") or PRIVATE).strip().lower()
             text = args.get("text", "")
+            if tier == PRIVATE and private_refused:
+                return _err(private_refused)
             try:
                 screened = clean_text(text)        # screen exactly what would be saved
             except StoreError as exc:

@@ -16,9 +16,10 @@ import sys
 from pathlib import Path
 
 from . import commands
+from .routes import private_storage_refusal
 from .store import SQLiteStore, StoreError
 
-DATA_DIR, DB_FILE = "whos-listening", "memories.sqlite"
+DATA_DIR, DB_FILE, SETTINGS_FILE = "whos-listening", "memories.sqlite", "settings.json"
 
 
 def default_home() -> Path:
@@ -58,7 +59,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(purge(store, args.command[1]))
         else:
-            print(commands.run(store, " ".join(args.command), show_private=True, via="cli"))
+            print(commands.run(store, " ".join(args.command), show_private=True, via="cli",
+                               private_refused=private_storage_refusal(home / DATA_DIR / SETTINGS_FILE)))
     finally:
         store.close()
     return 0
