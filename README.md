@@ -6,6 +6,39 @@ Every memory is **Private** or **Shared**. Three things see a memory when it's u
 
 **Built for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
 
+## Install
+
+Needs Hermes Agent 0.23.0 or later. Run these where your Hermes backend runs (this computer, or the server Desktop connects to):
+
+```bash
+hermes plugins install Web3B-eth/whos-listening --enable
+```
+
+```bash
+hermes plugins enable whos-listening
+```
+
+The first command installs the plugin and makes it your memory provider. The second lets Hermes load it at startup, so `/memories` works from the first message (for a memory provider, `--enable` alone only sets `memory.provider`). To pin an exact version, add `--ref <40-character commit SHA>` to the install.
+
+Turn off Hermes' built-in memory, so facts don't also land in `MEMORY.md` and `USER.md`, which go to every model whatever their tier:
+
+```bash
+hermes config set memory.memory_enabled false
+```
+
+```bash
+hermes config set memory.user_profile_enabled false
+```
+
+Then restart the gateway so it loads the plugin (quit and reopen Desktop, or run `hermes gateway restart`). Check it:
+
+- `hermes memory status` shows `whos-listening ← active`, with built-in memory disabled.
+- `/memories` in a chat answers "Nothing remembered yet."
+
+No setup is needed after that. To change what counts as Private, see [Settings](#settings).
+
+To stop using it, run `hermes memory off` (and `hermes plugins remove whos-listening` to delete the plugin). Your memories stay in `$HERMES_HOME/whos-listening/` until you delete that folder.
+
 ## How it works
 
 - **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request.
