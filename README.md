@@ -41,7 +41,7 @@ To stop using it, run `hermes memory off` (and `hermes plugins remove whos-liste
 
 ## How it works
 
-- **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request.
+- **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request, and, if you set up [sync](#sync-between-gateways), your Shared memories.
 - **Three layers, all must be Private.** A request may carry Private memories only if every layer is Private. Each is your call in [Settings](#settings):
   - **Gateway:** the machine running Hermes, which stores the memories and builds every prompt. Private by default. Set it to Shared where you don't trust the machine (for example Hermes Cloud, or a server someone else runs); a Shared gateway also keeps no Private memories: `wl_remember` and `/memories add` refuse Private saves there. See [Where the backend runs](#where-the-backend-runs).
   - **Platform:** where you chat. The terminal, the Hermes TUI, Desktop and `hermes chat` (Hermes platforms `cli`, `tui`, `desktop` and `local`) are Private by default. Every other platform is Shared: chat apps such as Telegram, Signal, Slack and WhatsApp, whose servers see the replies, and also the API server, the dashboard's web chat, scheduled jobs and subagents. The Hermes Webapp (Desktop's interface in a browser, for example on your phone) counts as `desktop` too.
@@ -67,6 +67,7 @@ To stop using it, run `hermes memory off` (and `hermes plugins remove whos-liste
   The check is a side call, which skips the guard, and Hermes retries a failed side call on your `fallback_providers`. So Auto-review only runs when that can't send anything somewhere less trusted: on a Private route, only if Hermes' main provider is set (not `auto`) and every fallback is Private too; on a Shared route, only for Shared memories. Otherwise the memory waits, and `/memories pending` says why. It checks at most 3 saves a turn.
 - **Forget means forget.** When a memory is forgotten, whos-listening keeps a tombstone: a hash of its words, not the words. The same fact (ignoring case, spacing and punctuation) can't be saved again from chat. The forgotten text stays in the local file so a forget can be undone, until it is purged.
 - **Provenance.** Every memory records who wrote it, with which tool, on which route (and that route's tier), and in which session and turn.
+- **Sync between gateways (optional).** Each gateway keeps its own memories. With sync set up, your gateways (your computer, a server, Hermes Cloud) share their **Shared** memories and forgets through one file in a private GitHub repository. Private memories never leave the gateway they're on. See [Sync between gateways](#sync-between-gateways).
 
 ### `/memories`
 
@@ -81,6 +82,8 @@ Type these in any Hermes chat. They need the plugin enabled with `hermes plugins
 | `/memories forget N` / `restore N` | Forget a memory, or undo a forget. |
 | `/memories show N` | Tier, status, who wrote it, with which tool, on which route, and its history. |
 | `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
+| `/memories sync` | Sync Shared memories with your other gateways now (when sync is set up). |
+| `/memories sync status` | How sync is set up, when it last ran and what it did. |
 
 Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
 
@@ -116,7 +119,8 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
   "private_platforms": ["signal"],
   "shared_platforms": ["webui"],
   "gateway": "private",
-  "review": "auto"
+  "review": "auto",
+  "sync": {"repo": "you/whos-listening-sync", "name": "laptop"}
 }
 ```
 
@@ -125,7 +129,34 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
 - `private_platforms` adds Hermes platforms that may see Private memories, for example `signal` if you trust its end-to-end encryption (messages are decrypted only on the gateway and your phone). `shared_platforms` wins over every default, so you can make `desktop` Shared too.
 - `gateway` is `"private"` (the default) or `"shared"`, for the machine this Hermes runs on. Any other value counts as Shared. whos-listening can't tell a laptop from a server, so only you can say whether you trust it.
 - `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
-- If the file can't be read, every route counts as Shared, no Private memory is saved, and every held save waits for you until it is fixed.
+- `sync` turns on [sync between gateways](#sync-between-gateways): `repo` (`owner/name`, required), and optionally `path` (default `whos-listening/shared.json`), `branch` (default: the repository's default branch), `name` (how this gateway appears in the file; one is made up if you leave it out) and `interval` (seconds between automatic syncs, default 60, at least 30).
+- If the file can't be read, every route counts as Shared, no Private memory is saved, sync is off, and every held save waits for you until it is fixed.
+
+## Sync between gateways
+
+Each gateway (the machine running Hermes) keeps its own memories. If you run more than one, say your computer and a Hermes Cloud instance, sync lets them share what they know about you.
+
+**What travels, and what never does:**
+
+- **Shared memories only.** Private memories are never read for sync, and sync never changes a Private memory. A memory waiting for you (pending) travels only once you approve it.
+- **Forgets travel without their text.** A forgotten memory goes out as its id and a hash of its words (what a tombstone keeps), so forgetting a memory on one gateway forgets it on all of them, and it can't be saved again from chat on any of them.
+- **The last change wins**, by each memory's change time. If two changes have the same time, the forget wins. If you saved the same words on two gateways, each keeps one line.
+- **A decision made on one gateway alone stays there.** Forgetting a Private memory, or turning down a memory that waits for you (also one that arrived by sync), isn't sent to the other gateways; and a memory that arrives with words you forgot that way is kept out of that gateway, without being forgotten anywhere else.
+- **Arrivals are checked.** A memory that arrives passes the [rule screen](#how-it-works). If it flags the memory (a link, an instruction to assistants, …), the memory waits for you in `/memories pending`. Its history shows which gateway it came from.
+
+**Where:** one JSON file in a private GitHub repository you create, read and written through GitHub's API. Each gateway only makes outgoing calls, so a computer that nothing can reach from outside (behind a home router, say) works too. GitHub accepts a write only against the version that gateway read, so two gateways can't overwrite each other: one reads again and retries.
+
+**Undo:** `/memories undo` undoes your own changes only. If a change from another gateway reached a memory after your change, undo says so instead of replaying yours over it.
+
+**When:** when the gateway starts, at the start of a turn (at most once per `interval`), right after a Shared memory changes, and whenever you type `/memories sync`. Syncs run in the background, so a chat never waits for one.
+
+**Set it up:**
+
+1. Create a **private** GitHub repository just for this, for example `you/whos-listening-sync`. It can be empty.
+2. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with access to **only that repository** and the **Contents: Read and write** permission.
+3. On each gateway, give Hermes the token as `WHOS_LISTENING_SYNC_TOKEN`, the way you give it other keys (for example in that gateway's `.env`). whos-listening reads it only through Hermes' secrets.
+4. On each gateway, add `"sync": {"repo": "you/whos-listening-sync", "name": "laptop"}` to `settings.json`, with a different `name` per gateway.
+5. Type `/memories sync` on each gateway, then `/memories sync status` to check.
 
 ## Where the backend runs
 
@@ -183,6 +214,9 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 
 Be clear about what whos-listening does not protect (yet):
 
+- **Sync shares your Shared memories with GitHub.** The sync file, in a private repository you create, holds the text of every Shared memory (forgotten ones only as a hash), which gateway saved it, and when. Anyone who can read the repository can read them, and anyone who can write to it can add memories to all your gateways. Arrivals pass the rule screen, but that's a short list of patterns. Keep the repository private, and give the token access to that repository alone.
+- **Sync trusts each gateway's clock.** The last change wins by its time, so a gateway whose clock is far off can win or lose a change it shouldn't.
+- **Sync needs the gateway to reach GitHub.** A gateway that can't keeps working on its own memories and catches up on its next sync.
 - **The gateway is trusted unless you say otherwise.** Private memories are stored, and built into prompts, on whatever machine runs Hermes. whos-listening can't tell whether that's your laptop, a rented server or Hermes Cloud (see [Where the backend runs](#where-the-backend-runs)).
 - **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
   - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.

@@ -26,4 +26,6 @@ Done on 2026-11-09 for `976b90f836dd6d4e455ee04def2bd686b2b76a51`:
 
 If `main` moves before the PR is opened, re-pin `sha` and `docs_url` to the new commit, then re-run steps 2 and 3.
 
+Sync between gateways (added after the current pin) must be in the entry before it goes upstream: disclose the network calls to GitHub (only when sync is set up), the background sync thread, and the optional `WHOS_LISTENING_SYNC_TOKEN` (read through Hermes' secrets) in `description`, and re-check `capabilities` against validate.
+
 Upstream asks kept as backlog issues in this repo (filed together at the end, with the owner's OK): #3, #4, #5, plus "run `llm_request` middleware on compression, the tool-limit summary and mixture-of-agents requests".
