@@ -32,7 +32,7 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
 
 ### `/memories`
 
-Type these in any Hermes chat. They need the plugin enabled (`hermes plugins install --enable` does that); otherwise Hermes only knows `/memories` after the first normal message.
+Type these in any Hermes chat. They need the plugin enabled with `hermes plugins enable whos-listening` (for a memory provider, `hermes plugins install --enable` only sets `memory.provider`); otherwise Hermes only knows `/memories` after the first normal message.
 
 | Command | What it does |
 | --- | --- |
