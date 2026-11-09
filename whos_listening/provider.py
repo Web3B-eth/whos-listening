@@ -16,7 +16,8 @@ from agent.memory_provider import MemoryProvider
 
 from . import autoreview, commands, guard, recall, review, tools
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, side_call_routes_private,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, platform_verdict,
+    side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
 
@@ -97,6 +98,7 @@ class WhosListeningProvider(MemoryProvider):
         self._dir: Optional[Path] = None
         self._session_id = ""
         self._agent_context = "primary"
+        self._platform = "cli"
         self._turn = ""
         self._author = ""
         self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
@@ -117,6 +119,7 @@ class WhosListeningProvider(MemoryProvider):
         self._store = SQLiteStore(self._dir / DB_FILE)
         self._session_id = session_id or ""
         self._agent_context = str(kwargs.get("agent_context") or "primary")
+        self._platform = str(kwargs.get("platform") or "cli")
 
     def shutdown(self) -> None:
         if self._store is not None:
@@ -165,6 +168,9 @@ class WhosListeningProvider(MemoryProvider):
     def _route(self, session_id: str = "") -> tuple[Optional[Route], Verdict]:
         sid = session_id or self._session_id
         route, why = ROUTES.believed(sid, _config_default_route())
+        on_platform = platform_verdict(self._platform)
+        if on_platform is not None:          # a chat app: Shared whatever the model
+            return route, on_platform
         verdict = tier_for(route, self._dir.parent if self._dir else None)
         return route, Verdict(verdict.tier, f"{verdict.reason} ({why})")
 
@@ -373,6 +379,8 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
                       base_url=str(kwargs.get("base_url") or ""))
         ROUTES.saw_request(str(kwargs.get("session_id") or ""), route)
         tier = tier_for(route, _active_home()).tier
+        if platform_verdict(str(kwargs.get("platform") or "")) is not None:
+            tier = SHARED                    # a chat app: Shared whatever the model
     except Exception as exc:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",
                        type(exc).__name__)

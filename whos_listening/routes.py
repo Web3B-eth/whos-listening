@@ -27,6 +27,20 @@ LOCAL_SUFFIXES = (".localhost", ".local")
 # Providers that are Shared whatever the settings say, because the guard can't check what
 # they send. Hermes' MoA builds its requests from a copy made before middleware runs.
 ALWAYS_SHARED_PROVIDERS = {"moa": "MoA sends the chat to several models the guard can't check"}
+# Hermes platforms where the chat stays on this computer (or the user's own gateway). On any
+# other platform (Telegram, Signal, Slack, the API server, cron, subagents, ...) every route
+# counts as Shared: the chat app's servers see the replies, whatever model wrote them.
+LOCAL_PLATFORMS = frozenset({"cli", "local", "tui", "desktop"})
+
+
+def platform_verdict(platform: str) -> Optional["Verdict"]:
+    """Shared for a non-local platform; None for a local one, or when the platform isn't given
+    (the caller then goes by the route alone). Hermes' plain CLI passes an empty platform to
+    middleware; the provider itself always gets one (``cli`` by default)."""
+    name = str(platform or "").strip().lower()
+    if not name or name in LOCAL_PLATFORMS:
+        return None
+    return Verdict(SHARED, f"this chat is on {name}, whose servers see the replies")
 
 
 @dataclass(frozen=True)

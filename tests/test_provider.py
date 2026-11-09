@@ -500,3 +500,37 @@ def test_two_copies_of_the_plugin_share_their_books(plugin):
     finally:
         for key in [k for k in sys.modules if k == name or k.startswith(name + ".")]:
             del sys.modules[key]
+
+
+def test_messaging_platform_makes_every_route_shared(plugin, tmp_path, monkeypatch):
+    """On a chat app the app's servers see the replies, so even a Private route counts as Shared."""
+    monkeypatch.setattr(plugin, "_config_default_route", lambda: None)
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    local = plugin.WhosListeningProvider()
+    local.initialize("sess-1", hermes_home=str(tmp_path), platform="cli")
+    see(plugin, "http://127.0.0.1:9/v1")                         # a Private route
+    tool(local, "wl_remember", {"text": "Is saving up for a canoe"})
+    tool(local, "wl_remember", {"text": "Likes jazz", "tier": "shared"})
+    assert "canoe" in local.prefetch("plans", session_id="sess-1")
+    local.shutdown()
+
+    chat = plugin.WhosListeningProvider()
+    chat.initialize("sess-1", hermes_home=str(tmp_path), platform="telegram")
+    block = chat.prefetch("plans", session_id="sess-1")
+    assert "canoe" not in block and "jazz" in block
+    found = tool(chat, "wl_recall", {"query": ""})
+    assert [m["tier"] for m in found["memories"]] == ["shared"] and found["private_withheld"] is True
+    saved = tool(chat, "wl_remember", {"text": "Keeps bees"})
+    assert "Keeps bees" not in json.dumps(saved)                   # a Private save isn't echoed back
+    chat.shutdown()
+
+
+def test_guard_strips_private_on_a_chat_app_even_on_a_private_route(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private>', "hi")
+    args = dict(request=req, original_request=req, session_id="sess-1", provider="custom", model="m",
+                base_url="http://127.0.0.1:9/v1")
+    assert plugin._on_llm_request(**args, platform="cli") is None
+    assert plugin._on_llm_request(**args, platform="") is None       # plain CLI: by route alone
+    out = plugin._on_llm_request(**args, platform="telegram")
+    assert "canoe" not in json.dumps(out["request"])

@@ -103,3 +103,12 @@ def test_route_book_beliefs():
     book.saw_request("s3", real)
     book.saw_request("s4", real)
     assert book.last_seen("s1") is None
+
+
+def test_messaging_platforms_are_shared():
+    from whos_listening.routes import platform_verdict
+    for local in ("cli", "local", "tui", "desktop", "Desktop ", ""):
+        assert platform_verdict(local) is None
+    for chat_app in ("telegram", "signal", "slack", "api_server", "webui", "cron", "subagent"):
+        v = platform_verdict(chat_app)
+        assert v is not None and v.tier == SHARED and chat_app in v.reason

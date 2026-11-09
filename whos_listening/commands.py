@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shlex
 
+from .routes import LOCAL_PLATFORMS
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Event, ForgottenError, Memory, Provenance, Store,
     StoreError,
@@ -27,8 +28,7 @@ HELP = """\
 
 HIDDEN = "(private: shown only in the terminal or the local app)"
 
-# Hermes platforms where the reply stays on this computer.
-LOCAL_PLATFORMS = frozenset({"cli", "local", "tui", "desktop"})   # an unknown or empty one is not local
+# An unknown or empty platform does not show Private text (see routes.LOCAL_PLATFORMS).
 
 
 def shows_private(platform: str) -> bool:
