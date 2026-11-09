@@ -466,3 +466,14 @@ def test_a_reply_from_another_model_does_not_count(plugin, monkeypatch):
     with pytest.raises(RuntimeError):
         plugin._ask_chat_model("prompt", expected_model="m")
     assert plugin._ask_chat_model("prompt") == '{"save": true}'      # no expectation: accepted
+
+
+def test_recall_runs_at_most_five_times_a_turn(plugin, provider):
+    see(plugin, "https://api.example.com/v1")
+    provider.on_turn_start(1, "What do you know about my diet?")
+    results = [tool(provider, "wl_recall", {"query": "diet"}) for _ in range(6)]
+    assert [r["ok"] for r in results] == [True] * 5 + [False]
+    assert "at most 5 times a turn" in results[-1]["error"]
+    assert tool(provider, "wl_remember", {"text": "Likes tea", "tier": "shared"})["ok"] is True
+    provider.on_turn_start(2, "And now?")                  # a new turn starts a new count
+    assert tool(provider, "wl_recall", {"query": ""})["ok"] is True

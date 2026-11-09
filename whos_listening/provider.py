@@ -84,6 +84,7 @@ class WhosListeningProvider(MemoryProvider):
         self._author = ""
         self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
         self._checks_this_turn = 0
+        self._recalls_this_turn = 0
 
     @property
     def name(self) -> str:
@@ -128,6 +129,7 @@ class WhosListeningProvider(MemoryProvider):
         self._turn = str(turn_number)
         self._author = str(kwargs.get("author_name") or "")
         self._checks_this_turn = 0
+        self._recalls_this_turn = 0
         if kwargs.get("author_is_bot") or not isinstance(message, str):
             return
         text = _QUOTE_RE.sub("", message).strip()     # someone else's quoted words don't count
@@ -177,6 +179,10 @@ class WhosListeningProvider(MemoryProvider):
             return tools._err("whos-listening is not initialized.")
         if self._agent_context != "primary" and tool_name in (tools.REMEMBER, tools.FORGET):
             return tools._err("Memories can only be changed from the main chat.")
+        if tool_name == tools.RECALL:
+            if self._recalls_this_turn >= tools.RECALLS_PER_TURN:
+                return tools._err(f"wl_recall runs at most {tools.RECALLS_PER_TURN} times a turn.")
+            self._recalls_this_turn += 1
         route, verdict = self._route()
 
         def provenance() -> Provenance:

@@ -15,7 +15,7 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
 - **Recall.** Before each turn, whos-listening adds the memories the route may see: Private and Shared on a Private route, Shared only otherwise. With 30 memories or fewer it adds them all; with more, the best matches for your message plus the 5 newest. Private lines are wrapped in `<wl-private>` tags so a later step can find and remove them anywhere in a request.
 - **Tools** the model can call:
   - `wl_remember`: save one short fact. Private unless you said it can be shared.
-  - `wl_recall`: search memories (Private ones only on a Private route).
+  - `wl_recall`: search memories (Private ones only on a Private route). At most 5 searches a turn, so a model that keeps searching stops.
   - `wl_forget`: forget a memory by number.
   Only the main chat can save or forget; subagents and scheduled jobs can only read.
 - **The guard.** Just before each main chat request leaves, whos-listening checks that request's real route. On a Shared route it removes every tagged Private memory from every part of the request: the system prompt, earlier turns Hermes replays from history, and tool results. If that clean-up fails, it removes all memories. If even that fails, it sends a short notice instead of the conversation. It never lets an error send the request unchecked.
