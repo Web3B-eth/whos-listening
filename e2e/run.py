@@ -54,6 +54,8 @@ providers:
   shared-sim:
     base_url: "http://127.0.0.1:{port}/v1"
     key_env: WL_E2E_DUMMY_KEY
+plugins:
+  enabled: [whos-listening]
 memory:
   provider: whos-listening
   memory_enabled: false
@@ -244,6 +246,11 @@ def main() -> int:
                 break
             except OSError:
                 time.sleep(0.1)
+
+        # 0. /memories works as the very first message to a fresh gateway (general discovery
+        #    registers it at startup; before, it was unknown until a chat had built an agent).
+        out = run.command("/memories")
+        run.check("/memories on a fresh gateway", SHARED_TEXT in out and "Unknown command" not in out, out[-200:])
 
         # 0. A fresh gateway's first turn carries Shared memories only: recall doesn't trust any
         #    route until the guard has run once in the process.

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
+import types
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,11 +27,26 @@ DATA_DIR = "whos-listening"          # under the profile's HERMES_HOME
 DB_FILE = "memories.sqlite"
 SETTINGS_FILE = "settings.json"
 
+_SHARED_STATE = "_whos_listening_state"
+
+
+def _process_wide(name: str, factory: Any) -> Any:
+    """One object per plugin folder per process.
+
+    Hermes imports this folder twice, under two module names: general plugin discovery loads it
+    at startup (so ``/memories`` exists before the first chat), and the memory loader loads it
+    again for the provider (a "dual-kind" plugin). Hermes keeps the hooks from the first copy and
+    the provider from the second, so the books they share must be the same objects."""
+    holder = sys.modules.setdefault(_SHARED_STATE, types.ModuleType(_SHARED_STATE))
+    books = holder.__dict__.setdefault("books", {})
+    return books.setdefault((str(Path(__file__).resolve().parent.parent), name), factory())
+
+
 # Routes seen per session id. Module-level because Hermes hooks are plain functions, but it is
 # keyed by session id and holds route names only, never memory text or profile paths.
-ROUTES = RouteBook()
+ROUTES = _process_wide("routes", RouteBook)
 # Chats that have read outside content (tool names only). Saves and forgets in them wait.
-OUTSIDE = review.OutsideBook()
+OUTSIDE = _process_wide("outside", review.OutsideBook)
 
 
 def _config() -> Any:
