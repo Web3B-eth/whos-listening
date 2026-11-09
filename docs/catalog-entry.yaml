@@ -1,12 +1,12 @@
 # Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml, ready for the owner's OK.
 # Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
-# Pinned to main at a4bcedb (2026-11-09): `hermes plugins validate --install-deps` and
+# Pinned to main at 976b90f (2026-11-09): `hermes plugins validate --install-deps` and
 # `hermes plugins doctor --ci` passed on a clean copy of that commit. If main moves before
 # submission, re-pin `sha` and `docs_url` and re-run both.
 name: whos-listening
 title: whos-listening
 repo: https://github.com/Web3B-eth/whos-listening
-sha: a4bcedb321bcb7643417b083f590f88769f1e2cb
+sha: 976b90f836dd6d4e455ee04def2bd686b2b76a51
 subdir: ""
 version: "0.1.0"
 description: >-
@@ -38,7 +38,7 @@ description: >-
 maintainer: Web3B-eth
 tier: community
 category: memory
-docs_url: https://github.com/Web3B-eth/whos-listening/blob/a4bcedb321bcb7643417b083f590f88769f1e2cb/README.md
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/976b90f836dd6d4e455ee04def2bd686b2b76a51/README.md
 readme: true
 capabilities:
   provides_tools: []

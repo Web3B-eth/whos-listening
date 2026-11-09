@@ -10,7 +10,7 @@
 
 ## What does this PR do?
 
-Adds whos-listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `a4bcedb321bcb7643417b083f590f88769f1e2cb`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
+Adds whos-listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `976b90f836dd6d4e455ee04def2bd686b2b76a51`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
 
 whos-listening is a memory provider that knows who is listening. Every memory is Private or Shared. A request carries Private memories only if all three layers that see it are Private:
 - the gateway (the machine running Hermes, which stores the memories);
@@ -31,8 +31,8 @@ Each layer is the user's call in `settings.json`. An `llm_request` guard removes
 
 ## How to Test
 
-Tested with Hermes v0.23.0 in a throwaway `HERMES_HOME`, plugin at `a4bcedb321bcb7643417b083f590f88769f1e2cb`:
-- `python scripts/validate_plugin_catalog.py plugin-catalog/` (from `main`), on the entry: OK, no warnings.
+Tested with Hermes v0.23.0 in a throwaway `HERMES_HOME`, plugin at `976b90f836dd6d4e455ee04def2bd686b2b76a51`:
+- `python scripts/validate_plugin_catalog.py` on the entry (with `removed.yaml`): OK, no warnings.
 - `hermes plugins validate --install-deps <clean checkout>`: passed (security scan: safe; no core override; declared hooks and middleware match).
 - `hermes plugins doctor --ci <clean checkout>`: OK.
 - `python scripts/scan_plugin_payloads.py <clean checkout>`: exit 0.

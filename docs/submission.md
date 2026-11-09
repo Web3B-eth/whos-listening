@@ -4,18 +4,18 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 
 | Step | Who | Status |
 | --- | --- | --- |
-| Public repo with README, Install, Limits and license | done in this repo | ready (`main` at `a4bcedb`) |
+| Public repo with README, Install, Limits and license | done in this repo | ready (`main` at `976b90f`) |
 | Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | ready for the owner's OK: entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
 | Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
 
 ## Before opening the catalog PR
 
-Done on 2026-11-09 for `a4bcedb321bcb7643417b083f590f88769f1e2cb`:
+Done on 2026-11-09 for `976b90f836dd6d4e455ee04def2bd686b2b76a51`:
 
 1. ✓ The open PRs are merged, so `main` has the final code.
 2. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared hooks and middleware match) and `hermes plugins doctor --ci` passed (manifest `standalone`, registration OK).
-3. ✓ `sha` and `docs_url` in the entry point at that commit. `capabilities` matches what validate reports. The catalog's own structural check (`scripts/validate_plugin_catalog.py` from hermes-agent `main`) passes with no warnings, and its payload scan (`scripts/scan_plugin_payloads.py`) passes.
+3. ✓ `sha` and `docs_url` in the entry point at that commit. `capabilities` matches what validate reports. The catalog's own structural check (`scripts/validate_plugin_catalog.py` from hermes-agent; the 0.23.0 copy for the re-pin, since a fresh fetch from `main` was rate-limited, and `main`'s catalog rules are unchanged) passes with no warnings, and its payload scan (`scripts/scan_plugin_payloads.py`) passes.
 4. ✓ Read the admission rules (`plugin-catalog/README.md` on hermes-agent `main`, the same as in 0.23.0) against the code:
    - Rule 6: capabilities match.
    - Rule 9: the plugin adds one entry of its own to `sys.modules`, disclosed in the entry and the PR text, and rebinds nothing in core.
