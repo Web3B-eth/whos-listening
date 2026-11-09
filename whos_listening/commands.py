@@ -12,7 +12,7 @@ from typing import Optional
 
 from .routes import RouteSettings, platform_verdict
 from .store import (
-    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Event, ForgottenError, Memory, Provenance, Store,
+    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, SYNC_ACTIONS, Event, ForgottenError, Memory, Provenance, Store,
     StoreError,
 )
 
@@ -25,7 +25,9 @@ HELP = """\
 /memories forget N        forget a memory (it can't be saved again from chat)
 /memories restore N       undo a forget
 /memories show N          a memory's details: tier, who wrote it, on which route
-/memories add [shared] TEXT   save a memory yourself (Private unless you say shared)"""
+/memories add [shared] TEXT   save a memory yourself (Private unless you say shared)
+/memories sync            sync Shared memories with your other gateways now (if sync is set up)
+/memories sync status     how sync is set up and how the last one went"""
 
 HIDDEN = "(private: shown only in the terminal or the local app)"
 
@@ -185,12 +187,20 @@ def _undo(store: Store, e: Event, show_private: bool) -> str:
 
 def cmd_undo(store: Store, show_private: bool) -> str:
     for e in store.events(limit=50):
-        if e.undone or e.action == "undo":
-            continue
+        if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS:
+            continue        # a change that arrived by sync isn't yours to undo here
         if store.get(e.memory_id) is None:          # purged: nothing left to undo
             store.mark_undone(e.id)
             continue
-        msg = _undo(store, e, show_private)
+        if any(x.id > e.id and x.action in SYNC_ACTIONS for x in store.events(memory_id=e.memory_id, limit=50)):
+            store.mark_undone(e.id)
+            return (f"Your last change to #{e.memory_id} was overtaken by a change from another gateway "
+                    "(sync), so it can't be undone here.")
+        try:
+            msg = _undo(store, e, show_private)
+        except StoreError as exc:
+            store.mark_undone(e.id)                 # never leave undo stuck on this change
+            return f"That change can't be undone any more: {exc}"
         store.mark_undone(e.id)
         store.log_event(e.memory_id, "undo", "user")
         return msg
@@ -232,6 +242,8 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
             return cmd_show(store, one(), show_private)
         if cmd == "add":
             return cmd_add(store, tail, show_private, via, private_refused)
+        if cmd == "sync":
+            return "Sync runs inside Hermes: type /memories sync in a chat."
         if cmd in ("help", "-h", "--help"):
             return HELP
         return f"Unknown command {cmd!r}.\n\n{HELP}"

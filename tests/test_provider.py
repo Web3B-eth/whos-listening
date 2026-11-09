@@ -562,3 +562,75 @@ def test_private_platforms_setting_lets_a_chat_app_see_private(plugin, tmp_path,
     tool(p, "wl_remember", {"text": "Is saving up for a canoe"})
     assert "canoe" in p.prefetch("plans", session_id="sess-1")
     p.shutdown()
+
+
+# -- sync between gateways --------------------------------------------------------------
+
+def _sync_setup(plugin, tmp_path, monkeypatch, token="tok"):
+    from test_sync import FakeFile
+    (tmp_path / "whos-listening").mkdir(exist_ok=True)
+    (tmp_path / "whos-listening" / "settings.json").write_text(
+        '{"sync": {"repo": "me/notes", "name": "laptop"}}')
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_sync_token", lambda: token)
+    file = FakeFile()
+    monkeypatch.setattr(plugin.wl_sync, "GitHubFile", lambda settings, tok: file)
+    return file
+
+
+def test_memories_sync_runs_now_and_reports(plugin, provider, tmp_path, monkeypatch):
+    file = _sync_setup(plugin, tmp_path, monkeypatch)
+    monkeypatch.setattr(plugin, "maybe_sync", lambda *a, **k: False)     # only the command syncs here
+    provider._store.add("Likes jazz", "shared", plugin.Provenance())
+    provider._store.add("Is saving up for a canoe", "private", plugin.Provenance())
+    out = plugin._memories_command("sync", platform="cli")
+    assert out == "Synced with me/notes: 1 sent."
+    assert "Likes jazz" in file.raw.decode() and "canoe" not in file.raw.decode()
+    status = plugin._memories_command("sync status", platform="cli")
+    assert "me/notes" in status and "laptop" in status and "1 sent" in status
+
+
+def test_memories_sync_without_token_or_settings(plugin, provider, tmp_path, monkeypatch):
+    _sync_setup(plugin, tmp_path, monkeypatch, token="")
+    assert "No token" in plugin._memories_command("sync", platform="cli")
+    (tmp_path / "whos-listening" / "settings.json").write_text("{}")
+    assert "Sync is off" in plugin._memories_command("sync", platform="cli")
+
+
+def test_maybe_sync_waits_its_interval_unless_forced(plugin, tmp_path, monkeypatch):
+    _sync_setup(plugin, tmp_path, monkeypatch)
+    ran = []
+
+    def worker(home, settings, token):
+        ran.append(token)
+        with plugin._sync_state(home).lock:
+            plugin._sync_state(home).running = False
+
+    monkeypatch.setattr(plugin, "_sync_worker", worker)
+    assert plugin.maybe_sync(tmp_path) is True
+    _until(lambda: len(ran) == 1)
+    assert plugin.maybe_sync(tmp_path) is False                     # within the interval
+    assert plugin.maybe_sync(tmp_path, force=True) is True          # a Shared change
+    _until(lambda: len(ran) == 2)
+    assert ran == ["tok", "tok"]
+    monkeypatch.setattr(plugin, "_sync_token", lambda: "")
+    assert plugin.maybe_sync(tmp_path, force=True) is False         # no token, no sync
+
+
+def _until(cond, timeout=5.0):
+    import time
+    end = time.time() + timeout
+    while time.time() < end and not cond():
+        time.sleep(0.02)
+    assert cond()
+
+
+def test_only_a_shared_change_forces_a_sync(plugin, provider, monkeypatch):
+    calls = []
+    monkeypatch.setattr(plugin, "maybe_sync", lambda home, force=False: calls.append(force))
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})            # Private
+    tool(provider, "wl_recall", {"query": ""})
+    assert calls == []
+    tool(provider, "wl_remember", {"text": "Likes jazz", "tier": "shared"})
+    assert calls == [True]

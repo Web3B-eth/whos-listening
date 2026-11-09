@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 from typing import Any, Optional
@@ -15,6 +17,7 @@ from typing import Any, Optional
 from agent.memory_provider import MemoryProvider
 
 from . import autoreview, commands, guard, recall, review, tools
+from . import sync as wl_sync
 from .routes import (
     Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
     private_storage_refusal, side_call_routes_private,
@@ -135,6 +138,8 @@ class WhosListeningProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._platform = str(kwargs.get("platform") or "cli")
+        if self._agent_context == "primary":
+            maybe_sync(self._dir.parent)
 
     def shutdown(self) -> None:
         if self._store is not None:
@@ -165,6 +170,8 @@ class WhosListeningProvider(MemoryProvider):
         self._author = str(kwargs.get("author_name") or "")
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
+        if self._dir is not None:
+            maybe_sync(self._dir.parent)
         if kwargs.get("author_is_bot") or not isinstance(message, str):
             return
         text = _QUOTE_RE.sub("", message).strip()     # someone else's quoted words don't count
@@ -226,10 +233,14 @@ class WhosListeningProvider(MemoryProvider):
                 route_tier=verdict.tier, session_id=self._session_id, turn=self._turn, author=self._author,
             )
 
-        return tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
-                            private_refused=_private_refused(self._dir.parent if self._dir else None),
-                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
-                            on_outside_hold=self._start_auto_review)
+        before = _shared_stamp(self._store) if tool_name != tools.RECALL else None
+        out = tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
+                           private_refused=_private_refused(self._dir.parent if self._dir else None),
+                           outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
+                           on_outside_hold=self._start_auto_review)
+        if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
+            maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
+        return out
 
     # -- Auto-review ---------------------------------------------------------
 
@@ -373,10 +384,166 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     home = _active_home()
     if home is None:
         return "whos-listening can't tell which Hermes profile this is."
+    words = (raw_args or "").split()
+    if words and words[0].lower() == "sync":
+        return _sync_command(home, words[1].lower() if len(words) > 1 else "")
     settings, _ = _load_settings(home)
-    return commands.open_and_run(lambda: SQLiteStore(home / DATA_DIR / DB_FILE), raw_args,
-                                 show_private=commands.shows_private(platform, settings),
-                                 private_refused=_private_refused(home))
+    store_path = home / DATA_DIR / DB_FILE
+    before = _stamp_at(store_path)
+    out = commands.open_and_run(lambda: SQLiteStore(store_path), raw_args,
+                                show_private=commands.shows_private(platform, settings),
+                                private_refused=_private_refused(home))
+    if _stamp_at(store_path) != before:
+        maybe_sync(home, force=True)
+    return out
+
+
+# -- sync between gateways (sync.py) ------------------------------------------------
+
+class _SyncState:
+    """Per profile, per process: when the last automatic sync started, and whether one runs."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()          # guards the fields below
+        self.run_lock = threading.Lock()      # one sync at a time against the store and the file
+        self.last = 0.0
+        self.running = False
+        self.again = False                    # a change came in while a sync ran: run once more
+
+
+SYNC_STATE = _process_wide("sync", dict)
+SYNC_COMMAND_WAIT = 30.0     # seconds /memories sync waits for a background sync to finish
+
+
+def _sync_state(home: Path) -> "_SyncState":
+    return SYNC_STATE.setdefault(str(Path(home).resolve()), _SyncState())
+
+
+def _sync_settings(home: Path) -> wl_sync.SyncSettings:
+    return wl_sync.load_settings(Path(home) / DATA_DIR / SETTINGS_FILE)
+
+
+def _sync_token() -> str:
+    """The sync token, through Hermes' secrets for the active profile (never read from a file)."""
+    try:
+        from agent.secret_scope import get_secret
+        return str(get_secret(wl_sync.TOKEN_ENV) or "")
+    except Exception:
+        return ""
+
+
+def _shared_stamp(store: SQLiteStore) -> tuple:
+    rows = store.shared_for_sync()
+    return (len(rows), sum(1 for m in rows if m.status == "active"), max((m.updated_at for m in rows), default=""))
+
+
+def _stamp_at(path: Path) -> tuple:
+    if not path.exists():
+        return ()
+    store = SQLiteStore(path)
+    try:
+        return _shared_stamp(store)
+    finally:
+        store.close()
+
+
+def _run_sync(home: Path, settings: wl_sync.SyncSettings, token: str) -> wl_sync.SyncResult:
+    """One sync on a store connection of its own. The caller holds the state's run_lock."""
+    store = SQLiteStore(Path(home) / DATA_DIR / DB_FILE)
+    try:
+        return wl_sync.run(store, settings, token)
+    finally:
+        store.close()
+
+
+def _sync_worker(home: Path, settings: wl_sync.SyncSettings, token: str) -> None:
+    st = _sync_state(home)
+    try:
+        while True:
+            try:
+                with st.run_lock:
+                    result = _run_sync(home, settings, token)
+                logger.info("whos-listening sync: %s", result.summary())
+            except wl_sync.SyncError as exc:
+                logger.warning("whos-listening sync: %s", exc)
+            except Exception as exc:
+                logger.warning("whos-listening sync failed: %s", type(exc).__name__)
+            with st.lock:           # check for a change and stop in one step, so none is missed
+                if not st.again:
+                    st.running = False
+                    return
+                st.again = False
+    except BaseException:
+        with st.lock:
+            st.running = False      # whatever happened, a later change can start a new sync
+        raise
+
+
+def maybe_sync(home: Optional[Path], *, force: bool = False) -> bool:
+    """Start a background sync if sync is on and one is due (``force``: a Shared memory just
+    changed here). Never blocks and never raises. Returns whether one started."""
+    if home is None:
+        return False
+    try:
+        settings = _sync_settings(home)
+        if not settings.enabled:
+            return False
+        st = _sync_state(home)
+        with st.lock:
+            if st.running:
+                st.again = st.again or force
+                return False
+            now = time.monotonic()
+            if not force and st.last and now - st.last < settings.interval:
+                return False
+            token = _sync_token()       # read here: this is the profile's own context
+            if not token:
+                return False
+            st.running, st.last = True, now
+        try:
+            from agent.memory_provider import spawn_context_thread
+            thread = spawn_context_thread(_sync_worker, name="whos-listening-sync", args=(home, settings, token))
+        except Exception:
+            thread = threading.Thread(target=_sync_worker, name="whos-listening-sync",
+                                      args=(home, settings, token), daemon=True)
+        thread.start()
+        return True
+    except Exception as exc:
+        logger.debug("whos-listening: could not start a sync: %s", exc)
+        try:
+            with _sync_state(home).lock:
+                _sync_state(home).running = False
+        except Exception:
+            pass
+        return False
+
+
+def _sync_command(home: Path, sub: str) -> str:
+    """``/memories sync`` (run one now and report) and ``/memories sync status``."""
+    settings, token = _sync_settings(home), _sync_token()
+    store_path = home / DATA_DIR / DB_FILE
+    store = SQLiteStore(store_path)
+    try:
+        if sub == "status" or not settings.enabled or not token:
+            return wl_sync.status(store, settings, bool(token))
+        if sub:
+            return "Use /memories sync, or /memories sync status."
+    finally:
+        store.close()
+    st = _sync_state(home)
+    if not st.run_lock.acquire(timeout=SYNC_COMMAND_WAIT):
+        return "A sync is already running. Try again in a moment."
+    try:
+        result = _run_sync(home, settings, token)
+    except wl_sync.SyncError as exc:
+        return f"Sync failed: {exc}"
+    except Exception as exc:
+        return f"Sync failed: {type(exc).__name__}."
+    finally:
+        st.run_lock.release()
+    with st.lock:
+        st.last = time.monotonic()
+    return f"Synced with {settings.repo}: {result.summary()}."
 
 
 # -- the guard: the hard line ------------------------------------------------
@@ -420,4 +587,4 @@ def register_hooks(ctx) -> None:
     ctx.register_middleware("llm_request", _on_llm_request)
     ctx.register_command("memories", _memories_command,
                          description="Review what whos-listening remembers: pending, approve, undo, forget, show",
-                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT]")
+                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT|sync]")

@@ -10,9 +10,10 @@ import re
 import sqlite3
 import threading
 import unicodedata
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -27,11 +28,32 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def stamp_after(previous: str) -> str:
+    """The time for a change to a memory last changed at ``previous``: now, or one second after
+    ``previous`` if the clock isn't past it yet. A change made after seeing another one (perhaps
+    synced from a gateway whose clock runs ahead) is always the later of the two, so sync's
+    last-change-wins never undoes it."""
+    stamp = now_iso()
+    try:
+        prev = datetime.fromisoformat(str(previous))
+    except ValueError:
+        return stamp
+    prev = prev if prev.tzinfo else prev.replace(tzinfo=timezone.utc)
+    if datetime.fromisoformat(stamp) > prev:
+        return stamp
+    return (prev.astimezone(timezone.utc) + timedelta(seconds=1)).replace(microsecond=0).isoformat()
+
+
+def new_uid() -> str:
+    """A memory's id across gateways (sync). Random, so it says nothing about the memory."""
+    return uuid.uuid4().hex
 
 
 @dataclass(frozen=True)
@@ -59,6 +81,7 @@ class Memory:
     pending_reason: str = ""       # why a pending memory waits for the user
     forget_reason: str = ""        # set when the assistant asked to forget it and the user must OK it
     forgotten_from: str = ""       # the status it had before it was forgotten
+    uid: str = ""                  # the same memory's id on every gateway (see sync.py)
 
 
 @dataclass(frozen=True)
@@ -76,8 +99,12 @@ class Event:
 # saved: became active. held: saved as pending. forgot: forgotten. forget_requested: the
 # assistant asked to forget and it waits for the user. approved / rejected: the user decided a
 # pending save or a forget request. restored: a forget was undone. undo: an undo (not undoable).
+# synced_in / synced_forget / synced_restore: a change that arrived from another gateway (sync.py);
+# /memories undo skips them.
 EVENT_ACTIONS = ("saved", "held", "forgot", "forget_requested", "approved", "approved_forget",
-                 "rejected", "rejected_forget", "restored", "undo")
+                 "rejected", "rejected_forget", "restored", "undo",
+                 "synced_in", "synced_forget", "synced_restore")
+SYNC_ACTIONS = ("synced_in", "synced_forget", "synced_restore")
 
 
 class StoreError(ValueError):
@@ -156,12 +183,15 @@ class Store(ABC):
     def set_status(self, memory_id: int, status: str, *, pending_reason: str = "") -> Memory: ...
 
     @abstractmethod
-    def forget(self, memory_id: int) -> Memory:
+    def forget(self, memory_id: int, *, at: Optional[str] = None, travels: Optional[bool] = None) -> Memory:
         """Mark a memory forgotten and leave a tombstone so the same text can't come back.
-        The text stays in the local file (so Undo works) until ``purge``."""
+        The text stays in the local file (so Undo works) until ``purge``. ``at`` sets the change
+        time (sync applies another gateway's change at that gateway's time). ``travels`` overrides
+        whether the tombstone's forget is one other gateways share (default: an active Shared
+        memory's forget does; sync passes True for a forget that came from elsewhere)."""
 
     @abstractmethod
-    def restore(self, memory_id: int) -> Memory:
+    def restore(self, memory_id: int, *, at: Optional[str] = None) -> Memory:
         """Undo a forget: the memory is active again and its tombstone is lifted."""
 
     @abstractmethod
@@ -207,6 +237,42 @@ class Store(ABC):
     @abstractmethod
     def outside_tool(self, session_id: str) -> str:
         """The tool that first brought outside content into this chat, or ``""``."""
+
+    # -- sync (see sync.py) ------------------------------------------------
+
+    @abstractmethod
+    def by_uid(self, uid: str) -> Optional[Memory]: ...
+
+    @abstractmethod
+    def shared_for_sync(self) -> list[Memory]:
+        """Every Shared memory that is active or forgotten (pending ones are not shared yet)."""
+
+    @abstractmethod
+    def import_synced(self, uid: str, text: str, provenance: Provenance, *, created_at: str,
+                      updated_at: str, status: str = ACTIVE, pending_reason: str = "") -> Memory:
+        """Add a Shared memory that arrived from another gateway, keeping its id and times. It lifts
+        a Shared tombstone for the same words (the caller already decided the arrival is newer),
+        never a Private one."""
+
+    @abstractmethod
+    def shared_with_fingerprint(self, fp: str, statuses: Iterable[str] = (ACTIVE,)) -> list[Memory]: ...
+
+    @abstractmethod
+    def add_tombstone(self, fp: str, tier: str, at: str) -> None:
+        """A tombstone for words this gateway never held (a forget that arrived by sync)."""
+
+    @abstractmethod
+    def tombstone(self, fp: str) -> Optional[tuple[str, str, bool]]:
+        """``(when, tier, travels)`` of the tombstone for fingerprint ``fp``, or None. ``travels``:
+        the forget is one to tell other gateways (an active Shared memory was forgotten, or the
+        forget arrived by sync). Forgetting a Private memory or turning down a held save stays
+        on this gateway."""
+
+    @abstractmethod
+    def meta_get(self, key: str, default: str = "") -> str: ...
+
+    @abstractmethod
+    def meta_set(self, key: str, value: str) -> None: ...
 
     @abstractmethod
     def close(self) -> None: ...
@@ -308,6 +374,14 @@ class SQLiteStore(Store):
             at TEXT NOT NULL
         )""",
     )
+    # Version 4: a cross-gateway id per memory, and a small key-value table for sync state.
+    _V4 = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS memories_uid ON memories (uid)",
+        """CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )""",
+    )
     # Columns added in version 3: (name, definition).
     _V3_COLUMNS = (
         ("forget_reason", "TEXT NOT NULL DEFAULT ''"),
@@ -360,6 +434,18 @@ class SQLiteStore(Store):
                     self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {definition}")
             for sql in self._V3:
                 self._db.execute(sql)
+        if version < 4:
+            if not self._has_column("memories", "uid"):
+                self._db.execute("ALTER TABLE memories ADD COLUMN uid TEXT")
+            for (row_id,) in self._db.execute("SELECT id FROM memories WHERE uid IS NULL OR uid = ''").fetchall():
+                self._db.execute("UPDATE memories SET uid = ? WHERE id = ?", (new_uid(), row_id))
+            if not self._has_column("tombstones", "travels"):
+                self._db.execute("ALTER TABLE tombstones ADD COLUMN travels INTEGER NOT NULL DEFAULT 0")
+            # An existing Shared forget travels, unless it turned down a save that was never shared.
+            self._db.execute("UPDATE tombstones SET travels = 1 WHERE tier = 'shared' AND (memory_id IS NULL OR "
+                             "memory_id NOT IN (SELECT id FROM memories WHERE forgotten_from = 'pending'))")
+            for sql in self._V4:
+                self._db.execute(sql)
         if self._fts and not self._db.execute(
                 "SELECT 1 FROM sqlite_master WHERE name = 'memories_fts'").fetchone():
             # A file made where FTS5 was missing, or damaged: build the search index now.
@@ -375,7 +461,7 @@ class SQLiteStore(Store):
             id=row["id"], text=row["text"], tier=row["tier"], status=row["status"],
             created_at=row["created_at"], updated_at=row["updated_at"],
             pending_reason=row["pending_reason"], forget_reason=row["forget_reason"],
-            forgotten_from=row["forgotten_from"],
+            forgotten_from=row["forgotten_from"], uid=row["uid"] or "",
             provenance=Provenance(
                 written_by=row["written_by"], via=row["via"], route=row["route"],
                 route_tier=row["route_tier"], session_id=row["session_id"], turn=row["turn"],
@@ -410,10 +496,10 @@ class SQLiteStore(Store):
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             cur = self._db.execute(
                 """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
-                       written_by, via, route, route_tier, session_id, turn, author)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       written_by, via, route, route_tier, session_id, turn, author, uid)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (text, tier, status, pending_reason, stamp, stamp, p.written_by, p.via, p.route,
-                 p.route_tier, p.session_id, str(p.turn), p.author),
+                 p.route_tier, p.session_id, str(p.turn), p.author, new_uid()),
             )
             return self.get(cur.lastrowid)
 
@@ -470,36 +556,50 @@ class SQLiteStore(Store):
         if status == FORGOTTEN:
             return self.forget(memory_id)  # a forget always leaves a tombstone
         with self._lock, self._db:
-            cur = self._db.execute(
-                "UPDATE memories SET status = ?, pending_reason = ?, updated_at = ? WHERE id = ?",
-                (status, pending_reason if status == PENDING else "", now_iso(), int(memory_id)),
-            )
-            if cur.rowcount == 0:
+            m = self.get(memory_id)
+            if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            return self.get(memory_id)
+            self._db.execute(
+                "UPDATE memories SET status = ?, pending_reason = ?, updated_at = ? WHERE id = ?",
+                (status, pending_reason if status == PENDING else "", stamp_after(m.updated_at), m.id),
+            )
+            return self.get(m.id)
 
-    def forget(self, memory_id):
+    def forget(self, memory_id, *, at=None, travels=None):
         with self._lock, self._db:
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             if m.status == FORGOTTEN:
                 return m
+            stamp = at or stamp_after(m.updated_at)
             self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, "
-                             "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, now_iso(), m.id))
-            self._tombstone(m.text, m.id, m.tier)
+                             "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, stamp, m.id))
+            if travels is None:
+                travels = m.tier == SHARED and m.status == ACTIVE
+            self._tombstone(m.text, m.id, m.tier, stamp, travels)
             return self.get(m.id)
 
-    def _tombstone(self, text: str, memory_id: int, tier: str) -> None:
-        # Keep the strictest tier if the same words were forgotten more than once.
-        fp = fingerprint(text)
-        old = self._db.execute("SELECT tier FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone()
+    def _tombstone(self, text: str, memory_id: Optional[int], tier: str, at: Optional[str] = None,
+                   travels: bool = False) -> None:
+        self._tombstone_fp(fingerprint(text), memory_id, tier, at or now_iso(), travels)
+
+    def _tombstone_fp(self, fp: str, memory_id: Optional[int], tier: str, at: str, travels: bool = False) -> None:
+        # Keep the strictest tier if the same words were forgotten more than once, and keep a
+        # forget that travels travelling.
+        cols = "tier, travels" if self._has_column("tombstones", "travels") else "tier"
+        old = self._db.execute(f"SELECT {cols} FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone()
         if old and old["tier"] == PRIVATE:
             tier = PRIVATE
-        self._db.execute("INSERT OR REPLACE INTO tombstones (fingerprint, memory_id, tier, created_at) "
-                         "VALUES (?,?,?,?)", (fp, memory_id, tier, now_iso()))
+        if "travels" not in cols:       # only while migrating an older file
+            self._db.execute("INSERT OR REPLACE INTO tombstones (fingerprint, memory_id, tier, created_at) "
+                             "VALUES (?,?,?,?)", (fp, memory_id, tier, at))
+            return
+        travels = bool(travels or (old and old["travels"])) and tier == SHARED
+        self._db.execute("INSERT OR REPLACE INTO tombstones (fingerprint, memory_id, tier, created_at, travels) "
+                         "VALUES (?,?,?,?,?)", (fp, memory_id, tier, at, int(travels)))
 
-    def restore(self, memory_id):
+    def restore(self, memory_id, *, at=None):
         with self._lock, self._db:
             m = self.get(memory_id)
             if m is None:
@@ -510,12 +610,14 @@ class SQLiteStore(Store):
             others = self._db.execute(
                 "SELECT text FROM memories WHERE status = 'forgotten' AND id != ?", (m.id,)).fetchall()
             if not any(fingerprint(r["text"]) == fp for r in others):
-                # Keep the tombstone if another forgotten memory has the same words.
-                self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
+                # Keep the tombstone if another forgotten memory has the same words, and never lift
+                # a Private one by restoring a Shared memory (it may stand for a purged Private fact).
+                self._db.execute("DELETE FROM tombstones WHERE fingerprint = ? AND (tier = ? OR ? = 'private')",
+                                 (fp, m.tier, m.tier))
             # Back to what it was: a forgotten pending memory comes back pending, never active.
             back = PENDING if m.forgotten_from == PENDING else ACTIVE
             self._db.execute("UPDATE memories SET status = ?, forgotten_from = '', updated_at = ? WHERE id = ?",
-                             (back, now_iso(), m.id))
+                             (back, at or stamp_after(m.updated_at), m.id))
             return self.get(m.id)
 
     def purge(self, memory_id):
@@ -540,7 +642,7 @@ class SQLiteStore(Store):
             if m is None or m.status == FORGOTTEN:
                 raise StoreError(f"No memory #{memory_id}.")
             self._db.execute("UPDATE memories SET forget_reason = ?, updated_at = ? WHERE id = ?",
-                             (str(reason or "Waiting for you.").strip()[:300], now_iso(), m.id))
+                             (str(reason or "Waiting for you.").strip()[:300], stamp_after(m.updated_at), m.id))
             return self.get(m.id)
 
     def clear_forget_request(self, memory_id):
@@ -592,19 +694,19 @@ class SQLiteStore(Store):
                 # memory between our check and our write.
                 self._db.execute("BEGIN IMMEDIATE")
                 try:
-                    row = self._db.execute("SELECT status, pending_reason FROM memories WHERE id = ?",
+                    row = self._db.execute("SELECT status, pending_reason, updated_at FROM memories WHERE id = ?",
                                            (int(memory_id),)).fetchone()
                     latest = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?",
                                               (int(memory_id),)).fetchone()[0] or 0
                     if row is None or row["status"] != PENDING or latest != since_event:
                         self._db.execute("ROLLBACK")
                         return False
-                    stamp = now_iso()
+                    stamp = stamp_after(row["updated_at"])
                     if save:
                         self._db.execute("UPDATE memories SET status = 'active', pending_reason = '', "
                                          "updated_at = ? WHERE id = ?", (stamp, int(memory_id)))
                         self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
-                                         (int(memory_id), "approved", "auto-review", stamp))
+                                         (int(memory_id), "approved", "auto-review", now_iso()))
                     else:
                         self._db.execute("UPDATE memories SET pending_reason = ?, updated_at = ? WHERE id = ?",
                                          ((row["pending_reason"] + " Auto-review: " + reason).strip()[:600],
@@ -631,6 +733,64 @@ class SQLiteStore(Store):
             row = self._db.execute("SELECT tool FROM outside_content WHERE session_id = ?",
                                    (str(session_id),)).fetchone()
         return row["tool"] if row else ""
+
+    # -- sync ----------------------------------------------------------------
+
+    def by_uid(self, uid):
+        with self._lock:
+            row = self._db.execute("SELECT * FROM memories WHERE uid = ?", (str(uid),)).fetchone()
+        return self._row(row) if row else None
+
+    def shared_for_sync(self):
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM memories WHERE tier = 'shared' "
+                                    "AND status IN ('active', 'forgotten') ORDER BY id").fetchall()
+        return [self._row(r) for r in rows]
+
+    def import_synced(self, uid, text, provenance, *, created_at, updated_at, status=ACTIVE, pending_reason=""):
+        text = clean_text(text)
+        if status not in (ACTIVE, PENDING):
+            raise StoreError("A memory arriving by sync is either active or pending.")
+        p = provenance
+        with self._lock, self._db:
+            if self._db.execute("SELECT 1 FROM memories WHERE uid = ?", (str(uid),)).fetchone():
+                raise StoreError("That memory is already here.")
+            self._db.execute("DELETE FROM tombstones WHERE fingerprint = ? AND tier = 'shared'",
+                             (fingerprint(text),))
+            cur = self._db.execute(
+                """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
+                       written_by, via, route, route_tier, session_id, turn, author, uid)
+                   VALUES (?,'shared',?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (text, status, pending_reason, created_at, updated_at, p.written_by, p.via, p.route,
+                 p.route_tier, p.session_id, str(p.turn), p.author, str(uid)),
+            )
+            return self.get(cur.lastrowid)
+
+    def shared_with_fingerprint(self, fp, statuses=(ACTIVE,)):
+        s_sql, s_vals = self._in(statuses, STATUSES)
+        with self._lock:
+            rows = self._db.execute(f"SELECT * FROM memories WHERE tier = 'shared' AND status IN {s_sql} "
+                                    "ORDER BY id", s_vals).fetchall()
+        return [self._row(r) for r in rows if fingerprint(r["text"]) == fp]
+
+    def add_tombstone(self, fp, tier, at):
+        with self._lock, self._db:
+            self._tombstone_fp(str(fp), None, check_tier(tier), at, travels=True)
+
+    def tombstone(self, fp):
+        with self._lock:
+            row = self._db.execute("SELECT created_at, tier, travels FROM tombstones WHERE fingerprint = ?",
+                                   (str(fp),)).fetchone()
+        return (row["created_at"], row["tier"], bool(row["travels"])) if row else None
+
+    def meta_get(self, key, default=""):
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key = ?", (str(key),)).fetchone()
+        return row["value"] if row else default
+
+    def meta_set(self, key, value):
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (str(key), str(value)))
 
     def close(self):
         with self._lock:

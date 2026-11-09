@@ -11,3 +11,7 @@ provides_hooks:
   - post_tool_call
 provides_middleware:
   - llm_request
+optional_env:
+  - name: WHOS_LISTENING_SYNC_TOKEN
+    description: "Only for sync between gateways: a GitHub fine-grained token with read and write access to the contents of one private repository (see the README, Sync between gateways)."
+    password: true
