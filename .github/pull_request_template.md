@@ -17,7 +17,7 @@
 - Tested commit: <!-- full SHA -->
 - Checks: <!-- e.g. pytest 42 passed; hermes plugins validate: pass; hermes plugins doctor --ci: pass -->
 - Skipped or failing checks: <!-- none, or each one with the reason -->
-- AI test model: <!-- not used / GPT-6 Luna or GLM 5.3 Flash on Nous Portal or Venice -->
+- AI test model: <!-- not used / Grok 4.5 on Venice, GPT-6.1 Terra on Nous Portal -->
 - Made-up data only: yes
 - Ready to merge: <!-- yes / no — why -->
 - Merge: by the user only
