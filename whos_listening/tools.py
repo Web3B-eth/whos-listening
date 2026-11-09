@@ -21,6 +21,7 @@ REMEMBER = "wl_remember"
 RECALL = "wl_recall"
 FORGET = "wl_forget"
 TOOL_NAMES = (REMEMBER, RECALL, FORGET)
+RECALLS_PER_TURN = 5     # a model that keeps searching (some cheap models loop on it) stops here
 
 
 def _schema(name: str, description: str, properties: dict, required: tuple = ()) -> dict:
