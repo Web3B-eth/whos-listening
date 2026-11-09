@@ -507,3 +507,51 @@ def test_a_synced_forget_of_a_held_memory_does_not_keep_later_saves_out(a, b, fi
     go(a, file, "laptop")
     result = go(b, file, "cloud")
     assert result.kept_out == 0 and result.arrived == 1 and b.by_uid(again.uid) is not None
+
+
+# -- clocks -----------------------------------------------------------------------------------
+
+def test_stamp_after_is_never_before_the_last_change():
+    from datetime import datetime, timedelta, timezone
+    from whos_listening.store import stamp_after
+    now = datetime.now(timezone.utc)
+    ahead = (now + timedelta(minutes=5)).replace(microsecond=0)
+    assert datetime.fromisoformat(stamp_after("2020-01-01T00:00:00+00:00")) >= now.replace(microsecond=0)
+    assert stamp_after(ahead.isoformat()) == (ahead + timedelta(seconds=1)).isoformat()
+    assert stamp_after(ahead.replace(tzinfo=None).isoformat()) == (ahead + timedelta(seconds=1)).isoformat()
+    assert datetime.fromisoformat(stamp_after("not a time")) >= now.replace(microsecond=0)
+
+
+def test_a_change_after_one_from_a_fast_clock_still_wins(a, b, file, monkeypatch):
+    """A gateway whose clock runs 5 minutes ahead saves a memory. Another gateway forgets it a
+    moment later by real time: the forget must win, travel back, and not be undone by the save."""
+    from datetime import datetime, timedelta, timezone
+    import whos_listening.store as store_mod
+    real_now = store_mod.now_iso
+    ahead = lambda: (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(microsecond=0).isoformat()
+
+    monkeypatch.setattr(store_mod, "now_iso", ahead)          # A's clock is fast
+    jazz = a.add("Likes board games", SHARED, USER)
+    go(a, file, "laptop")
+    monkeypatch.setattr(store_mod, "now_iso", real_now)
+
+    assert go(b, file, "cloud").arrived == 1
+    b.forget(b.by_uid(jazz.uid).id)                           # by the real clock, before A's time
+    result = go(b, file, "cloud")
+    assert result.sent == 1 and result.restored == 0
+    assert b.by_uid(jazz.uid).status == FORGOTTEN
+    assert file.doc()["memories"][jazz.uid]["status"] == FORGOTTEN
+
+    monkeypatch.setattr(store_mod, "now_iso", ahead)
+    assert go(a, file, "laptop").forgotten == 1               # the fast gateway takes the forget
+    assert a.get(jazz.id).status == FORGOTTEN
+    writes = len(file.writes)
+    assert go(a, file, "laptop").summary() == "nothing new"   # and doesn't send its own time back
+    monkeypatch.setattr(store_mod, "now_iso", real_now)
+    assert go(b, file, "cloud").summary() == "nothing new"
+    assert len(file.writes) == writes
+
+    b.restore(b.by_uid(jazz.uid).id)                          # a restore after it wins the same way
+    go(b, file, "cloud")
+    monkeypatch.setattr(store_mod, "now_iso", ahead)
+    assert go(a, file, "laptop").restored == 1 and a.get(jazz.id).status == ACTIVE

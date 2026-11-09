@@ -13,7 +13,7 @@ import unicodedata
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -33,6 +33,22 @@ SCHEMA_VERSION = 4
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def stamp_after(previous: str) -> str:
+    """The time for a change to a memory last changed at ``previous``: now, or one second after
+    ``previous`` if the clock isn't past it yet. A change made after seeing another one (perhaps
+    synced from a gateway whose clock runs ahead) is always the later of the two, so sync's
+    last-change-wins never undoes it."""
+    stamp = now_iso()
+    try:
+        prev = datetime.fromisoformat(str(previous))
+    except ValueError:
+        return stamp
+    prev = prev if prev.tzinfo else prev.replace(tzinfo=timezone.utc)
+    if datetime.fromisoformat(stamp) > prev:
+        return stamp
+    return (prev.astimezone(timezone.utc) + timedelta(seconds=1)).replace(microsecond=0).isoformat()
 
 
 def new_uid() -> str:
@@ -540,22 +556,23 @@ class SQLiteStore(Store):
         if status == FORGOTTEN:
             return self.forget(memory_id)  # a forget always leaves a tombstone
         with self._lock, self._db:
-            cur = self._db.execute(
-                "UPDATE memories SET status = ?, pending_reason = ?, updated_at = ? WHERE id = ?",
-                (status, pending_reason if status == PENDING else "", now_iso(), int(memory_id)),
-            )
-            if cur.rowcount == 0:
+            m = self.get(memory_id)
+            if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            return self.get(memory_id)
+            self._db.execute(
+                "UPDATE memories SET status = ?, pending_reason = ?, updated_at = ? WHERE id = ?",
+                (status, pending_reason if status == PENDING else "", stamp_after(m.updated_at), m.id),
+            )
+            return self.get(m.id)
 
     def forget(self, memory_id, *, at=None, travels=None):
-        stamp = at or now_iso()
         with self._lock, self._db:
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             if m.status == FORGOTTEN:
                 return m
+            stamp = at or stamp_after(m.updated_at)
             self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, "
                              "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, stamp, m.id))
             if travels is None:
@@ -600,7 +617,7 @@ class SQLiteStore(Store):
             # Back to what it was: a forgotten pending memory comes back pending, never active.
             back = PENDING if m.forgotten_from == PENDING else ACTIVE
             self._db.execute("UPDATE memories SET status = ?, forgotten_from = '', updated_at = ? WHERE id = ?",
-                             (back, at or now_iso(), m.id))
+                             (back, at or stamp_after(m.updated_at), m.id))
             return self.get(m.id)
 
     def purge(self, memory_id):
@@ -625,7 +642,7 @@ class SQLiteStore(Store):
             if m is None or m.status == FORGOTTEN:
                 raise StoreError(f"No memory #{memory_id}.")
             self._db.execute("UPDATE memories SET forget_reason = ?, updated_at = ? WHERE id = ?",
-                             (str(reason or "Waiting for you.").strip()[:300], now_iso(), m.id))
+                             (str(reason or "Waiting for you.").strip()[:300], stamp_after(m.updated_at), m.id))
             return self.get(m.id)
 
     def clear_forget_request(self, memory_id):
@@ -677,19 +694,19 @@ class SQLiteStore(Store):
                 # memory between our check and our write.
                 self._db.execute("BEGIN IMMEDIATE")
                 try:
-                    row = self._db.execute("SELECT status, pending_reason FROM memories WHERE id = ?",
+                    row = self._db.execute("SELECT status, pending_reason, updated_at FROM memories WHERE id = ?",
                                            (int(memory_id),)).fetchone()
                     latest = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?",
                                               (int(memory_id),)).fetchone()[0] or 0
                     if row is None or row["status"] != PENDING or latest != since_event:
                         self._db.execute("ROLLBACK")
                         return False
-                    stamp = now_iso()
+                    stamp = stamp_after(row["updated_at"])
                     if save:
                         self._db.execute("UPDATE memories SET status = 'active', pending_reason = '', "
                                          "updated_at = ? WHERE id = ?", (stamp, int(memory_id)))
                         self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
-                                         (int(memory_id), "approved", "auto-review", stamp))
+                                         (int(memory_id), "approved", "auto-review", now_iso()))
                     else:
                         self._db.execute("UPDATE memories SET pending_reason = ?, updated_at = ? WHERE id = ?",
                                          ((row["pending_reason"] + " Auto-review: " + reason).strip()[:600],

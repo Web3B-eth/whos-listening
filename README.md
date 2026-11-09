@@ -140,7 +140,7 @@ Each gateway (the machine running Hermes) keeps its own memories. If you run mor
 
 - **Shared memories only.** Private memories are never read for sync, and sync never changes a Private memory. A memory waiting for you (pending) travels only once you approve it.
 - **Forgets travel without their text.** A forgotten memory goes out as its id and a hash of its words (what a tombstone keeps), so forgetting a memory on one gateway forgets it on all of them, and it can't be saved again from chat on any of them.
-- **The last change wins**, by each memory's change time. If two changes have the same time, the forget wins. If you saved the same words on two gateways, each keeps one line.
+- **The last change wins**, by each memory's change time. If two changes have the same time, the forget wins. A change you make after seeing another one always counts as later, even if the other gateway's clock runs ahead. If you saved the same words on two gateways, each keeps one line.
 - **A decision made on one gateway alone stays there.** Forgetting a Private memory, or turning down a memory that waits for you (also one that arrived by sync), isn't sent to the other gateways; and a memory that arrives with words you forgot that way is kept out of that gateway, without being forgotten anywhere else.
 - **Arrivals are checked.** A memory that arrives passes the [rule screen](#how-it-works). If it flags the memory (a link, an instruction to assistants, …), the memory waits for you in `/memories pending`. Its history shows which gateway it came from.
 
@@ -215,7 +215,7 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 Be clear about what whos-listening does not protect (yet):
 
 - **Sync shares your Shared memories with GitHub.** The sync file, in a private repository you create, holds the text of every Shared memory (forgotten ones only as a hash), which gateway saved it, and when. Anyone who can read the repository can read them, and anyone who can write to it can add memories to all your gateways. Arrivals pass the rule screen, but that's a short list of patterns. Keep the repository private, and give the token access to that repository alone.
-- **Sync trusts each gateway's clock.** The last change wins by its time, so a gateway whose clock is far off can win or lose a change it shouldn't.
+- **Clocks decide between changes made at the same time.** A change made after seeing another one always wins over it. But when two gateways change the same memory before either has synced, the one whose clock reads later wins, even if its clock is wrong.
 - **Sync needs the gateway to reach GitHub.** A gateway that can't keeps working on its own memories and catches up on its next sync.
 - **The gateway is trusted unless you say otherwise.** Private memories are stored, and built into prompts, on whatever machine runs Hermes. whos-listening can't tell whether that's your laptop, a rented server or Hermes Cloud (see [Where the backend runs](#where-the-backend-runs)).
 - **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
