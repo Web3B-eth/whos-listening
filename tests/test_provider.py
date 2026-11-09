@@ -477,3 +477,26 @@ def test_recall_runs_at_most_five_times_a_turn(plugin, provider):
     assert tool(provider, "wl_remember", {"text": "Likes tea", "tier": "shared"})["ok"] is True
     provider.on_turn_start(2, "And now?")                  # a new turn starts a new count
     assert tool(provider, "wl_recall", {"query": ""})["ok"] is True
+
+
+def test_two_copies_of_the_plugin_share_their_books(plugin):
+    """Hermes imports a dual-kind plugin twice (general discovery and the memory loader). The
+    hooks of one copy and the provider of the other must see the same route and outside books."""
+    import importlib.util
+    from wl_helpers import ROOT
+
+    name = "wl_plugin_second_copy"
+    spec = importlib.util.spec_from_file_location(name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+        other = sys.modules[name + ".whos_listening.provider"]
+        assert other is not plugin
+        for book in ("routes", "outside"):
+            assert other._process_wide(book, dict) is plugin._process_wide(book, dict)
+        other.OUTSIDE.saw("sess-copy", "read_file")
+        assert plugin._process_wide("outside", dict).get("sess-copy") == "read_file"
+    finally:
+        for key in [k for k in sys.modules if k == name or k.startswith(name + ".")]:
+            del sys.modules[key]

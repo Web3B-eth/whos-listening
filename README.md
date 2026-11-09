@@ -32,7 +32,7 @@ Every memory is **Private** or **Shared**. Private memories only reach models yo
 
 ### `/memories`
 
-Type these in any Hermes chat:
+Type these in any Hermes chat. They need the plugin enabled with `hermes plugins enable whos-listening` (for a memory provider, `hermes plugins install --enable` only sets `memory.provider`); otherwise Hermes only knows `/memories` after the first normal message.
 
 | Command | What it does |
 | --- | --- |
@@ -125,6 +125,8 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 
 `plugin.yaml` declares the hooks and middleware `register()` adds, which is what `hermes plugins validate` checks against. `register()` also adds the memory provider and the `/memories` command. The three memory tools come from the provider's `get_tool_schemas()`, so `provides_tools` stays empty.
 
+`plugin.yaml` says `kind: standalone`, not `exclusive`, which makes whos-listening a "dual-kind" plugin in Hermes' terms. General plugin discovery loads it when Hermes starts, so `/memories` works from the first message. The memory loader then loads it again for the provider, and Hermes keeps one set of hooks. The two copies share their in-memory books (routes and outside content) through `_process_wide()` in `provider.py`. With `kind: exclusive`, Hermes only ran `register()` once a chat built an agent, so on a fresh gateway (each time Desktop starts one) `/memories` was an unknown command until the first normal message.
+
 ## Limits
 
 Be clear about what whos-listening does not protect (yet):
@@ -137,7 +139,7 @@ Be clear about what whos-listening does not protect (yet):
 - **Only tagged text is removed.** On a Shared route the guard removes tagged Private memories, and the text of replayed `wl_remember` calls and `wl_recall` queries. It can't remove what the assistant said about a Private memory in its own words, what you typed yourself, or model reasoning that Hermes replays to a later model.
 - **Other plugins** with request middleware that runs after ours could put text back, and other plugins' execution middleware can see the request as it was before the guard.
 - **The first turn after Hermes starts carries Shared memories only**, because recall doesn't believe any route is Private until the guard has run once.
-- **The guard runs more than once.** Hermes adds a memory plugin's middleware again each time it loads the plugin, so in a long-running gateway the guard runs several times per request. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
+- **The guard runs more than once.** Hermes loads the plugin twice (see Development) and adds a memory plugin's middleware again each time it loads the plugin, so the guard runs at least twice per request, and more in a long-running gateway. That is harmless (a cleaned request has nothing left to clean), just a little extra work.
 - **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
 - **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.

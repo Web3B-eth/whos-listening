@@ -4,7 +4,7 @@ description: "Memory that knows who's listening: Private memories only go to mod
 author: Web3B-eth
 license: MIT
 homepage: https://github.com/Web3B-eth/whos-listening
-kind: exclusive
+kind: standalone
 requires_hermes: ">=0.23.0"
 provides_hooks:
   - pre_llm_call
