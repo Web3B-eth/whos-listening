@@ -58,7 +58,7 @@ def format_block(memories: Iterable[Memory], *, max_chars: int = MAX_BLOCK_CHARS
         return ""
     return "\n".join([
         BLOCK_OPEN,
-        "Things the user has asked you to remember (whos-listening). "
+        "Things the user has asked you to remember (Who's Listening). "
         "Use them when they help; do not repeat them back unprompted.",
         *lines,
         BLOCK_CLOSE,

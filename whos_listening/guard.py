@@ -27,8 +27,8 @@ PRIVATE_MARK = "wl-private"   # in both the opening and the closing tag
 WITHHELD = "[private memory withheld]"
 # Our tools whose arguments the model writes in its own words. When Hermes replays a call,
 # those words are untagged, so on a Shared route they're redacted (see _redact_call).
-REMEMBER, RECALL = "wl_remember", "wl_recall"
-BLOCKED_NOTICE = ("[whos-listening blocked this request: it could not check it for private "
+REMEMBER, RECALL = "whos-listening_remember", "whos-listening_recall"
+BLOCKED_NOTICE = ("[Who's Listening blocked this request: it could not check it for private "
                   "memories. Please try again.]")
 # Keys that carry the conversation in the request shapes Hermes builds
 # (chat completions, Anthropic messages, Responses API).
@@ -52,8 +52,8 @@ def _walk(obj: Any, fn: Callable[[str], str], on_dict: Optional[Callable[[dict],
 
 
 def _redact_args(name: str, args: Any) -> Any:
-    """``args`` with the model's own words taken out: a Private ``wl_remember`` text, and any
-    ``wl_recall`` query (it may name a Private fact). Unreadable arguments are dropped."""
+    """``args`` with the model's own words taken out: a Private ``whos-listening_remember`` text, and any
+    ``whos-listening_recall`` query (it may name a Private fact). Unreadable arguments are dropped."""
     if isinstance(args, str):
         try:
             parsed = json.loads(args) if args.strip() else {}

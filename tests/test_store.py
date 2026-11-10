@@ -6,7 +6,7 @@ from whos_listening.store import (
 
 
 def test_add_and_get_keeps_provenance(store):
-    p = Provenance(written_by="assistant", via="wl_remember", route="custom @ 127.0.0.1 / m",
+    p = Provenance(written_by="assistant", via="whos-listening_remember", route="custom @ 127.0.0.1 / m",
                    route_tier=PRIVATE, session_id="s1", turn="3", author="Sam")
     m = store.add("  Prefers   tea over coffee ", PRIVATE, p)
     got = store.get(m.id)

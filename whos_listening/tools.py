@@ -17,9 +17,9 @@ from .store import (
     clean_text,
 )
 
-REMEMBER = "wl_remember"
-RECALL = "wl_recall"
-FORGET = "wl_forget"
+REMEMBER = "whos-listening_remember"
+RECALL = "whos-listening_recall"
+FORGET = "whos-listening_forget"
 TOOL_NAMES = (REMEMBER, RECALL, FORGET)
 RECALLS_PER_TURN = 5     # a model that keeps searching (some cheap models loop on it) stops here
 
@@ -166,4 +166,4 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     except StoreError as exc:
         return _err(str(exc))
     except Exception as exc:  # a tool must answer, not crash the turn
-        return _err(f"whos-listening hit an error: {type(exc).__name__}")
+        return _err(f"Who's Listening hit an error: {type(exc).__name__}")

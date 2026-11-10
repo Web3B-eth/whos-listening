@@ -58,7 +58,7 @@ def show_settings(home: Path) -> str:
         seen = wl_settings.read_snapshot(home / DATA_DIR) is not None
     except wl_settings.SettingsError:
         seen = False
-    note = ("" if seen else "\n(The gateway hasn't run this version of whos-listening yet, so settings made "
+    note = ("" if seen else "\n(The gateway hasn't run this version of Who's Listening yet, so settings made "
             "in Desktop aren't known here yet.)")
     return text + note
 
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     home = (args.home or default_home()).expanduser()
     path = home / DATA_DIR / DB_FILE
     if not path.exists():
-        print(f"No whos-listening memories in {home}.", file=sys.stderr)
+        print(f"No Who's Listening memories in {home}.", file=sys.stderr)
         return 1
     store = SQLiteStore(path)
     try:

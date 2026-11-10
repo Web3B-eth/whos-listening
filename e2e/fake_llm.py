@@ -3,7 +3,7 @@
 - Logs every request to a JSON-lines file: path, model, number of messages and the full text.
   The checks only ever use made-up memories, so logging the text is fine here.
 - Answers with a fixed sentence, or, when the newest user message holds lines like
-  ``[[call wl_remember {"text": "Likes spicy food", "tier": "shared"}]]``, asks for those tool
+  ``[[call whos-listening_remember {"text": "Likes spicy food", "tier": "shared"}]]``, asks for those tool
   calls in order, one per step, and answers after the last result comes back. That lets a check drive the
   memory tools without a real model.
 
@@ -18,7 +18,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-CALL_RE = re.compile(r"\[\[call (\w+) (\{.*?\})\]\]", re.DOTALL)
+CALL_RE = re.compile(r"\[\[call ([\w-]+) (\{.*?\})\]\]", re.DOTALL)
 ANSWER = "Hello from the fake model."
 MODELS = ("private-model", "shared-model")
 

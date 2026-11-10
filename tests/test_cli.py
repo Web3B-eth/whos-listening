@@ -21,7 +21,7 @@ def test_cli_runs_commands_and_purges(tmp_path, capsys):
 
 def test_cli_without_memories(tmp_path, capsys):
     assert cli.main(["--home", str(tmp_path)]) == 1
-    assert "No whos-listening memories" in capsys.readouterr().err
+    assert "No Who's Listening memories" in capsys.readouterr().err
 
 
 def test_default_home(monkeypatch, tmp_path):

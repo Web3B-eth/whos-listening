@@ -28,7 +28,7 @@ def test_forget_after_outside_content_waits():
 
 def test_outside_tools():
     assert review.is_outside_tool("read_file") and review.is_outside_tool("web_search")
-    assert not review.is_outside_tool("wl_recall") and not review.is_outside_tool("todo")
+    assert not review.is_outside_tool("whos-listening_recall") and not review.is_outside_tool("todo")
     assert not review.is_outside_tool("") and not review.is_outside_tool("x", trusted=["x"])
 
 
