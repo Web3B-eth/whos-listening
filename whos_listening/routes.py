@@ -49,26 +49,28 @@ def platform_verdict(platform: str, settings: Optional["RouteSettings"] = None) 
     return Verdict(SHARED, f"this chat is on {name}, whose servers see the replies")
 
 
-GATEWAY_SHARED = "this gateway is set to shared (\"gateway\" in settings.json)"
+GATEWAY_SHARED = "this gateway is set to shared (the \"gateway\" setting)"
+GATEWAY_HOSTED = ("this gateway is a hosted Hermes (its config comes from a remote service, as on Hermes Cloud), "
+                  "so it counts as shared unless you set \"gateway\" to private")
 
 
 def gateway_verdict(settings: Optional["RouteSettings"] = None) -> Optional["Verdict"]:
     """The gateway layer: the machine running Hermes, which stores the memories and builds every
     prompt. Private unless settings say otherwise; None means it may hold Private memories."""
-    if (settings or RouteSettings()).gateway != PRIVATE:
-        return Verdict(SHARED, GATEWAY_SHARED)
+    settings = settings or RouteSettings()
+    if settings.gateway != PRIVATE:
+        return Verdict(SHARED, GATEWAY_HOSTED if settings.gateway_hosted else GATEWAY_SHARED)
     return None
 
 
-def private_storage_refusal(settings_path: str | Path) -> str:
-    """Why this gateway may not keep a new Private memory ("" if it may). An unreadable settings
-    file refuses too, since it might be the one that says this gateway is Shared."""
-    try:
-        settings = RouteSettings.load(settings_path)
-    except Exception:
-        return "No private memory was saved: the settings file can't be read."
-    if gateway_verdict(settings) is not None:
-        return f"No private memory was saved: {GATEWAY_SHARED}, so it keeps none."
+def private_storage_refusal(settings: Optional["RouteSettings"]) -> str:
+    """Why this gateway may not keep a new Private memory ("" if it may). ``None`` means the
+    settings can't be read, which refuses too: they might be the ones that say it is Shared."""
+    if settings is None:
+        return "No private memory was saved: the settings can't be read."
+    verdict = gateway_verdict(settings)
+    if verdict is not None:
+        return f"No private memory was saved: {verdict.reason}, so it keeps none."
     return ""
 
 
@@ -153,6 +155,8 @@ class RouteSettings:
     - ``gateway``: ``"private"`` (default) or ``"shared"`` for the machine this Hermes runs on. A
       Shared gateway keeps no Private memories. Any other value counts as Shared.
     - ``review``: ``"ask"`` (default) or ``"auto"`` for Auto-review (see autoreview.py).
+
+    settings.py merges these from Hermes' own config and settings.json.
     """
 
     routes: Mapping[str, str] = field(default_factory=dict)
@@ -162,6 +166,7 @@ class RouteSettings:
     shared_platforms: tuple[str, ...] = ()
     gateway: str = PRIVATE
     review: str = "ask"      # "ask": held saves wait for the user. "auto": Auto-review checks them.
+    gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":

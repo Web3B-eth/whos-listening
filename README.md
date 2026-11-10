@@ -35,7 +35,7 @@ Then restart the gateway so it loads the plugin (quit and reopen Desktop, or run
 - `hermes memory status` shows `whos-listening ← active`, with built-in memory disabled.
 - `/memories` in a chat answers "Nothing remembered yet."
 
-No setup is needed after that. To change what counts as Private, see [Settings](#settings).
+No setup is needed after that. To change what counts as Private, see [Settings](#settings); you can change them in Desktop under **Capabilities → Plugins → whos-listening**. On a hosted Hermes such as Hermes Cloud the gateway counts as Shared until you say otherwise, so it keeps no Private memories.
 
 To stop using it, run `hermes memory off` (and `hermes plugins remove whos-listening` to delete the plugin). Your memories stay in `$HERMES_HOME/whos-listening/` until you delete that folder.
 
@@ -84,6 +84,7 @@ Type these in any Hermes chat. They need the plugin enabled with `hermes plugins
 | `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
 | `/memories sync` | Sync Shared memories with your other gateways now (when sync is set up). |
 | `/memories sync status` | How sync is set up, when it last ran and what it did. |
+| `/memories settings` | The settings in effect, and where each one comes from (Desktop, `settings.json` or the default). |
 
 Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
 
@@ -105,7 +106,10 @@ Only the guard records routes. So if the guard isn't running (Hermes only logs a
 
 ## Settings
 
-Optional. `$HERMES_HOME/whos-listening/settings.json`:
+Optional. You can set them in two places, and a setting made in Hermes wins:
+
+- **In Hermes Desktop**, under **Capabilities → Plugins → whos-listening**, for whichever gateway Desktop is connected to. On Hermes Cloud this is the only place you can reach. Hermes keeps these in its own config (`plugins.entries.whos-listening.settings`) and the sync token in its secrets. A menu left on `default`, an empty text field, `[]`, `{}` or an interval of `0` means "not set here": `settings.json` applies, or else the built-in default. Lists and `routes` combine both places, since the form doesn't show what `settings.json` holds; where the two disagree on a route, Shared wins. The form names the sync settings `sync_repo`, `sync_name` and `sync_interval`. `path`, `branch` and `api_url` are only in the file, and they apply only to the file's repository: once you set a sync repository in Desktop, the file's sync settings are ignored.
+- **In `$HERMES_HOME/whos-listening/settings.json`:**
 
 ```json
 {
@@ -127,10 +131,11 @@ Optional. `$HERMES_HOME/whos-listening/settings.json`:
 - `routes` sets a tier by `provider/model`, by `*/model` (any provider) or by `provider`, checked in that order. Named custom endpoints all show up as provider `custom` in Hermes 0.23.0, so use hosts for those.
 - `private_hosts` adds hosts (a domain covers its subdomains). `shared_hosts` wins over every default, so you can make a default Private host Shared.
 - `private_platforms` adds Hermes platforms that may see Private memories, for example `signal` if you trust its end-to-end encryption (messages are decrypted only on the gateway and your phone). `shared_platforms` wins over every default, so you can make `desktop` Shared too.
-- `gateway` is `"private"` (the default) or `"shared"`, for the machine this Hermes runs on. Any other value counts as Shared. whos-listening can't tell a laptop from a server, so only you can say whether you trust it.
+- `gateway` is `"private"` or `"shared"`, for the machine this Hermes runs on. Any other value counts as Shared. By default it is Private, except on a hosted Hermes: one that gets its config from a remote service (`HERMES_CONFIG_BACKEND=remote`), as Hermes Cloud does. That machine is someone else's, so it counts as Shared unless you set `gateway` to `"private"` because you trust the host. whos-listening can't tell your laptop from a server you rent, so for any other machine only you can say whether you trust it.
 - `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
 - `sync` turns on [sync between gateways](#sync-between-gateways): `repo` (`owner/name`, required), and optionally `path` (default `whos-listening/shared.json`), `branch` (default: the repository's default branch), `name` (how this gateway appears in the file; one is made up if you leave it out) and `interval` (seconds between automatic syncs, default 60, at least 30).
-- If the file can't be read, every route counts as Shared, no Private memory is saved, sync is off, and every held save waits for you until it is fixed.
+- If the settings can't be read (a broken `settings.json`, a value of the wrong shape such as a list given as text, Hermes' `config.yaml` itself, or the command line's copy), every route counts as Shared, no Private memory is saved, sync is off, and every held save waits for you until it is fixed. `/memories settings` says what is wrong.
+- `/memories settings` lists each setting in effect and where it comes from. The command line (`python -m whos_listening.cli settings`) can't ask Hermes, so it uses a copy of the Desktop settings that the gateway keeps in `whos-listening/hermes-settings.json`.
 
 ## Sync between gateways
 
@@ -154,8 +159,8 @@ Each gateway (the machine running Hermes) keeps its own memories. If you run mor
 
 1. Create a **private** GitHub repository just for this, for example `you/whos-listening-sync`. It can be empty.
 2. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with access to **only that repository** and the **Contents: Read and write** permission.
-3. On each gateway, give Hermes the token as `WHOS_LISTENING_SYNC_TOKEN`, the way you give it other keys (for example in that gateway's `.env`). whos-listening reads it only through Hermes' secrets.
-4. On each gateway, add `"sync": {"repo": "you/whos-listening-sync", "name": "laptop"}` to `settings.json`, with a different `name` per gateway.
+3. On each gateway, give Hermes the token: in Desktop, the **Sync token** field of whos-listening's settings (Capabilities → Plugins), or `WHOS_LISTENING_SYNC_TOKEN` in that gateway's `.env`. whos-listening reads it only through Hermes' secrets.
+4. On each gateway, set the repository and a name for that gateway: in Desktop, **Sync repository** (`you/whos-listening-sync`) and **Gateway name for sync** (`laptop`, `cloud`, …), or `"sync": {"repo": "you/whos-listening-sync", "name": "laptop"}` in `settings.json`. Use a different name per gateway.
 5. Type `/memories sync` on each gateway, then `/memories sync status` to check.
 
 ## Where the backend runs
@@ -165,7 +170,7 @@ Hermes Desktop is only an interface: the backend (the gateway, the agent and thi
 - **Storage is on the gateway.** `memories.sqlite` (Private text included, and forgotten text until it is purged) lives there, and so does Hermes' own chat history, which holds the memories that were added to each turn. Anyone with access to that machine can read them: on a rented server, that includes the hosting company and its backups or snapshots. On Hermes Cloud, Nous runs the machine.
 - **"Local network" is the gateway's network.** Routes are classified where the backend runs. On a server, `localhost` is the server and `10.*`, `172.16-31.*` and `192.168.*` are the hosting company's private network or Docker's, not your home network. A model on another server in that network counts as Private by default; list it in `shared_hosts` if you don't trust it.
 - **The link to Desktop is invisible to the plugin.** A chat from Desktop counts as the `desktop` platform wherever the backend is. Over SSH or Tailscale the link is encrypted; a remote gateway reached over plain `http://` across the internet sends your chats, Private memories included, in the clear. The same goes for the Hermes Webapp on a phone: serve it over HTTPS on a network you trust, such as Tailscale Serve, never plain HTTP across the internet.
-- **Only you can say whether you trust a gateway.** whos-listening can't tell a laptop from a server, or which company runs it. The gateway counts as Private unless you set `"gateway": "shared"`. If you trust a provider to host your backend (or to see your requests), say so in settings; that's a judgement whos-listening leaves to you.
+- **Only you can say whether you trust a gateway.** whos-listening can't tell a laptop from a server you rent, or which company runs it. It recognizes only a hosted Hermes, one whose config comes from a remote service, as on Hermes Cloud: that gateway counts as Shared by default. Any other gateway counts as Private unless you set `gateway` to `shared`. If you trust a provider to host your backend (or to see your requests), set `gateway` to `private` there; that's a judgement whos-listening leaves to you.
 
 ## Development
 
@@ -217,7 +222,8 @@ Be clear about what whos-listening does not protect (yet):
 - **Sync shares your Shared memories with GitHub.** The sync file, in a private repository you create, holds the text of every Shared memory (forgotten ones only as a hash), which gateway saved it, and when. Anyone who can read the repository can read them, and anyone who can write to it can add memories to all your gateways. Arrivals pass the rule screen, but that's a short list of patterns. Keep the repository private, and give the token access to that repository alone.
 - **Clocks decide between changes made at the same time.** A change made after seeing another one always wins over it. But when two gateways change the same memory before either has synced, the one whose clock reads later wins, even if its clock is wrong.
 - **Sync needs the gateway to reach GitHub.** A gateway that can't keeps working on its own memories and catches up on its next sync.
-- **The gateway is trusted unless you say otherwise.** Private memories are stored, and built into prompts, on whatever machine runs Hermes. whos-listening can't tell whether that's your laptop, a rented server or Hermes Cloud (see [Where the backend runs](#where-the-backend-runs)).
+- **The gateway is trusted unless you say otherwise.** Private memories are stored, and built into prompts, on whatever machine runs Hermes. whos-listening can't tell whether that's your laptop or a rented server; it only recognizes a hosted Hermes such as Hermes Cloud, which counts as Shared by default (see [Where the backend runs](#where-the-backend-runs)).
+- **The command line sees Desktop settings late.** It uses the copy the gateway keeps, which is as fresh as the gateway's last turn or `/memories` command. Until the gateway has run once with this version, the command line knows only `settings.json`.
 - **Some Hermes calls skip the guard.** Hermes runs plugin middleware only on the main chat request. These calls bypass it, and any of them can carry Private memories that were added on a Private route:
   - **Compression.** When a long chat is summarised, the older turns (memory blocks and tool results included) go to the compression model, and the summary replaces them untagged. Set Hermes' compression model to a route you trust as Private, or turn compression off.
   - **The summary Hermes writes when a turn hits its tool-call limit.** It is sent on the chat's current route.

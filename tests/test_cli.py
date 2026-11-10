@@ -34,3 +34,38 @@ def test_cli_add_respects_a_shared_gateway(tmp_path, capsys):
     (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
     cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
     assert "No private memory was saved" in capsys.readouterr().out
+
+
+def test_cli_uses_the_gateways_copy_of_desktop_settings(tmp_path, capsys):
+    from whos_listening import settings as ws
+    SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
+    cli.main(["--home", str(tmp_path), "settings"])
+    out = capsys.readouterr().out
+    assert "gateway: private  (default)" in out and "aren't known here yet" in out
+    ws.write_snapshot(tmp_path / "whos-listening", {"gateway": "shared"}, False)
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    assert "No private memory was saved" in capsys.readouterr().out
+    ws.write_snapshot(tmp_path / "whos-listening", {}, True)               # a hosted Hermes
+    cli.main(["--home", str(tmp_path), "settings"])
+    assert "default on a hosted Hermes" in capsys.readouterr().out
+
+
+def test_cli_refuses_private_saves_when_the_copy_is_damaged(tmp_path, capsys):
+    from whos_listening import settings as ws
+    SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
+    ws.write_snapshot(tmp_path / "whos-listening", {"gateway": "shared"}, False)
+    ws.snapshot_path(tmp_path / "whos-listening").write_text('{"hosted": false, "sett')     # cut short
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    assert "No private memory was saved" in capsys.readouterr().out
+    cli.main(["--home", str(tmp_path), "settings"])
+    assert "can't be read" in capsys.readouterr().out
+
+
+def test_cli_fails_safe_on_text_where_routes_belong(tmp_path, capsys):
+    SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"routes": "default"}')
+    assert cli.main(["--home", str(tmp_path), "add", "Keeps bees"]) == 0
+    assert "No private memory was saved" in capsys.readouterr().out
+    cli.main(["--home", str(tmp_path), "settings"])
+    out = capsys.readouterr().out
+    assert "must map" in out and "no private memory is saved" in out

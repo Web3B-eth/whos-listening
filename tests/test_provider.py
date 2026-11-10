@@ -634,3 +634,94 @@ def test_only_a_shared_change_forces_a_sync(plugin, provider, monkeypatch):
     assert calls == []
     tool(provider, "wl_remember", {"text": "Likes jazz", "tier": "shared"})
     assert calls == [True]
+
+
+# -- settings from Hermes (Desktop's plugin form) and the hosted default -----------------------
+
+def test_desktop_settings_make_the_gateway_shared(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")                          # Private route, platform cli
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "shared"})
+    assert "canoe" not in provider.prefetch("plans", session_id="sess-1")
+    refused = tool(provider, "wl_remember", {"text": "Keeps bees"})
+    assert refused["ok"] is False and "set to shared" in refused["error"]
+    assert "gateway: shared  (Hermes settings)" in plugin._memories_command("settings", platform="cli")
+
+
+def test_a_hosted_hermes_keeps_no_private_memories_unless_told(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_hosted", lambda: True)
+    see(plugin, "http://127.0.0.1:9/v1")
+    refused = tool(provider, "wl_remember", {"text": "Keeps bees"})
+    assert refused["ok"] is False and "hosted Hermes" in refused["error"]
+    assert "No private memory was saved" in plugin._memories_command("add Keeps bees", platform="cli")
+    assert "default on a hosted Hermes" in plugin._memories_command("settings", platform="cli")
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "private"})   # you trust it
+    assert tool(provider, "wl_remember", {"text": "Keeps bees"})["ok"] is True
+
+
+def test_unreadable_hermes_settings_fail_safe(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "wl_remember", {"text": "Is saving up for a canoe"})
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: None)
+    assert "canoe" not in provider.prefetch("plans", session_id="sess-1")
+    assert tool(provider, "wl_remember", {"text": "Keeps bees"})["ok"] is False
+    assert "can't be read" in plugin._memories_command("settings", platform="cli")
+
+
+def test_sync_set_up_from_desktop_alone(plugin, provider, tmp_path, monkeypatch):
+    from test_sync import FakeFile
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"sync_repo": "me/notes", "sync_name": "cloud"})
+    monkeypatch.setattr(plugin, "_sync_token", lambda: "tok")
+    monkeypatch.setattr(plugin, "maybe_sync", lambda *a, **k: False)
+    file = FakeFile()
+    monkeypatch.setattr(plugin.wl_sync, "GitHubFile", lambda settings, tok: file)
+    provider._store.add("Likes jazz", "shared", plugin.Provenance())
+    assert plugin._memories_command("sync", platform="cli") == "Synced with me/notes: 1 sent."
+    assert "as cloud" in plugin._memories_command("sync status", platform="cli")
+    text = plugin._memories_command("settings", platform="cli")
+    assert "sync: me/notes  (Hermes settings)" in text and "sync token: set" in text
+
+
+def test_the_gateway_keeps_a_copy_for_the_command_line(plugin, provider, tmp_path, monkeypatch):
+    from whos_listening import settings as ws
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "shared"})
+    monkeypatch.setattr(plugin, "_hosted", lambda: True)
+    plugin._memories_command("", platform="cli")
+    assert ws.read_snapshot(tmp_path / "whos-listening") == ({"gateway": "shared"}, True)
+
+
+def test_hermes_settings_come_from_hermes_config(plugin, tmp_path):
+    """The real path: Hermes' config.yaml in a scratch home, as Desktop's form writes it."""
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  entries:\n    whos-listening:\n      settings:\n        gateway: shared\n        sync_name: cloud\n")
+    assert plugin._hermes_settings() == {"gateway": "shared", "sync_name": "cloud"}
+
+
+def test_hosted_follows_hermes_config_backend(plugin, monkeypatch):
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    assert plugin._hosted() is False
+    monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")
+    assert plugin._hosted() is True
+
+
+def test_a_broken_hermes_config_fails_safe(plugin, provider, monkeypatch, tmp_path):
+    """Hermes serves defaults (or an older copy) when config.yaml can't be parsed; what it says
+    about whos-listening then can't be trusted."""
+    from whos_listening import settings as ws
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  entries:\n    whos-listening:\n      settings:\n        gateway: shared\n")
+    assert plugin._hermes_settings() == {"gateway": "shared"}
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  entries:\n    whos-listening:\n      settings:\n      gateway: shared\n   bad: [\n")
+    assert plugin._hermes_settings() is None
+    see(plugin, "http://127.0.0.1:9/v1")
+    assert tool(provider, "wl_remember", {"text": "Keeps bees"})["ok"] is False
+    assert "can't be read" in plugin._memories_command("settings", platform="cli")
+    with pytest.raises(ws.SettingsError):           # and the command line's copy says so too
+        ws.read_snapshot(tmp_path / "whos-listening")

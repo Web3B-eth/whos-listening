@@ -27,7 +27,8 @@ HELP = """\
 /memories show N          a memory's details: tier, who wrote it, on which route
 /memories add [shared] TEXT   save a memory yourself (Private unless you say shared)
 /memories sync            sync Shared memories with your other gateways now (if sync is set up)
-/memories sync status     how sync is set up and how the last one went"""
+/memories sync status     how sync is set up and how the last one went
+/memories settings        the settings in effect and where each one comes from"""
 
 HIDDEN = "(private: shown only in the terminal or the local app)"
 
@@ -244,6 +245,8 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
             return cmd_add(store, tail, show_private, via, private_refused)
         if cmd == "sync":
             return "Sync runs inside Hermes: type /memories sync in a chat."
+        if cmd == "settings":
+            return "Settings are shown inside Hermes: type /memories settings in a chat."
         if cmd in ("help", "-h", "--help"):
             return HELP
         return f"Unknown command {cmd!r}.\n\n{HELP}"

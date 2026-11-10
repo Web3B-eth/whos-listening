@@ -489,11 +489,12 @@ def status(store: Store, settings: SyncSettings, has_token: bool) -> str:
     if settings.error:
         return f"Sync is off: {settings.error}."
     if not settings.enabled:
-        return ('Sync is off. To turn it on, add "sync": {"repo": "owner/name"} to settings.json and set '
-                f"{TOKEN_ENV} (see the README).")
+        return ("Sync is off. To turn it on, set the sync repository and token in whos-listening's settings "
+                'in Hermes Desktop (Capabilities → Plugins), or add "sync": {"repo": "owner/name"} to '
+                f"settings.json and set {TOKEN_ENV} (see the README).")
     lines = [f"Sync with {settings.repo} ({settings.path}) as {gateway_name(store, settings)}."]
     if not has_token:
-        lines.append(f"No token: set {TOKEN_ENV}.")
+        lines.append(f"No token: set the sync token in Desktop's plugin settings, or {TOKEN_ENV}.")
     last_ok = store.meta_get("sync.last_ok")
     lines.append(f"Last sync: {last_ok or 'never'}" + (f", {store.meta_get('sync.last_summary')}"
                                                         if last_ok and store.meta_get("sync.last_summary") else ""))
