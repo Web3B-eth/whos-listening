@@ -67,7 +67,8 @@ SCHEMAS = (
         "saves and forgets to approve). all: every memory, a page at a time. export: write them all to a "
         "file. scan: look for repeats saved earlier, in the background. keep / keep_both / approve / reject: "
         "carry out a choice the user made; these only work when the user's own message names that memory "
-        "number, so ask them for it if they didn't.",
+        "number, so ask them for it if they didn't. It's always in your tool list: call it directly, not "
+        "through tool_call.",
         {"action": {"type": "string", "enum": ["list", "all", "export", "scan", *REVIEW_CHOICES],
                     "description": "keep: keep #id and forget the memory it may repeat. keep_both: keep both."},
          "id": {"type": "integer", "description": "The memory number, for keep, keep_both, approve and reject."},
