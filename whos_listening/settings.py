@@ -42,6 +42,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "duplicates": ("duplicates",),
     "duplicate_judge": ("duplicate_judge",),
     "venice_anonymized": ("venice_anonymized",),
+    "tier_duplicates": ("tier_duplicates",),
     "sync_repo": ("sync", "repo"),
     "sync_name": ("sync", "name"),
     "sync_interval": ("sync", "interval"),
@@ -223,7 +224,7 @@ def load(sources: Sources) -> Settings:
         doc["routes"] = _routes(doc["routes"])
     if doc.get("sync") == {}:
         doc.pop("sync")
-    for key in ("review", "duplicates", "duplicate_judge", "venice_anonymized"):
+    for key in ("review", "duplicates", "duplicate_judge", "venice_anonymized", "tier_duplicates"):
         if key not in origin:
             doc.pop(key, None)
     if "gateway" not in origin:
@@ -309,6 +310,7 @@ def describe(s: Settings, *, token_set: Optional[bool] = None, judge_off: str = 
         line("near-duplicates", "duplicates", d.get("duplicates") or "skip"),
         line("duplicate judge", "duplicate_judge", d.get("duplicate_judge") or "clef")
         + (f", not running: {judge_off}" if judge_off else ""),
+        line("private and shared duplicates", "tier_duplicates", d.get("tier_duplicates") or "ask"),
         line("venice anonymized models", "venice_anonymized", d.get("venice_anonymized") or "shared"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
     ]

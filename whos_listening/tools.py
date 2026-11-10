@@ -8,8 +8,10 @@ back tagged so the guard can find them later.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Optional
 
+from . import commands, resolve
 from . import duplicates as dupes
 from . import review
 from .recall import allowed_tiers, format_line
@@ -21,7 +23,10 @@ from .store import (
 REMEMBER = "whos-listening_remember"
 RECALL = "whos-listening_recall"
 FORGET = "whos-listening_forget"
-TOOL_NAMES = (REMEMBER, RECALL, FORGET)
+REVIEW = "whos-listening_review"
+TOOL_NAMES = (REMEMBER, RECALL, FORGET, REVIEW)
+REVIEW_CHOICES = ("keep", "keep_both", "approve", "reject")
+ALL_PAGE = 50
 RECALLS_PER_TURN = 5     # a model that keeps searching (some cheap models loop on it) stops here
 
 
@@ -56,6 +61,19 @@ SCHEMAS = (
         {"id": {"type": "integer", "description": "The memory number."}},
         ("id",),
     ),
+    _schema(
+        REVIEW,
+        "Review the user's memories with them. list: what waits for their choice (possible duplicates, "
+        "saves and forgets to approve). all: every memory, a page at a time. export: write them all to a "
+        "file. scan: look for repeats saved earlier, in the background. keep / keep_both / approve / reject: "
+        "carry out a choice the user made; these only work when the user's own message names that memory "
+        "number, so ask them for it if they didn't.",
+        {"action": {"type": "string", "enum": ["list", "all", "export", "scan", *REVIEW_CHOICES],
+                    "description": "keep: keep #id and forget the memory it may repeat. keep_both: keep both."},
+         "id": {"type": "integer", "description": "The memory number, for keep, keep_both, approve and reject."},
+         "page": {"type": "integer", "description": "For all: which page, from 1."}},
+        ("action",),
+    ),
 )
 
 
@@ -65,6 +83,77 @@ def _ok(**data: Any) -> str:
 
 def _err(message: str) -> str:
     return json.dumps({"ok": False, "error": message}, ensure_ascii=False)
+
+
+def names_number(message: str, memory_id: int) -> bool:
+    """Whether the user's own message names memory ``memory_id`` ("keep 41", "#41", "number 41")."""
+    return re.search(rf"(?<![\d.,]){int(memory_id)}(?![\d]|[.,]\d)", str(message or "")) is not None
+
+
+def _review(store: Store, args: dict, route_tier: str, user_message: str,
+            export: Optional[Callable[[bool], str]], scan: Optional[Callable[[], str]]) -> str:
+    action = str(args.get("action") or "list").strip().lower()
+    show_private = route_tier == PRIVATE
+    if action == "list":
+        out, hidden = [], 0
+        for it in resolve.items(store):
+            pair = [it.memory] + ([it.other] if it.other else [])
+            if not show_private and any(m.tier == PRIVATE for m in pair):
+                hidden += 1
+                continue
+            entry = {"kind": it.kind, "memory": _public(it.memory)}
+            if it.other:
+                entry["may_repeat"] = _public(it.other)
+            if it.kind != "duplicate":
+                entry["why"] = it.memory.pending_reason or it.memory.forget_reason or "needs the user's OK"
+            out.append(entry)
+        return _ok(waiting=out, private_withheld=hidden,
+                   note=("For a possible duplicate the user keeps one (keep), or both (keep_both); a waiting save "
+                         "or forget they approve or reject. Show both memories with their numbers and let them "
+                         "choose." + (" Some items involve private memories, which aren't shown on a shared "
+                                      "route: the user can see them with /memories review." if hidden else "")))
+    if action == "all":
+        try:
+            page = max(1, int(args.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        tiers = (PRIVATE, SHARED) if show_private else (SHARED,)
+        everything = sorted(store.list(tiers=tiers, limit=5000), key=lambda m: m.id)
+        part = everything[(page - 1) * ALL_PAGE: page * ALL_PAGE]
+        return _ok(memories=[_public(m) for m in part], page=page,
+                   pages=max(1, -(-len(everything) // ALL_PAGE)), total=len(everything),
+                   private_withheld=0 if show_private else store.count(tiers=(PRIVATE,)))
+    if action == "export":
+        if export is None:
+            return _err("Export isn't available here.")
+        path = export(show_private)
+        return _ok(file=path, note="Give the user this file." + ("" if show_private else
+                                                               " On a shared route it has shared memories only."))
+    if action == "scan":
+        if scan is None:
+            return _err("Scanning isn't available here.")
+        return _ok(note=scan())
+    if action not in REVIEW_CHOICES:
+        return _err(f"Unknown action {action!r}.")
+    try:
+        memory_id = int(args.get("id"))
+    except (TypeError, ValueError):
+        return _err("Give the memory number (id).")
+    if not names_number(user_message, memory_id):
+        return _err(f"Nothing was changed: the user's own message doesn't name #{memory_id}. Ask them to "
+                    f"say which memory, with its number (such as \"keep {memory_id}\").")
+    if action == "keep":
+        kept, dropped = resolve.keep(store, memory_id, show_private=show_private, actor="assistant")
+        return _ok(kept=_public(kept), forgotten=[m.id for m in dropped])
+    if action == "keep_both":
+        return _ok(kept=[_public(m) for m in resolve.keep_both(store, memory_id, show_private=show_private,
+                                                                actor="assistant")])
+    fn = commands.cmd_approve if action == "approve" else commands.cmd_reject
+    reply = fn(store, str(memory_id), show_private)
+    m = store.get(memory_id)
+    if m is not None and m.tier == PRIVATE and not show_private:
+        return _err(reply)          # refused: Private, on a Shared route
+    return _ok(memory=_public(m) if m else None, status=m.status if m else None)
 
 
 def _public(m: Memory) -> dict:
@@ -95,11 +184,35 @@ def _shared_route_saved(tier: str, hold: Optional[str], reviewing: bool = False)
     return _ok(saved={"tier": tier}, note=note)
 
 
+def repeat_of(store: Store, text: str, tier: str,
+              judge: Optional[Callable[..., Optional[Memory]]] = None) -> Optional[Memory]:
+    """The existing memory a new save repeats: the word check first, then the judge (if any).
+    A Private save may repeat any memory; a Shared one is checked against Shared memories first,
+    then Private ones (the caller decides what a Shared-over-Private repeat means)."""
+    if tier == PRIVATE:
+        same = dupes.find(store, text, PRIVATE)
+    else:
+        same = dupes.find(store, text, SHARED) or dupes.find(store, text, SHARED, tiers=(PRIVATE,))
+    if same is None and judge is not None:
+        try:
+            same = judge(text, (PRIVATE, SHARED) if tier == PRIVATE else (SHARED, PRIVATE))
+        except Exception:
+            same = None
+    return same
+
+
+def tier_duplicate_reason(other: Memory) -> str:
+    return (f"It says what private memory #{other.id} says. Choose which to keep: /memories review, "
+            f"or tell the assistant, such as \"keep {other.id}\".")
+
+
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
            provenance: Callable[[], Provenance], outside_tool: str = "",
            on_outside_hold: Optional[Callable[[Memory], bool]] = None, private_refused: str = "",
            duplicates: str = "skip",
-           judge: Optional[Callable[[str, str], Optional[Memory]]] = None) -> str:
+           judge: Optional[Callable[..., Optional[Memory]]] = None, tier_duplicates: str = "ask",
+           user_message: str = "", export: Optional[Callable[[bool], str]] = None,
+           scan: Optional[Callable[[], str]] = None) -> str:
     """Run one tool call. Always returns a JSON string; never raises.
 
     ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
@@ -109,8 +222,12 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     ``on_outside_hold`` is called with a save held only because of outside content (not by the
     rule screen); it returns True if Auto-review will check it.
     ``duplicates``: "skip" (a save that rewords an existing memory saves nothing) or "keep".
-    ``judge``: a second near-duplicate check (judge.py), called as ``judge(text, tier)`` when the
-    word check finds nothing; it returns the memory the save repeats, or None."""
+    ``judge``: a second near-duplicate check (judge.py), called as ``judge(text, tiers)`` when the
+    word check finds nothing; it returns the memory the save repeats, or None.
+    ``tier_duplicates``: a Shared save that says what a Private memory says: "ask" (it waits for the
+    user, flagged), "shared" (saved; the Private one is forgotten) or "private" (not saved).
+    ``user_message``: the user's own message this turn; a review choice must name its number there.
+    ``export(show_private) -> path`` and ``scan() -> note`` run those review actions."""
     args = args if isinstance(args, dict) else {}
     try:
         if name == REMEMBER:
@@ -122,43 +239,63 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 screened = clean_text(text)        # screen exactly what would be saved
             except StoreError as exc:
                 return _err(str(exc))
-            if duplicates != "keep":
-                same = dupes.find(store, screened, tier)
-                if same is None and judge is not None:
-                    try:
-                        same = judge(screened, tier)
-                    except Exception:
-                        same = None
-                if same is not None:
-                    if route_tier != PRIVATE and same.tier == PRIVATE:
-                        # Don't tell a Shared route that a Private memory says this: answer exactly
-                        # like a save, as for a forgotten Private fact.
-                        return _shared_route_saved(tier, None)
-                    return _ok(duplicate=_public(same),
-                               note=f"Already remembered as #{same.id}, so nothing new was saved.")
-            hold = review.save_hold_reason(screened, outside_tool)
+            same = repeat_of(store, screened, tier, judge) if duplicates != "keep" else None
+            cross = same if same is not None and tier == SHARED and same.tier == PRIVATE else None
+            if cross is not None and tier_duplicates != "private":
+                same = None         # saved below: flagged for the user, or replacing the Private one
+            if same is not None:
+                if route_tier != PRIVATE and same.tier == PRIVATE:
+                    # Don't tell a Shared route that a Private memory says this: answer exactly
+                    # like a save, as for a forgotten Private fact.
+                    return _shared_route_saved(tier, None)
+                return _ok(duplicate=_public(same),
+                           note=f"Already remembered as #{same.id}, so nothing new was saved.")
+            outside_hold = review.save_hold_reason(screened, outside_tool)
+            hold = outside_hold
+            # A Shared save over a Private memory waits for the user ("ask"), and so does one that
+            # would replace it ("shared") while the chat holds saves anyway.
+            flag = cross is not None and (tier_duplicates == "ask" or bool(outside_hold))
+            if flag:
+                hold = ((hold + " ") if hold else "") + tier_duplicate_reason(cross)
             try:
                 m = store.add(text, tier, provenance(), status=PENDING if hold else "active",
-                              pending_reason=hold or "")
+                              pending_reason=hold or "", duplicate_of=cross.id if flag else 0)
             except ForgottenError as exc:
                 if route_tier == PRIVATE or exc.tier == SHARED:
                     raise
                 # On a Shared route, don't confirm that a Private fact was once saved and
                 # forgotten: answer exactly like a save (nothing is saved).
-                return _shared_route_saved(tier, hold)
+                return _shared_route_saved(tier, outside_hold)
             store.log_event(m.id, "held" if hold else "saved", "assistant")
+            replaced = None
+            if cross is not None and not flag:          # "shared": the Shared one replaces the Private one
+                replaced = store.forget(cross.id)
+                store.log_event(cross.id, "forgot", "assistant")
             reviewing = False
-            # Auto-review only for a hold that came from outside content alone, never the rule screen.
-            if hold and outside_tool and on_outside_hold is not None and not review.rule_concern(screened):
+            # Auto-review only for a hold that came from outside content alone, never the rule screen
+            # or a duplicate the user chooses about.
+            if hold and outside_tool and on_outside_hold is not None and not flag and not review.rule_concern(screened):
                 try:
                     reviewing = bool(on_outside_hold(m))
                 except Exception:
                     reviewing = False
             if route_tier != PRIVATE:
-                return _shared_route_saved(m.tier, hold, reviewing)
+                # Never mention the Private memory it repeats: it looks like any save (or hold).
+                return _shared_route_saved(m.tier, outside_hold, reviewing)
+            if flag:
+                return _ok(pending=_public(m), duplicate=_public(cross),
+                           note=f"Not saved yet: it says what private memory #{cross.id} says. The user chooses which "
+                                f"to keep: tell them, and when they answer with a number (such as \"keep {m.id}\"), "
+                                f"use whos-listening_review.")
             if hold:
                 return _ok(pending=_public(m), note=_held_note(hold, m.id, reviewing))
+            if replaced is not None:
+                return _ok(saved=_public(m), note=f"It replaced private memory #{replaced.id}, which said the same "
+                                                  "(the user's setting keeps the shared one).")
             return _ok(saved=_public(m), note="")
+
+        if name == REVIEW:
+            return _review(store, args, route_tier, user_message, export, scan)
 
         if name == RECALL:
             tiers = allowed_tiers(route_tier)

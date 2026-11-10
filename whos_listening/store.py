@@ -28,7 +28,7 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def now_iso() -> str:
@@ -82,6 +82,7 @@ class Memory:
     forget_reason: str = ""        # set when the assistant asked to forget it and the user must OK it
     forgotten_from: str = ""       # the status it had before it was forgotten
     uid: str = ""                  # the same memory's id on every gateway (see sync.py)
+    duplicate_of: int = 0          # flagged: it may say what this memory says, for the user to choose
 
 
 @dataclass(frozen=True)
@@ -161,9 +162,11 @@ class Store(ABC):
 
     @abstractmethod
     def add(self, text: str, tier: str, provenance: Provenance, *,
-            status: str = ACTIVE, pending_reason: str = "", allow_forgotten: bool = False) -> Memory:
+            status: str = ACTIVE, pending_reason: str = "", allow_forgotten: bool = False,
+            duplicate_of: int = 0) -> Memory:
         """Save a memory. Raises ``ForgottenError`` if a tombstone matches the text, unless
-        ``allow_forgotten`` (only for the user's own commands), which also lifts the tombstone."""
+        ``allow_forgotten`` (only for the user's own commands), which also lifts the tombstone.
+        ``duplicate_of`` flags it as possibly saying what that memory says (see resolve.py)."""
 
     @abstractmethod
     def get(self, memory_id: int) -> Optional[Memory]: ...
@@ -183,12 +186,24 @@ class Store(ABC):
     def set_status(self, memory_id: int, status: str, *, pending_reason: str = "") -> Memory: ...
 
     @abstractmethod
-    def forget(self, memory_id: int, *, at: Optional[str] = None, travels: Optional[bool] = None) -> Memory:
+    def forget(self, memory_id: int, *, at: Optional[str] = None, travels: Optional[bool] = None,
+               everywhere: bool = False) -> Memory:
         """Mark a memory forgotten and leave a tombstone so the same text can't come back.
         The text stays in the local file (so Undo works) until ``purge``. ``at`` sets the change
         time (sync applies another gateway's change at that gateway's time). ``travels`` overrides
         whether the tombstone's forget is one other gateways share (default: an active Shared
-        memory's forget does; sync passes True for a forget that came from elsewhere)."""
+        memory's forget does; sync passes True for a forget that came from elsewhere).
+        ``everywhere``: a Shared memory that arrived by sync and waits here is forgotten on the
+        other gateways too, as if it had been active (turning one down is otherwise local)."""
+
+    @abstractmethod
+    def set_duplicate_of(self, memory_id: int, other_id: int) -> Memory:
+        """Flag (or, with 0, unflag) a memory as possibly saying what ``other_id`` says. Doesn't
+        change its time: the flag is local and never syncs."""
+
+    @abstractmethod
+    def flagged(self) -> list[Memory]:
+        """Active or pending memories flagged as possible duplicates, oldest first."""
 
     @abstractmethod
     def restore(self, memory_id: int, *, at: Optional[str] = None) -> Memory:
@@ -249,7 +264,8 @@ class Store(ABC):
 
     @abstractmethod
     def import_synced(self, uid: str, text: str, provenance: Provenance, *, created_at: str,
-                      updated_at: str, status: str = ACTIVE, pending_reason: str = "") -> Memory:
+                      updated_at: str, status: str = ACTIVE, pending_reason: str = "",
+                      duplicate_of: int = 0) -> Memory:
         """Add a Shared memory that arrived from another gateway, keeping its id and times. It lifts
         a Shared tombstone for the same words (the caller already decided the arrival is newer),
         never a Private one."""
@@ -382,6 +398,8 @@ class SQLiteStore(Store):
             value TEXT NOT NULL
         )""",
     )
+    # Version 5: a flag for a possible duplicate, for the user to choose which to keep.
+    _V5_COLUMNS = (("duplicate_of", "INTEGER NOT NULL DEFAULT 0"),)
     # Columns added in version 3: (name, definition).
     _V3_COLUMNS = (
         ("forget_reason", "TEXT NOT NULL DEFAULT ''"),
@@ -446,6 +464,10 @@ class SQLiteStore(Store):
                              "memory_id NOT IN (SELECT id FROM memories WHERE forgotten_from = 'pending'))")
             for sql in self._V4:
                 self._db.execute(sql)
+        if version < 5:
+            for name, definition in self._V5_COLUMNS:
+                if not self._has_column("memories", name):
+                    self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {definition}")
         if self._fts and not self._db.execute(
                 "SELECT 1 FROM sqlite_master WHERE name = 'memories_fts'").fetchone():
             # A file made where FTS5 was missing, or damaged: build the search index now.
@@ -462,6 +484,7 @@ class SQLiteStore(Store):
             created_at=row["created_at"], updated_at=row["updated_at"],
             pending_reason=row["pending_reason"], forget_reason=row["forget_reason"],
             forgotten_from=row["forgotten_from"], uid=row["uid"] or "",
+            duplicate_of=int(row["duplicate_of"] or 0) if "duplicate_of" in row.keys() else 0,
             provenance=Provenance(
                 written_by=row["written_by"], via=row["via"], route=row["route"],
                 route_tier=row["route_tier"], session_id=row["session_id"], turn=row["turn"],
@@ -478,7 +501,8 @@ class SQLiteStore(Store):
 
     # -- Store -------------------------------------------------------------
 
-    def add(self, text, tier, provenance, *, status=ACTIVE, pending_reason="", allow_forgotten=False):
+    def add(self, text, tier, provenance, *, status=ACTIVE, pending_reason="", allow_forgotten=False,
+            duplicate_of=0):
         text = clean_text(text)
         tier = check_tier(tier)
         if status not in (ACTIVE, PENDING):
@@ -496,10 +520,10 @@ class SQLiteStore(Store):
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             cur = self._db.execute(
                 """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
-                       written_by, via, route, route_tier, session_id, turn, author, uid)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (text, tier, status, pending_reason, stamp, stamp, p.written_by, p.via, p.route,
-                 p.route_tier, p.session_id, str(p.turn), p.author, new_uid()),
+                 p.route_tier, p.session_id, str(p.turn), p.author, new_uid(), int(duplicate_of or 0)),
             )
             return self.get(cur.lastrowid)
 
@@ -565,7 +589,7 @@ class SQLiteStore(Store):
             )
             return self.get(m.id)
 
-    def forget(self, memory_id, *, at=None, travels=None):
+    def forget(self, memory_id, *, at=None, travels=None, everywhere=False):
         with self._lock, self._db:
             m = self.get(memory_id)
             if m is None:
@@ -573,10 +597,11 @@ class SQLiteStore(Store):
             if m.status == FORGOTTEN:
                 return m
             stamp = at or stamp_after(m.updated_at)
-            self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, "
-                             "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, stamp, m.id))
+            was = ACTIVE if everywhere and m.tier == SHARED else m.status
+            self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, duplicate_of = 0, "
+                             "forget_reason = '', updated_at = ? WHERE id = ?", (was, stamp, m.id))
             if travels is None:
-                travels = m.tier == SHARED and m.status == ACTIVE
+                travels = m.tier == SHARED and was == ACTIVE
             self._tombstone(m.text, m.id, m.tier, stamp, travels)
             return self.get(m.id)
 
@@ -619,6 +644,19 @@ class SQLiteStore(Store):
             self._db.execute("UPDATE memories SET status = ?, forgotten_from = '', updated_at = ? WHERE id = ?",
                              (back, at or stamp_after(m.updated_at), m.id))
             return self.get(m.id)
+
+    def set_duplicate_of(self, memory_id, other_id):
+        with self._lock, self._db:
+            if self.get(memory_id) is None:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._db.execute("UPDATE memories SET duplicate_of = ? WHERE id = ?", (int(other_id or 0), int(memory_id)))
+            return self.get(memory_id)
+
+    def flagged(self):
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM memories WHERE duplicate_of != 0 "
+                                    "AND status IN ('active', 'pending') ORDER BY id").fetchall()
+        return [self._row(r) for r in rows]
 
     def purge(self, memory_id):
         with self._lock, self._db:
@@ -747,7 +785,8 @@ class SQLiteStore(Store):
                                     "AND status IN ('active', 'forgotten') ORDER BY id").fetchall()
         return [self._row(r) for r in rows]
 
-    def import_synced(self, uid, text, provenance, *, created_at, updated_at, status=ACTIVE, pending_reason=""):
+    def import_synced(self, uid, text, provenance, *, created_at, updated_at, status=ACTIVE, pending_reason="",
+                      duplicate_of=0):
         text = clean_text(text)
         if status not in (ACTIVE, PENDING):
             raise StoreError("A memory arriving by sync is either active or pending.")
@@ -759,10 +798,10 @@ class SQLiteStore(Store):
                              (fingerprint(text),))
             cur = self._db.execute(
                 """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
-                       written_by, via, route, route_tier, session_id, turn, author, uid)
-                   VALUES (?,'shared',?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
+                   VALUES (?,'shared',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (text, status, pending_reason, created_at, updated_at, p.written_by, p.via, p.route,
-                 p.route_tier, p.session_id, str(p.turn), p.author, str(uid)),
+                 p.route_tier, p.session_id, str(p.turn), p.author, str(uid), int(duplicate_of or 0)),
             )
             return self.get(cur.lastrowid)
 

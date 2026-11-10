@@ -39,6 +39,11 @@ config_schema:
     choices: [default, clef, jev, model, off]
     label: "Duplicate judge"
     description: "A second check for near-duplicates, by a model. It catches rewordings the word check misses, such as \"Allergic to peanuts\" after \"Has a peanut allergy\". clef (the default): Clef, a decision model that runs privately on Venice, using the Venice key Hermes already has; without a key, only the word check runs. jev: Jev, a decision model that is anonymized on Venice (TypeSafe sees the text); it runs only if you treat anonymized Venice models as private. model: your default model in Hermes; it runs only if that model and every fallback are private, and takes seconds instead of under one. off: words only, nothing sent. Each check sends the new memory and up to 20 others, private ones included. /memories settings says if the judge can't run."
+  tier_duplicates:
+    type: str
+    choices: [default, ask, shared, private]
+    label: "Private and Shared duplicates"
+    description: "What happens when a Shared memory says what a Private one already says, such as \"Owns a Subaru\" saved as Shared while \"Drives a Subaru Outback\" is Private (from a save, or arriving from another gateway). ask (the default): the new one waits until you choose which to keep (/memories review, or tell the assistant, such as \"keep 41\"). shared: keep the Shared one and forget the Private one. private: keep the Private one; the Shared one is not kept (one that arrived from another gateway is forgotten there too). A Private save that repeats a Shared memory is always skipped."
   venice_anonymized:
     type: str
     choices: [default, shared, private]

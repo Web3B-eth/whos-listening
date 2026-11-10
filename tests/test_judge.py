@@ -96,18 +96,18 @@ def test_a_person_mix_up_is_never_a_duplicate(store):
 def test_the_tool_uses_the_judge_when_words_dont_match(store):
     a = store.add("Has a peanut allergy", PRIVATE, Provenance())
     calls = []
-    def j(text, tier):
-        calls.append((text, tier))
+    def j(text, tiers):
+        calls.append((text, tiers))
         return a
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": "Allergic to peanuts"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), judge=j))
-    assert out["duplicate"]["id"] == a.id and calls == [("Allergic to peanuts", PRIVATE)]
+    assert out["duplicate"]["id"] == a.id and calls == [("Allergic to peanuts", (PRIVATE, SHARED))]
     # the word check catches it first: no judge call
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": "I have a peanut allergy"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), judge=j))
     assert out["duplicate"]["id"] == a.id and len(calls) == 1
     # a judge that fails saves normally
-    def broken(text, tier):
+    def broken(text, tiers):
         raise RuntimeError("x")
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": "Speaks French"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), judge=broken))

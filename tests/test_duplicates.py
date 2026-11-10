@@ -77,11 +77,10 @@ def test_a_shared_route_never_learns_of_a_private_near_duplicate(store):
     assert "Hightower" not in json.dumps(out) and store.count() == 1
 
 
-def test_keep_mode_and_a_shared_save_over_a_private_memory_still_save(store):
+def test_keep_mode_saves_anyway(store):
     save(store, "Owns a Santa Cruz Hightower mountain bike")
     assert save(store, "Bought a Santa Cruz Hightower mountain bike", mode="keep")["saved"]
-    assert save(store, "Owns a Santa Cruz Hightower mountain bike now", tier=SHARED)["saved"]
-    assert store.count() == 3
+    assert store.count() == 2
 
 
 def test_the_setting(tmp_path):

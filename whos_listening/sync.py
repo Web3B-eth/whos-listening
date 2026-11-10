@@ -16,7 +16,9 @@ What travels, and what never does:
   its words (the same hash a tombstone keeps), so a forget on one gateway forgets it everywhere.
 - **Last change wins**, by each memory's change time; at the same time a forget wins.
 - **An arrival is checked.** A memory that comes in passes the rule screen (review.py); one it
-  flags waits for the user, like a held save.
+  flags waits for the user, like a held save. With ``NearRepeats``, one that rewords a Shared
+  memory already here is left out here (remembered, so it isn't checked again), and one that says
+  what a Private memory here says follows the user's ``tier_duplicates`` setting (resolve.py).
 
 The file lives in a private GitHub repository, read and written through the Contents API with a
 token the user creates for that one repository. GitHub only accepts a write against the version
@@ -40,7 +42,8 @@ from typing import Any, Callable, Mapping, Optional
 
 from . import review
 from .store import (
-    ACTIVE, FORGOTTEN, PENDING, SHARED, Provenance, Store, StoreError, clean_text, fingerprint, now_iso,
+    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, Store, StoreError, clean_text, fingerprint, now_iso,
+    stamp_after,
 )
 
 FORMAT = "whos-listening-sync"
@@ -317,6 +320,10 @@ class SyncResult:
     sent: int = 0             # changes from here that the file didn't have
     duplicates: int = 0       # arrivals skipped because the same words are already here
     kept_out: int = 0         # arrivals skipped because their words were forgotten here
+    near_repeats: int = 0     # arrivals left out because a Shared memory here already says it
+    flagged: int = 0          # arrivals that say what a Private memory says, waiting for the user
+    replaced: int = 0         # Private memories here forgotten for an arrival ("shared" setting)
+    removed: int = 0          # arrivals forgotten everywhere for a Private memory ("private" setting)
     wrote: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -331,6 +338,14 @@ class SyncResult:
             parts.append(f"{self.restored} restored here")
         if self.kept_out:
             parts.append(f"{self.kept_out} kept out (forgotten here)")
+        if self.near_repeats:
+            parts.append(f"{self.near_repeats} left out (already said here)")
+        if self.flagged:
+            parts.append(f"{self.flagged} like a private memory, waiting for you to choose: /memories review")
+        if self.replaced:
+            parts.append(f"{self.replaced} replaced a private memory")
+        if self.removed:
+            parts.append(f"{self.removed} removed everywhere (you keep the private one)")
         if self.sent:
             parts.append(f"{self.sent} sent")
         return ", ".join(parts) or "nothing new"
@@ -354,14 +369,15 @@ def _turned_down_here(store: Store, m) -> bool:
     return not (last and last[0].action == "synced_forget")
 
 
-def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = now_iso) -> SyncResult:
+def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = now_iso,
+              near: Optional[NearRepeats] = None) -> SyncResult:
     """Read the file, merge, apply what's newer here, write the file back. Retries on a write
     conflict (another gateway wrote in between). Applying is idempotent, so a retry is safe."""
     total = SyncResult()
     for _ in range(ATTEMPTS):
         raw, sha = transport.read()
         remote = parse(raw)
-        result = _merge_and_apply(store, remote, name)
+        result = _merge_and_apply(store, remote, name, near)
         _add_up(total, result.result)       # changes applied here in an earlier attempt still count
         result = _Pass(result.merged, total)
         merged = result.merged
@@ -381,9 +397,37 @@ def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = no
 
 
 def _add_up(total: SyncResult, part: SyncResult) -> None:
-    for name in ("arrived", "held", "forgotten", "restored", "duplicates", "kept_out"):
+    for name in ("arrived", "held", "forgotten", "restored", "duplicates", "kept_out", "near_repeats",
+                 "flagged", "replaced", "removed"):
         setattr(total, name, getattr(total, name) + getattr(part, name))
     total.sent = part.sent              # what this attempt sends is what the file gets
+
+
+@dataclass
+class NearRepeats:
+    """How arrivals that reword a memory already here are handled.
+
+    ``find(text)`` returns the memory here an arrival repeats (the word check, then the duplicate
+    judge if it runs), Shared ones before Private ones. ``tier_duplicates`` is the user's setting
+    for one that says what a Private memory says: "ask", "shared" or "private"."""
+    find: Callable[[str], Any]
+    tier_duplicates: str = "ask"
+
+
+NEAR_KEY = "sync.near_repeats"       # {arrival uid: id of the memory here that already says it}
+
+
+def _near_drops(store: Store) -> dict[str, int]:
+    try:
+        data = json.loads(store.meta_get(NEAR_KEY) or "{}")
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _still_here(store: Store, memory_id: int) -> bool:
+    m = store.get(memory_id)
+    return m is not None and m.status in (ACTIVE, PENDING)
 
 
 @dataclass
@@ -392,7 +436,8 @@ class _Pass:
     result: SyncResult
 
 
-def _merge_and_apply(store: Store, remote: dict[str, Record], name: str) -> _Pass:
+def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
+                     near: Optional[NearRepeats] = None) -> _Pass:
     result = SyncResult()
     merged = dict(remote)
 
@@ -453,17 +498,47 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str) -> _Pas
         if store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
             result.duplicates += 1      # the same words are already here: keep one line
             continue
+        match = None
+        if near is not None:
+            drops = _near_drops(store)
+            if uid in drops and _still_here(store, drops[uid]):
+                continue                # left out before; still said here
+            try:
+                match = near.find(r.text or "")
+            except Exception:
+                match = None
+            if match is not None and match.tier == SHARED:
+                drops[uid] = match.id   # a Shared memory here already says it: left out here
+                store.meta_set(NEAR_KEY, json.dumps(drops, sort_keys=True))
+                result.near_repeats += 1
+                continue
+            if match is not None and near.tier_duplicates == PRIVATE:
+                # The user keeps the Private one: the Shared copy is forgotten on every gateway.
+                merged[uid] = replace(r, status=FORGOTTEN, text=None, updated_at=stamp_after(r.updated_at))
+                result.sent += 1
+                result.removed += 1
+                continue
         origin = r.origin or "another gateway"
         concern = review.rule_concern(r.text or "")
+        flag = match is not None and (near.tier_duplicates != SHARED or bool(concern))
+        reason = " ".join(x for x in (
+            f"It arrived by sync from {origin}." if (concern or flag) else "", concern,
+            f"It says what private memory #{match.id} says. Choose which to keep: /memories review." if flag else "")
+            if x)
         m = store.import_synced(
             uid, r.text or "",
             Provenance(written_by="sync", via="sync", route=f"sync from {origin}", route_tier=SHARED),
             created_at=r.created_at or r.updated_at, updated_at=r.updated_at,
-            status=PENDING if concern else ACTIVE,
-            pending_reason=f"It arrived by sync from {origin}. {concern}" if concern else "")
+            status=PENDING if (concern or flag) else ACTIVE, pending_reason=reason,
+            duplicate_of=match.id if flag else 0)
         _log(store, m.id, "synced_in")
         result.arrived += 1
         result.held += 1 if concern else 0
+        result.flagged += 1 if flag else 0
+        if match is not None and not flag:      # "shared": the arrival replaces the Private memory
+            store.forget(match.id)
+            store.log_event(match.id, "forgot", "sync")
+            result.replaced += 1
     return _Pass(merged, result)
 
 
@@ -479,11 +554,12 @@ def gateway_name(store: Store, settings: SyncSettings) -> str:
     return name
 
 
-def run(store: Store, settings: SyncSettings, token: str, *, transport=None) -> SyncResult:
+def run(store: Store, settings: SyncSettings, token: str, *, transport=None,
+        near: Optional[NearRepeats] = None) -> SyncResult:
     """One full sync, recording how it went in the store (``/memories sync status``)."""
     try:
         file = transport or GitHubFile(settings, token)
-        result = sync_once(store, file, gateway_name(store, settings))
+        result = sync_once(store, file, gateway_name(store, settings), near=near)
     except SyncError as exc:
         store.meta_set("sync.last_error", f"{now_iso()} {exc}")
         raise

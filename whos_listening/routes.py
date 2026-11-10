@@ -173,6 +173,9 @@ class RouteSettings:
     duplicates: str = "skip"  # "skip": a near-duplicate save is skipped (duplicates.py). "keep": saved.
     duplicate_judge: str = "clef"  # a second near-duplicate check (judge.py): "clef", "jev", "model" or "off"
     venice_anonymized: str = SHARED   # how to treat Venice's anonymized models: "shared" or "private"
+    # A Shared memory that says what a Private one says (resolve.py): "ask" (it waits for the user),
+    # "shared" (keep the Shared one, forget the Private one) or "private" (keep the Private one).
+    tier_duplicates: str = "ask"
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":
@@ -190,20 +193,22 @@ class RouteSettings:
         judge = str(data.get("duplicate_judge") or "clef").strip().lower()
         gateway = str(data.get("gateway") or PRIVATE).strip().lower()
         venice_anon = str(data.get("venice_anonymized") or SHARED).strip().lower()
+        tier_dupes = str(data.get("tier_duplicates") or "ask").strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
                    private_platforms=hosts("private_platforms"), shared_platforms=hosts("shared_platforms"),
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
                    review=review if review in ("ask", "auto") else "ask",     # a typo fails safe
                    duplicates=duplicates if duplicates in ("skip", "keep") else "skip",
                    duplicate_judge=judge if judge in ("clef", "jev", "model") else "off",   # a typo sends nothing
-                   venice_anonymized=PRIVATE if venice_anon == PRIVATE else SHARED)
+                   venice_anonymized=PRIVATE if venice_anon == PRIVATE else SHARED,
+                   tier_duplicates=tier_dupes if tier_dupes in (PRIVATE, SHARED) else "ask")   # a typo asks
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
                 "shared_hosts": list(self.shared_hosts), "private_platforms": list(self.private_platforms),
                 "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review,
                 "duplicates": self.duplicates, "duplicate_judge": self.duplicate_judge,
-                "venice_anonymized": self.venice_anonymized}
+                "venice_anonymized": self.venice_anonymized, "tier_duplicates": self.tier_duplicates}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":

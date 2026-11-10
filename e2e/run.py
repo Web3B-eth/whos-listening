@@ -370,6 +370,23 @@ def main() -> int:
         run.check("auto-review: the check ran on the chat's own model",
                   bool(check_reqs) and all(r["model"] == "private-model" for r in check_reqs))
 
+        # 8b. A Shared save that says what a Private memory says waits for the user, who keeps the
+        #     Private one by naming its number in plain language (the review tool).
+        store = SQLiteStore(data / "memories.sqlite")
+        private_id = next(m.id for m in store.list() if m.text == PRIVATE_TEXT)
+        store.close()
+        _, reqs = run.chat('Remember this, any model may see it. [[call whos-listening_remember '
+                           '{"text": "Keeps a vegetarian diet on all weekdays", "tier": "shared"}]]',
+                           provider="private-sim", model="private-model")
+        run.check("tier duplicate: the shared save waits for the user",
+                  has(reqs, f"it says what private memory #{private_id} says"))
+        _, reqs = run.chat(f'Let us keep {private_id}. [[call whos-listening_review {{"action": "keep", "id": {private_id}}}]]',
+                           provider="private-sim", model="private-model")
+        flagged = [m for m in memories_in(data) if m.text == "Keeps a vegetarian diet on all weekdays"]
+        run.check("tier duplicate: keeping the private one by number turns the shared one down",
+                  bool(flagged) and flagged[0].status == "forgotten" and has(reqs, "kept"),
+                  flagged[0].status if flagged else "no memory")
+
         # 9. Sync between gateways: a second gateway (B) and a fake GitHub. Only Shared memories
         #    and forgets travel; an arrival passes the rule screen; a Shared change pushes by itself.
         gh_port = free_port()
