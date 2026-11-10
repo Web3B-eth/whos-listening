@@ -6,6 +6,7 @@ The only module in this package that imports Hermes.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 import threading
@@ -17,6 +18,7 @@ from typing import Any, Optional
 from agent.memory_provider import MemoryProvider
 
 from . import autoreview, commands, guard, recall, review, tools
+from . import settings as wl_settings
 from . import sync as wl_sync
 from .routes import (
     Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
@@ -82,15 +84,48 @@ def _active_home() -> Optional[Path]:
         return None
 
 
+def _hermes_settings() -> Optional[dict]:
+    """whos-listening's settings in Hermes' own config (what Desktop's plugin form writes), or
+    None if the config can't be read."""
+    try:
+        from hermes_cli.config import load_config_readonly
+    except ImportError:
+        return {}
+    try:
+        return wl_settings.hermes_part(load_config_readonly())
+    except Exception as exc:
+        logger.debug("whos-listening: could not read Hermes' config: %s", exc)
+        return None
+
+
+def _hosted() -> bool:
+    """Whether Hermes gets its config from a remote service (Hermes Cloud) instead of a file on
+    this machine. Then the machine isn't the user's, and the gateway defaults to Shared. Hermes
+    picks its config backend from this variable (set for the whole process before any config is
+    read); its own module for that isn't a public plugin API."""
+    return os.environ.get("HERMES_CONFIG_BACKEND", "").strip().lower() not in ("", "file")
+
+
+SNAPSHOTS = _process_wide("snapshots", dict)     # the CLI's copy of the Hermes half, as last written
+
+
+def _settings(home: Path) -> wl_settings.Settings:
+    """The merged settings of the profile at ``home``. Raises SettingsError if they can't be read."""
+    hermes, hosted = _hermes_settings(), _hosted()
+    if hermes is not None:
+        wl_settings.write_snapshot(Path(home) / DATA_DIR, hermes, hosted, SNAPSHOTS)
+    return wl_settings.load(wl_settings.Sources(Path(home) / DATA_DIR / SETTINGS_FILE, hermes, hosted))
+
+
 def _load_settings(home: Optional[Path]) -> tuple[Optional[RouteSettings], str]:
     """The settings of the profile at ``home``, or None and why not."""
     if home is None:
         return None, "profile unknown"
     try:
-        return RouteSettings.load(Path(home) / DATA_DIR / SETTINGS_FILE), ""
+        return wl_settings.route_settings(_settings(home)), ""
     except Exception as exc:
-        logger.warning("whos-listening: settings file unreadable, treating every route as Shared: %s", exc)
-        return None, "settings file unreadable"
+        logger.warning("whos-listening: settings unreadable, treating every route as Shared: %s", exc)
+        return None, "settings unreadable"
 
 
 def tier_for(route: Optional[Route], home: Optional[Path], platform: str = "") -> Verdict:
@@ -107,7 +142,7 @@ def _private_refused(home: Optional[Path]) -> str:
     """Why the profile at ``home`` may not keep a new Private memory ("" if it may)."""
     if home is None:
         return "No private memory was saved: whos-listening can't tell which profile this is."
-    return private_storage_refusal(Path(home) / DATA_DIR / SETTINGS_FILE)
+    return private_storage_refusal(_load_settings(home)[0])
 
 
 class WhosListeningProvider(MemoryProvider):
@@ -245,10 +280,8 @@ class WhosListeningProvider(MemoryProvider):
     # -- Auto-review ---------------------------------------------------------
 
     def _review_mode(self) -> str:
-        try:
-            return RouteSettings.load(self._dir / SETTINGS_FILE).review
-        except Exception:
-            return "ask"
+        settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)
+        return settings.review if settings is not None else "ask"
 
     def _auto_review_blocker(self, memory: Memory) -> tuple[str, Optional[Route]]:
         """Why Auto-review may not run for this memory ("" if it may), and the chat's route.
@@ -324,10 +357,7 @@ AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keep
 
 
 def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
-    try:
-        return RouteSettings.load(Path(data_dir) / SETTINGS_FILE) if data_dir else None
-    except Exception:
-        return None
+    return _load_settings(Path(data_dir).parent)[0] if data_dir else None
 
 
 def _ask_chat_model(prompt: str, expected_model: str = "") -> str:
@@ -387,6 +417,8 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     words = (raw_args or "").split()
     if words and words[0].lower() == "sync":
         return _sync_command(home, words[1].lower() if len(words) > 1 else "")
+    if words and words[0].lower() == "settings":
+        return _settings_command(home)
     settings, _ = _load_settings(home)
     store_path = home / DATA_DIR / DB_FILE
     before = _stamp_at(store_path)
@@ -396,6 +428,14 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)
     return out
+
+
+def _settings_command(home: Path) -> str:
+    try:
+        s = _settings(home)
+    except wl_settings.SettingsError as exc:
+        return f"{exc}. Until that's fixed, every route counts as shared and no private memory is saved."
+    return wl_settings.describe(s, token_set=bool(_sync_token()))
 
 
 # -- sync between gateways (sync.py) ------------------------------------------------
@@ -420,7 +460,10 @@ def _sync_state(home: Path) -> "_SyncState":
 
 
 def _sync_settings(home: Path) -> wl_sync.SyncSettings:
-    return wl_sync.load_settings(Path(home) / DATA_DIR / SETTINGS_FILE)
+    try:
+        return wl_settings.sync_settings(_settings(home))
+    except wl_settings.SettingsError as exc:
+        return wl_sync.SyncSettings(error=str(exc))
 
 
 def _sync_token() -> str:
@@ -587,4 +630,4 @@ def register_hooks(ctx) -> None:
     ctx.register_middleware("llm_request", _on_llm_request)
     ctx.register_command("memories", _memories_command,
                          description="Review what whos-listening remembers: pending, approve, undo, forget, show",
-                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT|sync]")
+                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT|sync|settings]")

@@ -140,11 +140,9 @@ def test_settings_round_trip_keeps_the_new_layers():
     assert RouteSettings.from_dict(s.to_dict()) == s
 
 
-def test_shared_gateway_keeps_no_private_memories(tmp_path):
+def test_shared_gateway_keeps_no_private_memories():
     from whos_listening.routes import private_storage_refusal
-    f = tmp_path / "settings.json"
-    assert private_storage_refusal(f) == ""                                 # no file: Private gateway
-    f.write_text('{"gateway": "shared"}')
-    assert "set to shared" in private_storage_refusal(f)
-    f.write_text("{not json")
-    assert "can't be read" in private_storage_refusal(f)
+    assert private_storage_refusal(RouteSettings()) == ""                   # the default: Private gateway
+    assert "set to shared" in private_storage_refusal(RouteSettings(gateway=SHARED))
+    assert "hosted Hermes" in private_storage_refusal(RouteSettings(gateway=SHARED, gateway_hosted=True))
+    assert "can't be read" in private_storage_refusal(None)

@@ -15,3 +15,54 @@ optional_env:
   - name: WHOS_LISTENING_SYNC_TOKEN
     description: "Only for sync between gateways: a GitHub fine-grained token with read and write access to the contents of one private repository (see the README, Sync between gateways)."
     password: true
+# The settings form in Hermes Desktop (Capabilities → Plugins), for whichever gateway Desktop is
+# connected to. A value set here wins over settings.json; "default" or an empty field means
+# "use settings.json, else the built-in default". See the README, Settings.
+config_schema:
+  gateway:
+    type: str
+    choices: [default, private, shared]
+    label: "This gateway"
+    description: "private: this machine may keep Private memories. shared: it keeps none (choose it for a server you don't fully trust). default: private on your own machine, shared on a hosted Hermes such as Hermes Cloud."
+  review:
+    type: str
+    choices: [default, ask, auto]
+    label: "Held saves"
+    description: "ask (the default): held saves wait for you. auto: Auto-review checks them on the chat's own model."
+  sync_repo:
+    type: str
+    label: "Sync repository"
+    description: "owner/name of a private GitHub repository to sync Shared memories through. Empty: sync is off (unless settings.json sets it)."
+  sync_name:
+    type: str
+    label: "Gateway name for sync"
+    description: "How this gateway appears in the sync file, e.g. laptop or cloud. Empty: one is made up."
+  sync_interval:
+    type: int
+    label: "Sync interval (seconds)"
+    description: "Seconds between automatic syncs, at least 30. Empty: 60."
+  sync_token:
+    type: secret
+    env: WHOS_LISTENING_SYNC_TOKEN
+    label: "Sync token"
+    description: "A GitHub fine-grained token with read and write access to the contents of the sync repository only."
+  private_platforms:
+    type: list
+    label: "Extra Private platforms"
+    description: "Hermes platforms that may see Private memories besides cli, tui, desktop and local, e.g. [\"signal\"]."
+  shared_platforms:
+    type: list
+    label: "Shared platforms"
+    description: "Platforms that never see Private memories, even ones that would by default, e.g. [\"desktop\"]."
+  private_hosts:
+    type: list
+    label: "Extra Private model hosts"
+    description: "Model API hosts you trust with Private memories (a domain covers its subdomains)."
+  shared_hosts:
+    type: list
+    label: "Shared model hosts"
+    description: "Model API hosts that never get Private memories, even default Private ones."
+  routes:
+    type: dict
+    label: "Routes"
+    description: "Tier by provider/model, */model or provider, e.g. {\"nous/gpt-6-luna\": \"private\"}."

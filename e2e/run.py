@@ -440,6 +440,33 @@ def main() -> int:
         run.check("sync: a Shared change pushes by itself", any(tea in f for f in written_files(gh_log)))
         status = run.command("/memories sync status")
         run.check("sync: status says how it went", "gateway-a" in status and "Last sync" in status, status.strip()[-160:])
+
+        # 10. Settings from Desktop: written with the same Hermes function Desktop's plugin form
+        #     uses, into Hermes' own config. They win over settings.json, live in a running gateway.
+        def desktop_set(values: dict) -> str:
+            code = ("import json, sys; from pathlib import Path; "
+                    "from hermes_cli.plugins_settings import save_plugin_settings; "
+                    "print(save_plugin_settings('whos-listening', Path(sys.argv[1]), json.loads(sys.argv[2])))")
+            out = subprocess.run([sys.executable, "-c", code, str(home / "plugins" / "whos-listening"),
+                                  json.dumps(values)], env=run.env(), cwd=home, capture_output=True, text=True,
+                                 timeout=60)
+            return out.stdout + out.stderr
+
+        out = desktop_set({"gateway": "shared"})
+        run.check("desktop settings: Hermes' writer takes them", "gateway" in out, out.strip()[-160:])
+        out = run.command("/memories settings")
+        run.check("desktop settings: they win over settings.json", "gateway: shared  (Hermes settings)" in out
+                  and "review: auto  (settings.json)" in out, out.strip()[-200:])
+        out = run.command("/memories add Keeps bees")
+        run.check("desktop settings: a Shared gateway refuses a Private save", "No private memory was saved" in out,
+                  out.strip()[-160:])
+        out = run.cli(["settings"])
+        run.check("desktop settings: the command line sees the gateway's copy",
+                  "gateway: shared  (Hermes settings)" in out, out.strip()[-160:])
+        desktop_set({"gateway": "default"})
+        out = run.command("/memories settings")
+        run.check("desktop settings: 'default' hands back to settings.json", "gateway: private  (settings.json)" in out
+                  or "gateway: private  (default)" in out, out.strip()[-200:])
     finally:
         stop_gateway(home, args.hermes, t0)
         if "home_b" in locals():
