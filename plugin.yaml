@@ -32,7 +32,7 @@ config_schema:
   sync_repo:
     type: str
     label: "Sync repository"
-    description: "owner/name of a private GitHub repository to sync Shared memories through. Empty: sync is off (unless settings.json sets it)."
+    description: "owner/name of a private GitHub repository to sync Shared memories through. Empty: settings.json's, else sync is off. Once set here, settings.json's sync settings are ignored."
   sync_name:
     type: str
     label: "Gateway name for sync"
@@ -40,7 +40,7 @@ config_schema:
   sync_interval:
     type: int
     label: "Sync interval (seconds)"
-    description: "Seconds between automatic syncs, at least 30. Empty: 60."
+    description: "Seconds between automatic syncs, at least 30. 0: settings.json, else 60."
   sync_token:
     type: secret
     env: WHOS_LISTENING_SYNC_TOKEN
@@ -49,20 +49,20 @@ config_schema:
   private_platforms:
     type: list
     label: "Extra Private platforms"
-    description: "Hermes platforms that may see Private memories besides cli, tui, desktop and local, e.g. [\"signal\"]."
+    description: "Hermes platforms that may see Private memories besides cli, tui, desktop and local, e.g. [\"signal\"]. Added to settings.json's; [] for none."
   shared_platforms:
     type: list
     label: "Shared platforms"
-    description: "Platforms that never see Private memories, even ones that would by default, e.g. [\"desktop\"]."
+    description: "Platforms that never see Private memories, even ones that would by default, e.g. [\"desktop\"]. Added to settings.json's; [] for none."
   private_hosts:
     type: list
     label: "Extra Private model hosts"
-    description: "Model API hosts you trust with Private memories (a domain covers its subdomains)."
+    description: "Model API hosts you trust with Private memories (a domain covers its subdomains). Added to settings.json's; [] for none."
   shared_hosts:
     type: list
     label: "Shared model hosts"
-    description: "Model API hosts that never get Private memories, even default Private ones."
+    description: "Model API hosts that never get Private memories, even default Private ones. Added to settings.json's; [] for none."
   routes:
     type: dict
     label: "Routes"
-    description: "Tier by provider/model, */model or provider, e.g. {\"nous/gpt-6-luna\": \"private\"}."
+    description: "Tier by provider/model, */model or provider, e.g. {\"nous/gpt-6-luna\": \"private\"}. Combined with settings.json's (shared wins where they disagree); {} for none."

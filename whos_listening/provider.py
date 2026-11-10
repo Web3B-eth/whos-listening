@@ -92,10 +92,15 @@ def _hermes_settings() -> Optional[dict]:
     except ImportError:
         return {}
     try:
-        return wl_settings.hermes_part(load_config_readonly())
+        config = load_config_readonly()
     except Exception as exc:
         logger.debug("whos-listening: could not read Hermes' config: %s", exc)
         return None
+    if getattr(config, "read_error", None) is not None:
+        # Hermes couldn't read config.yaml and serves defaults or an older copy instead: what it
+        # says about whos-listening may be missing or stale, so it counts as unreadable.
+        return None
+    return wl_settings.hermes_part(config)
 
 
 def _hosted() -> bool:
@@ -112,8 +117,7 @@ SNAPSHOTS = _process_wide("snapshots", dict)     # the CLI's copy of the Hermes 
 def _settings(home: Path) -> wl_settings.Settings:
     """The merged settings of the profile at ``home``. Raises SettingsError if they can't be read."""
     hermes, hosted = _hermes_settings(), _hosted()
-    if hermes is not None:
-        wl_settings.write_snapshot(Path(home) / DATA_DIR, hermes, hosted, SNAPSHOTS)
+    wl_settings.write_snapshot(Path(home) / DATA_DIR, hermes, hosted, SNAPSHOTS)
     return wl_settings.load(wl_settings.Sources(Path(home) / DATA_DIR / SETTINGS_FILE, hermes, hosted))
 
 

@@ -53,9 +53,12 @@ def show_settings(home: Path) -> str:
         s = load_settings(home)
     except wl_settings.SettingsError as exc:
         return f"{exc}. Until that's fixed, every route counts as shared and no private memory is saved."
-    note = ("" if wl_settings.read_snapshot(home / DATA_DIR) is not None else
-            "\n(Hermes hasn't run whos-listening here since its settings moved to Hermes, so any set in "
-            "Desktop aren't known here yet.)")
+    try:
+        seen = wl_settings.read_snapshot(home / DATA_DIR) is not None
+    except wl_settings.SettingsError:
+        seen = False
+    note = ("" if seen else "\n(The gateway hasn't run this version of whos-listening yet, so settings made "
+            "in Desktop aren't known here yet.)")
     return wl_settings.describe(s) + note
 
 

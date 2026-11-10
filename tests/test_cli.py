@@ -48,3 +48,14 @@ def test_cli_uses_the_gateways_copy_of_desktop_settings(tmp_path, capsys):
     ws.write_snapshot(tmp_path / "whos-listening", {}, True)               # a hosted Hermes
     cli.main(["--home", str(tmp_path), "settings"])
     assert "default on a hosted Hermes" in capsys.readouterr().out
+
+
+def test_cli_refuses_private_saves_when_the_copy_is_damaged(tmp_path, capsys):
+    from whos_listening import settings as ws
+    SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
+    ws.write_snapshot(tmp_path / "whos-listening", {"gateway": "shared"}, False)
+    ws.snapshot_path(tmp_path / "whos-listening").write_text('{"hosted": false, "sett')     # cut short
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    assert "No private memory was saved" in capsys.readouterr().out
+    cli.main(["--home", str(tmp_path), "settings"])
+    assert "can't be read" in capsys.readouterr().out

@@ -707,3 +707,21 @@ def test_hosted_follows_hermes_config_backend(plugin, monkeypatch):
     assert plugin._hosted() is False
     monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")
     assert plugin._hosted() is True
+
+
+def test_a_broken_hermes_config_fails_safe(plugin, provider, monkeypatch, tmp_path):
+    """Hermes serves defaults (or an older copy) when config.yaml can't be parsed; what it says
+    about whos-listening then can't be trusted."""
+    from whos_listening import settings as ws
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  entries:\n    whos-listening:\n      settings:\n        gateway: shared\n")
+    assert plugin._hermes_settings() == {"gateway": "shared"}
+    (tmp_path / "config.yaml").write_text(
+        "plugins:\n  entries:\n    whos-listening:\n      settings:\n      gateway: shared\n   bad: [\n")
+    assert plugin._hermes_settings() is None
+    see(plugin, "http://127.0.0.1:9/v1")
+    assert tool(provider, "wl_remember", {"text": "Keeps bees"})["ok"] is False
+    assert "can't be read" in plugin._memories_command("settings", platform="cli")
+    with pytest.raises(ws.SettingsError):           # and the command line's copy says so too
+        ws.read_snapshot(tmp_path / "whos-listening")

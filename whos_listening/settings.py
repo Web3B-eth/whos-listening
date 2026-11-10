@@ -21,6 +21,8 @@ settings.json (``hermes-settings.json``) each time it reads it.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -53,6 +55,7 @@ FROM_HERMES = "Hermes settings"
 FROM_FILE = "settings.json"
 FROM_DEFAULT = "default"
 FROM_HOSTED = "default on a hosted Hermes"
+FROM_BOTH = "Hermes settings and settings.json"
 
 
 class SettingsError(Exception):
@@ -87,32 +90,36 @@ def hermes_part(config: Any) -> dict:
     return dict(node) if isinstance(node, Mapping) else {}
 
 
-def _is_set(key: str, value: Any) -> bool:
+def _is_set(key: str, value: Any, where: str) -> bool:
     if value is None:
         return False
+    if where == FROM_FILE and key == "gateway":
+        # As settings.json has always read it: an empty value means the default, and any other
+        # value that isn't "private" (a typo, "default", spaces) counts as Shared.
+        return bool(value)
     if isinstance(value, str):
         return value.strip() != "" and value.strip().lower() != UNSET
     if isinstance(value, (list, dict)):
         return bool(value)
+    if key == "sync_interval" and not isinstance(value, bool) and value == 0:
+        return False                    # Desktop can't empty a number field: 0 means the default
     return True
 
 
-def _check(key: str, value: Any, where: str) -> Any:
-    """The value if it has the right shape for ``key``; raises otherwise (a list given as a string
-    must not be read letter by letter)."""
+def _check(key: str, value: Any, where: str) -> None:
+    """Refuse a value whose shape would be misread: a list given as text would be read letter by
+    letter. Entries inside a list or ``routes`` are sorted out the way settings.json always was."""
     name = ".".join(FIELDS.get(key, (key,)))
-    if key in _LISTS:
-        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-            raise SettingsError(f'"{name}" in {where} must be a list of names')
-    elif key == "routes":
-        if not isinstance(value, Mapping) or not all(isinstance(v, str) for v in value.values()):
-            raise SettingsError(f'"routes" in {where} must map routes to "private" or "shared"')
-    elif key == "sync_interval":
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise SettingsError(f'"sync.interval" in {where} must be a number of seconds')
-    elif not isinstance(value, str):
+    if key in _LISTS and not isinstance(value, list):
+        raise SettingsError(f'"{name}" in {where} must be a list, like ["signal"]')
+    if key == "routes" and not isinstance(value, Mapping):
+        raise SettingsError(f'"routes" in {where} must map routes to "private" or "shared"')
+    if where != FROM_HERMES:
+        return                          # the rest settings.json has always taken loosely
+    if key == "sync_interval" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        raise SettingsError(f'"{name}" in {where} must be a number of seconds')
+    if key in ("gateway", "review", "sync_repo", "sync_name") and not isinstance(value, str):
         raise SettingsError(f'"{name}" in {where} must be text')
-    return value
 
 
 def _read_file(path: Path) -> dict:
@@ -127,9 +134,25 @@ def _read_file(path: Path) -> dict:
     return dict(data)
 
 
+def _routes(*sources: Any) -> dict:
+    """Routes from both places in one map. Where they disagree on a route, Shared wins."""
+    out: dict[str, str] = {}
+    for routes in sources:
+        for key, tier in (routes or {}).items():
+            k, t = str(key).strip().lower(), str(tier).strip().lower()
+            if k and t in ("private", "shared") and out.get(k) != "shared":
+                out[k] = t
+    return out
+
+
 def load(sources: Sources) -> Settings:
     """The settings in effect. Raises SettingsError if either place can't be read or holds a
-    value of the wrong shape, so callers can fail safe."""
+    value whose shape would be misread, so callers can fail safe.
+
+    A value set in Hermes wins, except that lists and ``routes`` combine both places (Desktop's
+    form doesn't show what settings.json holds, so a Shared entry there must not be lost), with
+    Shared winning where they disagree on a route. A sync repository set in Hermes takes none of
+    settings.json's other sync settings (path, branch, api_url belong to the file's repository)."""
     if sources.hermes is None and sources.hermes_known:
         raise SettingsError("Hermes' settings for whos-listening can't be read")
     doc = _read_file(Path(sources.file))
@@ -138,29 +161,44 @@ def load(sources: Sources) -> Settings:
         value = doc
         for part in path:
             value = value.get(part) if isinstance(value, Mapping) else None
-        if _is_set(key, value):
-            if key in _LISTS or key == "routes":
-                _check(key, value, FROM_FILE)      # the rest settings.json has always taken loosely
+        if _is_set(key, value, FROM_FILE):
+            _check(key, value, FROM_FILE)
             origin[".".join(path)] = FROM_FILE
     if isinstance(doc.get("sync"), Mapping):
         doc["sync"] = dict(doc["sync"])     # (any other "sync" turns only sync off, as it always has)
-    for key, value in (sources.hermes or {}).items():
-        if key not in FIELDS or not _is_set(key, value):
-            continue                    # unknown keys and "not set here" fall through
-        value = _check(key, value, FROM_HERMES)
+
+    hermes = {k: v for k, v in (sources.hermes or {}).items() if k in FIELDS and _is_set(k, v, FROM_HERMES)}
+    for key, value in hermes.items():
+        _check(key, value, FROM_HERMES)
+    if "sync_repo" in hermes or (not isinstance(doc.get("sync"), dict) and doc.get("sync") is None):
+        if "sync_repo" in hermes:
+            for dotted in ("sync.repo", "sync.name", "sync.interval"):
+                origin.pop(dotted, None)
+        doc["sync"] = {}
+    for key, value in hermes.items():
         path = FIELDS[key]
+        dotted = ".".join(path)
         if len(path) == 2:
-            doc.setdefault("sync", {})
-            if not isinstance(doc["sync"], dict):
-                doc["sync"] = {}
-            doc["sync"][path[1]] = value
+            if isinstance(doc.get("sync"), dict):   # a broken "sync" in the file stays broken
+                doc["sync"][path[1]] = value
+                origin[dotted] = FROM_HERMES
+            continue
+        if key in _LISTS and origin.get(dotted) == FROM_FILE:
+            doc[key] = list(dict.fromkeys([*doc[key], *value]))
+            origin[dotted] = FROM_BOTH
+        elif key == "routes" and origin.get(dotted) == FROM_FILE:
+            doc[key] = _routes(doc[key], value)
+            origin[dotted] = FROM_BOTH
         else:
-            doc[path[0]] = value
-        origin[".".join(path)] = FROM_HERMES
-    for key in ("gateway", "review"):
-        if not _is_set(key, doc.get(key)):
-            doc.pop(key, None)          # "default" in the file: the built-in default
-    if "gateway" not in doc:
+            doc[key] = value
+            origin[dotted] = FROM_HERMES
+    if isinstance(doc.get("routes"), Mapping):
+        doc["routes"] = _routes(doc["routes"])
+    if doc.get("sync") == {}:
+        doc.pop("sync")
+    if "review" not in origin:
+        doc.pop("review", None)
+    if "gateway" not in origin:
         doc["gateway"] = "shared" if sources.hosted else "private"
         origin["gateway"] = FROM_HOSTED if sources.hosted else FROM_DEFAULT
     return Settings(doc, origin)
@@ -178,41 +216,51 @@ def snapshot_path(data_dir: Path) -> Path:
     return Path(data_dir) / SNAPSHOT_FILE
 
 
-def write_snapshot(data_dir: Path, hermes: Mapping[str, Any], hosted: bool,
+def write_snapshot(data_dir: Path, hermes: Optional[Mapping[str, Any]], hosted: bool,
                    cache: Optional[dict] = None) -> None:
-    """Keep a copy of the Hermes half for the command line. Written only when it changed;
-    ``cache`` (path -> text last written) saves reading the file each time."""
+    """Keep a copy of the Hermes half for the command line; ``hermes`` None records that Hermes'
+    config couldn't be read, so the command line fails safe too. Written only when it changed;
+    ``cache`` (path -> (text, mtime)) saves reading the file each time."""
     p = snapshot_path(data_dir)
-    keep = {k: v for k, v in hermes.items() if k in FIELDS}
-    text = json.dumps({"hosted": bool(hosted), "settings": keep}, indent=1, sort_keys=True) + "\n"
-    if cache is not None and cache.get(str(p)) == text:
-        return
+    if hermes is None:
+        body: dict = {"hosted": bool(hosted), "unreadable": True}
+    else:
+        body = {"hosted": bool(hosted), "settings": {k: v for k, v in hermes.items() if k in FIELDS}}
+    text = json.dumps(body, indent=1, sort_keys=True) + "\n"
     try:
-        if p.exists() and p.read_text(encoding="utf-8") == text:
+        mtime = p.stat().st_mtime_ns if p.exists() else None
+        if cache is not None and mtime is not None and cache.get(str(p)) == (text, mtime):
+            return
+        if mtime is not None and p.read_text(encoding="utf-8") == text:
             if cache is not None:
-                cache[str(p)] = text
+                cache[str(p)] = (text, mtime)
             return
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
+        tmp = p.with_name(f".{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")   # one per writer
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(p)
         if cache is not None:
-            cache[str(p)] = text
+            cache[str(p)] = (text, p.stat().st_mtime_ns)
     except OSError:
-        pass                            # only the command line misses it, and it says so
+        pass                            # the command line then has no copy, and says so
 
 
 def read_snapshot(data_dir: Path) -> Optional[tuple[dict, bool]]:
-    """The Hermes half as the gateway last saw it, or None if there is no copy (or it's broken)."""
+    """The Hermes half as the gateway last saw it, or None if there is no copy yet. Raises
+    SettingsError if the copy is broken or says Hermes' config couldn't be read."""
     p = snapshot_path(data_dir)
     if not p.exists():
         return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, Mapping) or not isinstance(data.get("settings"), Mapping):
-        return None
+    except (OSError, ValueError) as exc:
+        raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read") from exc
+    if not isinstance(data, Mapping):
+        raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read")
+    if data.get("unreadable"):
+        raise SettingsError("The gateway couldn't read Hermes' settings for whos-listening when it last tried")
+    if not isinstance(data.get("settings"), Mapping):
+        raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read")
     return dict(data["settings"]), bool(data.get("hosted"))
 
 
