@@ -10,9 +10,8 @@ Two places, merged setting by setting:
 A setting made in Hermes wins. An empty one there ("default", "", an empty list) means "not set
 here", so settings.json, then the built-in default, applies.
 
-The gateway's built-in default is Private, except when Hermes gets its config from a remote
-config service (``HERMES_CONFIG_BACKEND=remote``, as on Hermes Cloud): then the machine is someone
-else's, and the default is Shared. You can still set it either way.
+The gateway's built-in default is Private, except on a hosted Hermes, where the machine is someone
+else's and the default is Shared (see ``hosted_reason``). You can still set it either way.
 
 The command line can't ask Hermes, so the gateway keeps a copy of the Hermes half next to
 settings.json (``hermes-settings.json``) each time it reads it.
@@ -68,7 +67,7 @@ class Sources:
 
     file: Path                                  # settings.json (it may not exist)
     hermes: Optional[Mapping[str, Any]] = None  # the plugin's settings in Hermes; None: couldn't be read
-    hosted: bool = False                        # Hermes gets its config from a remote service
+    hosted: Any = False                         # why this Hermes is hosted (hosted_reason), "" if not
     hermes_known: bool = True                   # False: no Hermes to ask (the command line, no copy yet)
 
 
@@ -78,6 +77,28 @@ class Settings:
 
     doc: dict
     origin: dict = field(default_factory=dict)  # top-level key ("sync.repo" for sync) -> FROM_*
+    hosted: str = ""                            # why this Hermes counts as hosted, "" if it doesn't
+
+
+def hosted_reason(environ: Mapping[str, str]) -> str:
+    """Why this Hermes runs on someone else's machine ("" if, as far as we can tell, it doesn't).
+
+    - Its config comes from a remote service (``HERMES_CONFIG_BACKEND`` other than ``file``).
+    - It runs on a Fly.io machine (``FLY_APP_NAME`` and ``FLY_MACHINE_ID``, which Fly sets in
+      every machine and Hermes itself uses to recognize Fly). Hermes Cloud runs there.
+    """
+    backend = str(environ.get("HERMES_CONFIG_BACKEND", "") or "").strip().lower()
+    if backend not in ("", "file"):
+        return "Hermes gets its config from a remote service"
+    if str(environ.get("FLY_APP_NAME", "") or "").strip() and str(environ.get("FLY_MACHINE_ID", "") or "").strip():
+        return "it runs on a Fly.io machine, as Hermes Cloud does"
+    return ""
+
+
+def _why_hosted(hosted: Any) -> str:
+    if isinstance(hosted, str):
+        return hosted.strip()
+    return "Hermes gets its config from a remote service" if hosted else ""     # an older copy: True
 
 
 def hermes_part(config: Any) -> dict:
@@ -204,7 +225,7 @@ def load(sources: Sources) -> Settings:
     if "gateway" not in origin:
         doc["gateway"] = "shared" if sources.hosted else "private"
         origin["gateway"] = FROM_HOSTED if sources.hosted else FROM_DEFAULT
-    return Settings(doc, origin)
+    return Settings(doc, origin, _why_hosted(sources.hosted))
 
 
 def route_settings(s: Settings) -> RouteSettings:
@@ -219,16 +240,16 @@ def snapshot_path(data_dir: Path) -> Path:
     return Path(data_dir) / SNAPSHOT_FILE
 
 
-def write_snapshot(data_dir: Path, hermes: Optional[Mapping[str, Any]], hosted: bool,
+def write_snapshot(data_dir: Path, hermes: Optional[Mapping[str, Any]], hosted: Any,
                    cache: Optional[dict] = None) -> None:
     """Keep a copy of the Hermes half for the command line; ``hermes`` None records that Hermes'
     config couldn't be read, so the command line fails safe too. Written only when it changed;
     ``cache`` (path -> (text, mtime)) saves reading the file each time."""
     p = snapshot_path(data_dir)
     if hermes is None:
-        body: dict = {"hosted": bool(hosted), "unreadable": True}
+        body: dict = {"hosted": _why_hosted(hosted), "unreadable": True}
     else:
-        body = {"hosted": bool(hosted), "settings": {k: v for k, v in hermes.items() if k in FIELDS}}
+        body = {"hosted": _why_hosted(hosted), "settings": {k: v for k, v in hermes.items() if k in FIELDS}}
     text = json.dumps(body, indent=1, sort_keys=True) + "\n"
     try:
         mtime = p.stat().st_mtime_ns if p.exists() else None
@@ -248,7 +269,7 @@ def write_snapshot(data_dir: Path, hermes: Optional[Mapping[str, Any]], hosted: 
         pass                            # the command line then has no copy, and says so
 
 
-def read_snapshot(data_dir: Path) -> Optional[tuple[dict, bool]]:
+def read_snapshot(data_dir: Path) -> Optional[tuple[dict, str]]:
     """The Hermes half as the gateway last saw it, or None if there is no copy yet. Raises
     SettingsError if the copy is broken or says Hermes' config couldn't be read."""
     p = snapshot_path(data_dir)
@@ -264,7 +285,7 @@ def read_snapshot(data_dir: Path) -> Optional[tuple[dict, bool]]:
         raise SettingsError("The gateway couldn't read Hermes' settings for whos-listening when it last tried")
     if not isinstance(data.get("settings"), Mapping):
         raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read")
-    return dict(data["settings"]), bool(data.get("hosted"))
+    return dict(data["settings"]), _why_hosted(data.get("hosted"))
 
 
 def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
@@ -276,6 +297,7 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
 
     sync = d.get("sync") if isinstance(d.get("sync"), Mapping) else {}
     rows = [
+        f"this machine: {'hosted, because ' + s.hosted if s.hosted else 'not recognized as hosted (your own, as far as whos-listening can tell)'}",
         line("gateway", "gateway", d.get("gateway")),
         line("review", "review", d.get("review") or "ask"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),

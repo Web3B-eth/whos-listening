@@ -17,7 +17,7 @@ whos-listening is a memory provider that knows who is listening. Every memory is
 - the platform (by default the terminal, TUI, Desktop and `hermes chat`);
 - the model route (by default Venice and models on your own machine or network).
 
-Each layer is the user's call, in Desktop's plugin settings or `settings.json`; a hosted Hermes (remote config, as on Hermes Cloud) counts as a Shared gateway by default. An `llm_request` guard removes tagged Private memories from every main chat request that isn't Private, and fails closed. Saves made after a chat read outside content wait for the user (`/memories pending`, `approve`, `undo`), with an optional Auto-review on the chat's own model.
+Each layer is the user's call, in Desktop's plugin settings or `settings.json`; a hosted Hermes (on a Fly.io machine or with remote config, as on Hermes Cloud) counts as a Shared gateway by default. An `llm_request` guard removes tagged Private memories from every main chat request that isn't Private, and fails closed. Saves made after a chat read outside content wait for the user (`/memories pending`, `approve`, `undo`), with an optional Auto-review on the chat's own model.
 
 ## Disclosure (rule 13)
 

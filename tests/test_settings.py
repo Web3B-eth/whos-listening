@@ -99,7 +99,7 @@ def test_hermes_part_reads_only_this_plugins_settings():
 def test_snapshot_for_the_command_line(tmp_path):
     assert ws.read_snapshot(tmp_path) is None
     ws.write_snapshot(tmp_path, {"gateway": "shared", "not_ours": 1}, True)
-    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, True)
+    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, "Hermes gets its config from a remote service")
     before = ws.snapshot_path(tmp_path).stat().st_mtime_ns
     ws.write_snapshot(tmp_path, {"gateway": "shared"}, True)            # unchanged: not rewritten
     assert ws.snapshot_path(tmp_path).stat().st_mtime_ns == before
@@ -187,10 +187,10 @@ def test_the_copy_is_rewritten_if_it_changed_on_disk(tmp_path):
     ws.write_snapshot(tmp_path, {"gateway": "shared"}, False, cache)
     ws.snapshot_path(tmp_path).write_text("{broken")
     ws.write_snapshot(tmp_path, {"gateway": "shared"}, False, cache)
-    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, False)
+    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, "")
     ws.snapshot_path(tmp_path).unlink()
     ws.write_snapshot(tmp_path, {"gateway": "shared"}, False, cache)
-    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, False)
+    assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, "")
     assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob(".*.tmp"))
 
 
@@ -206,3 +206,21 @@ def test_text_where_a_list_or_routes_belongs_fails_safe(tmp_path):
 def test_describe_shows_a_pasted_link_as_owner_and_name(tmp_path):
     s = ws.load(src(tmp_path, hermes={"sync_repo": "https://github.com/me/notes.git"}))
     assert "sync: me/notes  (Hermes settings)" in ws.describe(s) and ws.sync_settings(s).repo == "me/notes"
+
+
+def test_hosted_reason():
+    assert ws.hosted_reason({}) == ""
+    assert ws.hosted_reason({"HERMES_CONFIG_BACKEND": "file"}) == ""
+    assert "remote service" in ws.hosted_reason({"HERMES_CONFIG_BACKEND": "remote"})
+    assert "Fly.io" in ws.hosted_reason({"FLY_APP_NAME": "made-up-app", "FLY_MACHINE_ID": "0123456789abcd"})
+    assert ws.hosted_reason({"FLY_APP_NAME": "made-up-app"}) == ""        # both, as Hermes itself checks
+    assert ws.hosted_reason({"FLY_APP_NAME": " ", "FLY_MACHINE_ID": "x"}) == ""
+
+
+def test_describe_says_whether_this_machine_counts_as_hosted(tmp_path):
+    text = ws.describe(ws.load(src(tmp_path, hosted="it runs on a Fly.io machine, as Hermes Cloud does")))
+    assert "this machine: hosted, because it runs on a Fly.io machine" in text
+    assert "gateway: shared  (default on a hosted Hermes)" in text
+    assert "this machine: not recognized as hosted" in ws.describe(ws.load(src(tmp_path)))
+    ws.snapshot_path(tmp_path).write_text('{"hosted": true, "settings": {}}')          # an older copy
+    assert ws.read_snapshot(tmp_path) == ({}, "Hermes gets its config from a remote service")

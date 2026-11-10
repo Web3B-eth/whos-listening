@@ -50,7 +50,7 @@ def platform_verdict(platform: str, settings: Optional["RouteSettings"] = None) 
 
 
 GATEWAY_SHARED = "this gateway is set to shared (the \"gateway\" setting)"
-GATEWAY_HOSTED = ("this gateway is a hosted Hermes (its config comes from a remote service, as on Hermes Cloud), "
+GATEWAY_HOSTED = ("this gateway is a hosted Hermes (on someone else's machine, as on Hermes Cloud), "
                   "so it counts as shared unless you set \"gateway\" to private")
 
 

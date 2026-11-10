@@ -692,7 +692,7 @@ def test_the_gateway_keeps_a_copy_for_the_command_line(plugin, provider, tmp_pat
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "shared"})
     monkeypatch.setattr(plugin, "_hosted", lambda: True)
     plugin._memories_command("", platform="cli")
-    assert ws.read_snapshot(tmp_path / "whos-listening") == ({"gateway": "shared"}, True)
+    assert ws.read_snapshot(tmp_path / "whos-listening") == ({"gateway": "shared"}, "Hermes gets its config from a remote service")
 
 
 def test_hermes_settings_come_from_hermes_config(plugin, tmp_path):
@@ -702,11 +702,29 @@ def test_hermes_settings_come_from_hermes_config(plugin, tmp_path):
     assert plugin._hermes_settings() == {"gateway": "shared", "sync_name": "cloud"}
 
 
-def test_hosted_follows_hermes_config_backend(plugin, monkeypatch):
-    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
-    assert plugin._hosted() is False
+def test_hosted_follows_the_environment(plugin, monkeypatch):
+    for name in ("HERMES_CONFIG_BACKEND", "FLY_APP_NAME", "FLY_MACHINE_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert plugin._hosted() == ""
     monkeypatch.setenv("HERMES_CONFIG_BACKEND", "remote")
-    assert plugin._hosted() is True
+    assert "remote service" in plugin._hosted()
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND")
+    monkeypatch.setenv("FLY_APP_NAME", "made-up-app")
+    monkeypatch.setenv("FLY_MACHINE_ID", "0123456789abcd")
+    assert "Fly.io" in plugin._hosted()
+
+
+def test_a_fly_machine_keeps_no_private_memories_unless_told(plugin, provider, monkeypatch, tmp_path):
+    """Hermes Cloud runs on Fly.io and (as seen live) doesn't set HERMES_CONFIG_BACKEND for plugins."""
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
+    monkeypatch.setenv("FLY_APP_NAME", "made-up-app")
+    monkeypatch.setenv("FLY_MACHINE_ID", "0123456789abcd")
+    see(plugin, "http://127.0.0.1:9/v1")
+    refused = tool(provider, "wl_remember", {"text": "Keeps bees"})
+    assert refused["ok"] is False and "hosted Hermes" in refused["error"]
+    text = plugin._memories_command("settings", platform="cli")
+    assert "hosted, because it runs on a Fly.io machine" in text and "default on a hosted Hermes" in text
 
 
 def test_a_broken_hermes_config_fails_safe(plugin, provider, monkeypatch, tmp_path):

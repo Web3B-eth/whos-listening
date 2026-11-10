@@ -103,12 +103,11 @@ def _hermes_settings() -> Optional[dict]:
     return wl_settings.hermes_part(config)
 
 
-def _hosted() -> bool:
-    """Whether Hermes gets its config from a remote service (Hermes Cloud) instead of a file on
-    this machine. Then the machine isn't the user's, and the gateway defaults to Shared. Hermes
-    picks its config backend from this variable (set for the whole process before any config is
-    read); its own module for that isn't a public plugin API."""
-    return os.environ.get("HERMES_CONFIG_BACKEND", "").strip().lower() not in ("", "file")
+def _hosted() -> str:
+    """Why this Hermes runs on someone else's machine (Hermes Cloud, say), or "". Then the gateway
+    defaults to Shared. Read from the environment Hermes runs in (settings.hosted_reason); Hermes'
+    own modules for this aren't public plugin APIs."""
+    return wl_settings.hosted_reason(os.environ)
 
 
 SNAPSHOTS = _process_wide("snapshots", dict)     # the CLI's copy of the Hermes half, as last written
