@@ -20,8 +20,10 @@ from agent.memory_provider import MemoryProvider
 from . import autoreview, commands, guard, recall, review, tools
 from . import settings as wl_settings
 from . import sync as wl_sync
+from . import judge as wl_judge
+from . import venice
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
     private_storage_refusal, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
@@ -176,6 +178,7 @@ class WhosListeningProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._platform = str(kwargs.get("platform") or "cli")
+        _venice_list(self._dir.parent)
         if self._agent_context == "primary":
             maybe_sync(self._dir.parent)
 
@@ -277,12 +280,44 @@ class WhosListeningProvider(MemoryProvider):
         out = tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
                            private_refused=_private_refused(self._dir.parent if self._dir else None),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
-                           on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode())
+                           on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
+                           judge=self._duplicate_judge())
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
         return out
 
     # -- Auto-review ---------------------------------------------------------
+
+    def _duplicate_judge(self) -> Optional[Any]:
+        """The second near-duplicate check (judge.py), or None when it's off or can't run here.
+
+        It runs only on a Private judge, which may see every memory: a judge that saw only the
+        Shared ones would skip most saves (they're Private by default) and miss what matters
+        most, a Shared route rewording a Private memory it can't see. See _judge_blocker."""
+        home = self._dir.parent if self._dir is not None else None
+        settings, _ = _load_settings(home)
+        if settings is None or self._store is None or settings.duplicate_judge == "off":
+            return None
+        if _judge_blocker(settings, home):
+            return None
+        store = self._store
+
+        def tiers(tier: str) -> tuple[str, ...]:
+            return (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)     # as in duplicates.find
+
+        if settings.duplicate_judge == "model":
+            route = default_route_from_config(_config())
+            if route is None:
+                return None
+            expected = route.model
+
+            def ask_model(prompt: str) -> str:
+                return _ask_chat_model(prompt, expected, max_tokens=wl_judge.MODEL_MAX_TOKENS,
+                                       timeout=wl_judge.MODEL_TIMEOUT, purpose="whos-listening duplicate check")
+
+            return lambda text, tier: wl_judge.find_with_model(store, text, tiers(tier), ask_model)
+        model, key = wl_judge.MODELS[settings.duplicate_judge], _venice_key()
+        return lambda text, tier: wl_judge.find(store, text, tiers(tier), model, key)
 
     def _duplicates_mode(self) -> str:
         settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)
@@ -369,15 +404,16 @@ def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
     return _load_settings(Path(data_dir).parent)[0] if data_dir else None
 
 
-def _ask_chat_model(prompt: str, expected_model: str = "") -> str:
+def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 120,
+                    timeout: float = AUTO_REVIEW_TIMEOUT, purpose: str = "whos-listening auto-review") -> str:
     """One request on the chat's own model, through Hermes' PluginLlm (built directly: memory
     providers don't get ``ctx.llm``; see docs/spike.md). If Hermes answered from another model
     (its fallback), the answer doesn't count."""
     from agent.plugin_llm import PluginLlm
 
     result = PluginLlm(plugin_id=PROVIDER_NAME).complete(
-        messages=[{"role": "user", "content": prompt}], max_tokens=120, temperature=0,
-        timeout=AUTO_REVIEW_TIMEOUT, purpose="whos-listening auto-review")
+        messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0,
+        timeout=timeout, purpose=purpose)
     if expected_model and str(result.model or "") != expected_model:
         raise RuntimeError("the check ran on a different model")
     return result.text
@@ -482,9 +518,38 @@ def _with_setup_notes(text: str) -> str:
     return text + ("\n\n" + "\n".join(notes) if notes else "")
 
 
+def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
+    """Why the duplicate judge the user picked can't run on this gateway ("" if it can, or is off).
+    Clef and Jev need Hermes' Venice key, and Jev counts only if anonymized Venice models are
+    trusted; ``model`` needs a default model in config.yaml that is Private, with every fallback
+    Private (as for Auto-review), and a reply from that same model."""
+    choice = settings.duplicate_judge
+    if choice == "off":
+        return ""
+    _venice_list(home)
+    if choice == "model":
+        config = _config()
+        route = default_route_from_config(config)
+        if route is None or not route.model:
+            return "there's no default model in Hermes' config"
+        if classify(route, settings).tier != PRIVATE:
+            return f"your default model ({route.model}) is shared, so it may not see your private memories"
+        side = side_call_routes_private(config, settings)
+        if side.tier != PRIVATE:
+            return side.reason
+        return ""
+    if classify(Route("venice", wl_judge.MODELS[choice], VENICE_API), settings).tier != PRIVATE:
+        return "Jev is anonymized on Venice; set venice_anonymized to private to trust it"
+    if not _venice_key():
+        return "there's no Venice key in Hermes"
+    return ""
+
+
 def _settings_command(home: Path) -> str:
     try:
-        return wl_settings.describe(_settings(home), token_set=bool(_sync_token()))
+        s = _settings(home)
+        return wl_settings.describe(s, token_set=bool(_sync_token()),
+                                    judge_off=_judge_blocker(wl_settings.route_settings(s), home))
     except Exception as exc:
         why = str(exc) if isinstance(exc, wl_settings.SettingsError) else "The settings can't be read"
         return f"{why}. Until that's fixed, every route counts as shared and no private memory is saved."
@@ -688,6 +753,50 @@ def _sync_command(home: Path, sub: str) -> str:
 
 # -- the guard: the hard line ------------------------------------------------
 
+VENICE_API = "https://api.venice.ai/api/v1"
+
+
+def _venice_key() -> str:
+    """The Venice key Hermes already has, read through Hermes' secrets (never from a file): Hermes'
+    own Venice provider (VENICE_API_KEY), or a custom endpoint on a Venice host, whose key Hermes
+    keeps as HERMES_CUSTOM_<HOST>_API_KEY (hermes_cli.config.custom_endpoint_key_env)."""
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        return ""
+    names = ["VENICE_API_KEY"] + [
+        "HERMES_CUSTOM_" + re.sub(r"[^A-Z0-9]+", "_", ident.upper()).strip("_") + "_API_KEY"
+        for ident in ("api.venice.ai", "api.venice.ai:443", "venice.ai", "venice")]
+    for name in names:
+        try:
+            value = get_secret(name)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+    return ""
+
+
+def _venice_list(home: Optional[Path]) -> None:
+    """Load Venice's model privacy list for this profile and refresh it in the background when it's
+    more than a day old (a public request that sends nothing about the user). Never raises."""
+    if home is None:
+        return
+    try:
+        venice.configure(Path(home) / DATA_DIR)
+
+        def start(fn: Any) -> None:
+            try:
+                from agent.memory_provider import spawn_context_thread
+                spawn_context_thread(fn, name="whos-listening-venice").start()
+            except Exception:
+                threading.Thread(target=fn, name="whos-listening-venice", daemon=True).start()
+
+        venice.refresh_if_stale(start)
+    except Exception as exc:
+        logger.debug("whos-listening: could not load Venice's model list: %s", exc)
+
+
 def _on_llm_request(**kwargs: Any) -> Optional[dict]:
     """``llm_request`` middleware. Runs on every main chat request with its real route.
 
@@ -700,6 +809,8 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
         route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
                       base_url=str(kwargs.get("base_url") or ""))
         ROUTES.saw_request(str(kwargs.get("session_id") or ""), route)
+        if route.host.endswith("venice.ai"):
+            _venice_list(_active_home())
         tier = tier_for(route, _active_home(), str(kwargs.get("platform") or "")).tier
     except Exception as exc:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",

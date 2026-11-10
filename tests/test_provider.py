@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from conftest import FAKE_VENICE
 from wl_helpers import load_plugin
 
 
@@ -17,7 +18,9 @@ def scratch_hermes_home(tmp_path, monkeypatch):
 @pytest.fixture
 def plugin():
     """The provider module, reached through the plugin package as Hermes loads it."""
-    return sys.modules[load_plugin().__name__ + ".whos_listening.provider"]
+    mod = sys.modules[load_plugin().__name__ + ".whos_listening.provider"]
+    mod.venice._reset_for_tests(dict(FAKE_VENICE))       # loaded after conftest's reset; no network
+    return mod
 
 
 @pytest.fixture
@@ -814,3 +817,102 @@ def test_auto_review_is_the_default_but_unreadable_settings_never_auto(plugin, p
     assert provider._review_mode() == "ask"
     (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "sometimes"}')
     assert provider._review_mode() == "ask"                      # a typo fails safe
+
+
+def test_an_anonymized_venice_model_gets_shared_memories_only(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "https://api.venice.ai/api/v1", model="grok-4-5")              # Venice private: Private
+    tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
+    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    assert "canoe" in provider.prefetch("plans", session_id="sess-1")
+    see(plugin, "https://api.venice.ai/api/v1", model="claude-opus-5-5")       # anonymized: Shared
+    block = provider.prefetch("plans", session_id="sess-1")
+    assert "canoe" not in block and "jazz" in block
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"venice_anonymized": "private"})
+    assert "canoe" in provider.prefetch("plans", session_id="sess-1")          # trusted by the user
+
+
+def test_the_duplicate_judge_runs_only_where_it_may_see_every_memory(plugin, provider, tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(plugin, "_venice_key", lambda: "k")
+    monkeypatch.setattr(plugin.wl_judge, "find", lambda store, text, tiers, model, key, **kw: seen.append((model, tiers)))
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
+    j = provider._duplicate_judge()                                                            # Clef by default
+    j("Allergic to peanuts", "private")
+    j("Likes jazz", "shared")
+    assert seen == [("clef-api", ("private", "shared")), ("clef-api", ("shared",))]          # as the word check
+    seen.clear()
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev"})
+    assert provider._duplicate_judge() is None                                                 # Jev: anonymized
+    assert "Jev is anonymized" in plugin._judge_blocker(plugin._load_settings(tmp_path)[0], tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev", "venice_anonymized": "private"})
+    provider._duplicate_judge()("Allergic to peanuts", "private")
+    assert seen == [("jev-latest", ("private", "shared"))]                                     # trusted
+    monkeypatch.setattr(plugin, "_venice_key", lambda: "")
+    assert provider._duplicate_judge() is None                                                 # no key: not running
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
+    assert provider._duplicate_judge() is None
+    assert "not running: there's no Venice key in Hermes" in plugin._settings_command(tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "off"})
+    assert provider._duplicate_judge() is None and "not running" not in plugin._settings_command(tmp_path)
+
+
+def test_the_venice_key_is_read_through_hermes_secrets_by_name(plugin, monkeypatch):
+    import agent.secret_scope as ss
+    asked = []
+    monkeypatch.setattr(ss, "get_secret", lambda name, default=None: asked.append(name) or
+                        ("v" if name == "HERMES_CUSTOM_API_VENICE_AI_API_KEY" else None))
+    assert plugin._venice_key() == "v"
+    assert asked[:2] == ["VENICE_API_KEY", "HERMES_CUSTOM_API_VENICE_AI_API_KEY"]
+
+
+def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provider, tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(plugin.wl_judge, "find_with_model",
+                        lambda store, text, tiers, ask: seen.append(tiers))
+    venice = {"provider": "custom", "default": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
+    monkeypatch.setattr(plugin, "_config", lambda: {"model": venice})
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "model"})
+    j = provider._duplicate_judge()
+    j("Allergic to peanuts", "private")
+    j("Likes jazz", "shared")
+    assert seen == [("private", "shared"), ("shared",)]                         # Grok on Venice: Private
+    for config, why in [
+        ({"model": venice, "fallback_providers": [{"provider": "openrouter", "model": "x",
+                                                   "base_url": "https://openrouter.ai/api/v1"}]},
+         "a fallback provider is shared"),
+        ({"model": dict(venice, default="claude-opus-5-5")}, "(claude-opus-5-5) is shared"),   # anonymized
+        ({"model": {"provider": "auto", "default": "grok-4-5"}}, "is shared"),
+        ({}, "no default model"),
+    ]:
+        monkeypatch.setattr(plugin, "_config", lambda c=config: c)
+        assert provider._duplicate_judge() is None, config                      # not running at all
+        assert why in plugin._settings_command(tmp_path), config
+
+
+def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin, provider, monkeypatch):
+    venice = {"provider": "custom", "default": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
+    monkeypatch.setattr(plugin, "_config", lambda: {"model": venice})
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "model"})
+    see(plugin, "https://api.venice.ai/api/v1", model="grok-4-5")
+    first = tool(provider, "whos-listening_remember", {"text": "Has a peanut allergy"})["saved"]
+    calls = []
+
+    class FakeLlm:
+        model = "grok-4-5"
+
+        def __init__(self, **_):
+            pass
+
+        def complete(self, **kw):
+            calls.append(kw)
+            return type("R", (), {"text": f'{{"repeats": {first["id"]}}}', "model": FakeLlm.model})()
+
+    import agent.plugin_llm as pl
+    monkeypatch.setattr(pl, "PluginLlm", FakeLlm)
+    out = tool(provider, "whos-listening_remember", {"text": "Allergic to peanuts"})
+    assert out["duplicate"]["id"] == first["id"] and len(calls) == 1
+    assert calls[0]["timeout"] == plugin.wl_judge.MODEL_TIMEOUT and calls[0]["temperature"] == 0
+    FakeLlm.model = "some-fallback"                                             # Hermes fell back
+    out = tool(provider, "whos-listening_remember", {"text": "I am allergic to peanuts, badly"})
+    assert out["saved"] and "duplicate" not in out

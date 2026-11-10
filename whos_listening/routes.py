@@ -18,10 +18,12 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
+from . import venice
 from .store import PRIVATE, SHARED, TIERS
 
-# Default Private hosts: Venice, plus anything on this machine or the local network.
-DEFAULT_PRIVATE_DOMAINS = ("venice.ai",)
+# Venice: its private models are Private by default; its anonymized ones (passed on to the company
+# that made them) are Shared unless the user says otherwise (venice_anonymized). See venice.py.
+VENICE_DOMAINS = ("venice.ai",)
 LOCAL_NAMES = ("localhost",)
 LOCAL_SUFFIXES = (".localhost", ".local")
 # Providers that are Shared whatever the settings say, because the guard can't check what
@@ -169,6 +171,8 @@ class RouteSettings:
     review: str = "auto"     # "auto": Auto-review checks held saves. "ask": they wait for the user.
     gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
     duplicates: str = "skip"  # "skip": a near-duplicate save is skipped (duplicates.py). "keep": saved.
+    duplicate_judge: str = "clef"  # a second near-duplicate check (judge.py): "clef", "jev", "model" or "off"
+    venice_anonymized: str = SHARED   # how to treat Venice's anonymized models: "shared" or "private"
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":
@@ -183,18 +187,23 @@ class RouteSettings:
 
         review = str(data.get("review") or "auto").strip().lower()
         duplicates = str(data.get("duplicates") or "skip").strip().lower()
+        judge = str(data.get("duplicate_judge") or "clef").strip().lower()
         gateway = str(data.get("gateway") or PRIVATE).strip().lower()
+        venice_anon = str(data.get("venice_anonymized") or SHARED).strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
                    private_platforms=hosts("private_platforms"), shared_platforms=hosts("shared_platforms"),
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
                    review=review if review in ("ask", "auto") else "ask",     # a typo fails safe
-                   duplicates=duplicates if duplicates in ("skip", "keep") else "skip")
+                   duplicates=duplicates if duplicates in ("skip", "keep") else "skip",
+                   duplicate_judge=judge if judge in ("clef", "jev", "model") else "off",   # a typo sends nothing
+                   venice_anonymized=PRIVATE if venice_anon == PRIVATE else SHARED)
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
                 "shared_hosts": list(self.shared_hosts), "private_platforms": list(self.private_platforms),
                 "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review,
-                "duplicates": self.duplicates}
+                "duplicates": self.duplicates, "duplicate_judge": self.duplicate_judge,
+                "venice_anonymized": self.venice_anonymized}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":
@@ -239,16 +248,28 @@ def classify(route: Optional[Route], settings: Optional[RouteSettings] = None) -
         for h in settings.shared_hosts:
             if _domain_match(host, h):
                 return Verdict(SHARED, f"your shared host {h}")
+        if any(_domain_match(host, d) for d in VENICE_DOMAINS):
+            return _venice_verdict(model, settings)
         for h in settings.private_hosts:
             if _domain_match(host, h):
                 return Verdict(PRIVATE, f"your private host {h}")
-        for d in DEFAULT_PRIVATE_DOMAINS:
-            if _domain_match(host, d):
-                return Verdict(PRIVATE, f"default private host {d}")
         if is_local_host(host):
             return Verdict(PRIVATE, f"local address {host}")
         return Verdict(SHARED, f"host {host} is not on the private list")
     return Verdict(SHARED, "no base_url, so the host is unknown")
+
+
+def _venice_verdict(model: str, settings: "RouteSettings") -> Verdict:
+    """Venice's own label decides: private models are Private; anonymized ones (and models not on
+    Venice's list, or no list yet) are Shared unless the user trusts anonymized Venice models."""
+    label = venice.privacy(model)
+    if label == venice.PRIVATE:
+        return Verdict(PRIVATE, f"Venice runs {model} privately")
+    if settings.venice_anonymized == PRIVATE:
+        return Verdict(PRIVATE, f"Venice {model}: you trust Venice's anonymized models")
+    if label == venice.ANONYMIZED:
+        return Verdict(SHARED, f"Venice passes {model} on to the company that made it (anonymized)")
+    return Verdict(SHARED, f"Venice model {model or '?'} isn't on Venice's list of private models")
 
 
 def default_route_from_config(config: Any) -> Optional[Route]:
