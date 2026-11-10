@@ -83,11 +83,11 @@ def test_redacts_replayed_remember_and_recall_calls():
     req = {"messages": [
         {"role": "assistant", "tool_calls": [
             {"id": "a", "type": "function", "function": {
-                "name": "wl_remember", "arguments": json.dumps({"text": "Has a peanut allergy"})}},
+                "name": "whos-listening_remember", "arguments": json.dumps({"text": "Has a peanut allergy"})}},
             {"id": "b", "type": "function", "function": {
-                "name": "wl_remember", "arguments": json.dumps({"text": "Likes jazz", "tier": "shared"})}},
+                "name": "whos-listening_remember", "arguments": json.dumps({"text": "Likes jazz", "tier": "shared"})}},
             {"id": "c", "type": "function", "function": {
-                "name": "wl_recall", "arguments": json.dumps({"query": "peanut"})}},
+                "name": "whos-listening_recall", "arguments": json.dumps({"query": "peanut"})}},
             {"id": "d", "type": "function", "function": {"name": "web_search", "arguments": '{"q": "peanut"}'}},
         ]}]}
     out = guard.guard_request(req, "shared")
@@ -100,11 +100,11 @@ def test_redacts_replayed_remember_and_recall_calls():
 
 
 def test_redacts_calls_in_responses_and_anthropic_shapes():
-    responses = {"input": [{"type": "function_call", "name": "wl_remember", "call_id": "x",
+    responses = {"input": [{"type": "function_call", "name": "whos-listening_remember", "call_id": "x",
                             "arguments": '{"text": "Has a peanut allergy", "tier": "private"}'}]}
     anthropic = {"messages": [{"role": "assistant", "content": [
-        {"type": "tool_use", "id": "x", "name": "wl_remember", "input": {"text": "Has a peanut allergy"}}]}]}
-    broken = {"input": [{"type": "function_call", "name": "wl_remember", "arguments": "{not json peanut"}]}
+        {"type": "tool_use", "id": "x", "name": "whos-listening_remember", "input": {"text": "Has a peanut allergy"}}]}]}
+    broken = {"input": [{"type": "function_call", "name": "whos-listening_remember", "arguments": "{not json peanut"}]}
     for req in (responses, anthropic, broken):
         assert "peanut" not in json.dumps(guard.guard_request(req, "shared"))
 

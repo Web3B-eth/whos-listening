@@ -61,7 +61,7 @@ class Provenance:
     """Who wrote a memory, on which route, and from which turn."""
 
     written_by: str = "unknown"      # "assistant" (a tool call), "user" (a command or the CLI)
-    via: str = ""                    # the tool or command, e.g. "wl_remember", "cli"
+    via: str = ""                    # the tool or command, e.g. "whos-listening_remember", "cli"
     route: str = ""                  # e.g. "custom @ 127.0.0.1 / cfg-model"
     route_tier: str = ""             # the tier that route had when the memory was written
     session_id: str = ""
@@ -401,7 +401,7 @@ class SQLiteStore(Store):
         with self._lock:
             version = self._version()
             if version > SCHEMA_VERSION:
-                raise StoreError(f"{self.path} was made by a newer whos-listening (schema {version}).")
+                raise StoreError(f"{self.path} was made by a newer Who's Listening (schema {version}).")
             if version == SCHEMA_VERSION:
                 return
             old_isolation = self._db.isolation_level

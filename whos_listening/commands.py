@@ -255,7 +255,7 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
     except StoreError as exc:
         return str(exc)
     except Exception as exc:  # a command must answer, not crash the chat
-        return f"whos-listening hit an error: {type(exc).__name__}"
+        return f"Who's Listening hit an error: {type(exc).__name__}"
 
 
 def open_and_run(store_factory, raw_args: str, *, show_private: bool, via: str = "/memories",
@@ -264,7 +264,7 @@ def open_and_run(store_factory, raw_args: str, *, show_private: bool, via: str =
     try:
         store = store_factory()
     except Exception as exc:
-        return f"whos-listening could not open its memories: {type(exc).__name__}"
+        return f"Who's Listening could not open its memories: {type(exc).__name__}"
     try:
         return run(store, raw_args, show_private=show_private, via=via, private_refused=private_refused)
     finally:

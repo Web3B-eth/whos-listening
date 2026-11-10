@@ -9,7 +9,7 @@ def run(store, args, show_private=True):
 
 
 def assistant():
-    return Provenance(written_by="assistant", via="wl_remember", route="custom @ 127.0.0.1 / m",
+    return Provenance(written_by="assistant", via="whos-listening_remember", route="custom @ 127.0.0.1 / m",
                       route_tier="private", session_id="s1", turn="2")
 
 
@@ -83,7 +83,7 @@ def test_show_has_provenance_and_history(store):
     m = store.add("Has a peanut allergy", "private", assistant())
     store.log_event(m.id, "saved", "assistant")
     out = run(store, f"show {m.id}")
-    assert "assistant via wl_remember" in out and "127.0.0.1" in out and "(private)" in out
+    assert "assistant via whos-listening_remember" in out and "127.0.0.1" in out and "(private)" in out
     assert "saved by assistant" in out
     assert "peanut" not in run(store, f"show {m.id}", show_private=False)
 

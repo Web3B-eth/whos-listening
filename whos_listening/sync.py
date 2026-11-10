@@ -171,9 +171,9 @@ def parse(raw: Optional[bytes]) -> dict[str, Record]:
     except (UnicodeDecodeError, ValueError) as exc:
         raise SyncError("The sync file is not valid JSON.") from exc
     if not isinstance(doc, Mapping) or doc.get("format") != FORMAT:
-        raise SyncError("The sync file is not a whos-listening sync file.")
+        raise SyncError("The sync file is not a Who's Listening sync file.")
     if not isinstance(doc.get("version"), int) or doc["version"] > VERSION:
-        raise SyncError("The sync file was written by a newer whos-listening; update this one first.")
+        raise SyncError("The sync file was written by a newer Who's Listening; update this one first.")
     out: dict[str, Record] = {}
     memories = doc.get("memories")
     for uid, entry in (memories.items() if isinstance(memories, Mapping) else ()):
@@ -501,7 +501,7 @@ def status(store: Store, settings: SyncSettings, has_token: bool) -> str:
     if settings.error:
         return f"Sync is off: {settings.error}."
     if not settings.enabled:
-        return ("Sync is off. To turn it on, set the sync repository and token in whos-listening's settings "
+        return ("Sync is off. To turn it on, set the sync repository and token in the Who's Listening settings "
                 'in Hermes Desktop (Settings → Plugins), or add "sync": {"repo": "owner/name"} to '
                 f"settings.json and set {TOKEN_ENV} (see the README).")
     lines = [f"Sync with {settings.repo} ({settings.path}) as {gateway_name(store, settings)}."]

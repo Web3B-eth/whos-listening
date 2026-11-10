@@ -20,7 +20,7 @@ description: >-
   Private memories from every request that isn't Private, and fails closed. A Shared gateway
   keeps no Private memories. Saves after the chat read outside content wait for your OK
   (/memories pending, approve, undo), with an optional Auto-review on the chat's own model;
-  forgotten facts can't be saved again from chat; wl_recall runs at most 5 times a turn.
+  forgotten facts can't be saved again from chat; whos-listening_recall runs at most 5 times a turn.
   Disclosure — stores memories in SQLite in the active Hermes home only
   ($HERMES_HOME/whos-listening/), including forgotten text until purged. No network calls of
   its own except the optional Auto-review (off by default): one request per held save, at most

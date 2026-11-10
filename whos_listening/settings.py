@@ -175,7 +175,7 @@ def load(sources: Sources) -> Settings:
     Shared winning where they disagree on a route. A sync repository set in Hermes takes none of
     settings.json's other sync settings (path, branch, api_url belong to the file's repository)."""
     if sources.hermes is None and sources.hermes_known:
-        raise SettingsError("Hermes' settings for whos-listening can't be read")
+        raise SettingsError("Hermes' settings for Who's Listening can't be read")
     doc = _read_file(Path(sources.file))
     origin: dict[str, str] = {}
     for key, path in FIELDS.items():
@@ -282,7 +282,7 @@ def read_snapshot(data_dir: Path) -> Optional[tuple[dict, str]]:
     if not isinstance(data, Mapping):
         raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read")
     if data.get("unreadable"):
-        raise SettingsError("The gateway couldn't read Hermes' settings for whos-listening when it last tried")
+        raise SettingsError("The gateway couldn't read Hermes' settings for Who's Listening when it last tried")
     if not isinstance(data.get("settings"), Mapping):
         raise SettingsError(f"{SNAPSHOT_FILE} (the gateway's copy of the Hermes settings) can't be read")
     return dict(data["settings"]), _why_hosted(data.get("hosted"))
@@ -297,7 +297,8 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
 
     sync = d.get("sync") if isinstance(d.get("sync"), Mapping) else {}
     rows = [
-        f"this machine: {'hosted, because ' + s.hosted if s.hosted else 'not recognized as hosted (your own, as far as whos-listening can tell)'}",
+        "this machine: " + ("hosted, because " + s.hosted if s.hosted else
+                            "not recognized as hosted (your own, as far as Who's Listening can tell)"),
         line("gateway", "gateway", d.get("gateway")),
         line("review", "review", d.get("review") or "ask"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
