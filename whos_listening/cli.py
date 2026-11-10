@@ -33,7 +33,7 @@ def load_settings(home: Path) -> wl_settings.Settings:
     """settings.json plus the gateway's copy of the Hermes half. Raises SettingsError."""
     data_dir = home / DATA_DIR
     snap = wl_settings.read_snapshot(data_dir)
-    env_hosted = os.environ.get("HERMES_CONFIG_BACKEND", "").strip().lower() not in ("", "file")
+    env_hosted = wl_settings.hosted_reason(os.environ)
     if snap is None:
         sources = wl_settings.Sources(data_dir / SETTINGS_FILE, {}, env_hosted, hermes_known=False)
     else:
