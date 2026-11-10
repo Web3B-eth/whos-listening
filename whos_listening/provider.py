@@ -20,6 +20,7 @@ from agent.memory_provider import MemoryProvider
 from . import autoreview, commands, guard, recall, review, tools
 from . import settings as wl_settings
 from . import sync as wl_sync
+from . import venice
 from .routes import (
     Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
     private_storage_refusal, side_call_routes_private,
@@ -176,6 +177,7 @@ class WhosListeningProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._platform = str(kwargs.get("platform") or "cli")
+        _venice_list(self._dir.parent)
         if self._agent_context == "primary":
             maybe_sync(self._dir.parent)
 
@@ -688,6 +690,26 @@ def _sync_command(home: Path, sub: str) -> str:
 
 # -- the guard: the hard line ------------------------------------------------
 
+def _venice_list(home: Optional[Path]) -> None:
+    """Load Venice's model privacy list for this profile and refresh it in the background when it's
+    more than a day old (a public request that sends nothing about the user). Never raises."""
+    if home is None:
+        return
+    try:
+        venice.configure(Path(home) / DATA_DIR)
+
+        def start(fn: Any) -> None:
+            try:
+                from agent.memory_provider import spawn_context_thread
+                spawn_context_thread(fn, name="whos-listening-venice").start()
+            except Exception:
+                threading.Thread(target=fn, name="whos-listening-venice", daemon=True).start()
+
+        venice.refresh_if_stale(start)
+    except Exception as exc:
+        logger.debug("whos-listening: could not load Venice's model list: %s", exc)
+
+
 def _on_llm_request(**kwargs: Any) -> Optional[dict]:
     """``llm_request`` middleware. Runs on every main chat request with its real route.
 
@@ -700,6 +722,8 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
         route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
                       base_url=str(kwargs.get("base_url") or ""))
         ROUTES.saw_request(str(kwargs.get("session_id") or ""), route)
+        if route.host.endswith("venice.ai"):
+            _venice_list(_active_home())
         tier = tier_for(route, _active_home(), str(kwargs.get("platform") or "")).tier
     except Exception as exc:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",

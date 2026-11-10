@@ -12,7 +12,8 @@
     "name": "venice subdomain",
     "route": {
       "provider": "custom",
-      "base_url": "https://x.venice.ai/v1"
+      "base_url": "https://x.venice.ai/v1",
+      "model": "grok-4-5"
     },
     "tier": "private"
   },
@@ -31,6 +32,59 @@
       "base_url": "https://proxy.example.com/venice.ai/v1"
     },
     "tier": "shared"
+  },
+  {
+    "name": "venice anonymized model",
+    "route": {
+      "provider": "custom",
+      "model": "claude-opus-5-5",
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "tier": "shared"
+  },
+  {
+    "name": "venice anonymized model, trusted",
+    "route": {
+      "provider": "custom",
+      "model": "claude-opus-5-5",
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "settings": {
+      "venice_anonymized": "private"
+    },
+    "tier": "private"
+  },
+  {
+    "name": "venice model not on its list",
+    "route": {
+      "provider": "custom",
+      "model": "made-up-model",
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "tier": "shared"
+  },
+  {
+    "name": "venice private model with a provider prefix",
+    "route": {
+      "provider": "venice",
+      "model": "venice/grok-4-5",
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "tier": "private"
+  },
+  {
+    "name": "a route setting beats venice's label",
+    "route": {
+      "provider": "custom",
+      "model": "claude-opus-5-5",
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "settings": {
+      "routes": {
+        "*/claude-opus-5-5": "private"
+      }
+    },
+    "tier": "private"
   },
   {
     "name": "localhost",
@@ -134,7 +188,8 @@
     "name": "shared host beats default",
     "route": {
       "provider": "custom",
-      "base_url": "https://api.venice.ai/api/v1"
+      "base_url": "https://api.venice.ai/api/v1",
+      "model": "grok-4-5"
     },
     "settings": {
       "shared_hosts": [

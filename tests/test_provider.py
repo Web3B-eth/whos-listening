@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from conftest import FAKE_VENICE
 from wl_helpers import load_plugin
 
 
@@ -17,7 +18,9 @@ def scratch_hermes_home(tmp_path, monkeypatch):
 @pytest.fixture
 def plugin():
     """The provider module, reached through the plugin package as Hermes loads it."""
-    return sys.modules[load_plugin().__name__ + ".whos_listening.provider"]
+    mod = sys.modules[load_plugin().__name__ + ".whos_listening.provider"]
+    mod.venice._reset_for_tests(dict(FAKE_VENICE))       # loaded after conftest's reset; no network
+    return mod
 
 
 @pytest.fixture
@@ -814,3 +817,16 @@ def test_auto_review_is_the_default_but_unreadable_settings_never_auto(plugin, p
     assert provider._review_mode() == "ask"
     (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "sometimes"}')
     assert provider._review_mode() == "ask"                      # a typo fails safe
+
+
+def test_an_anonymized_venice_model_gets_shared_memories_only(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    see(plugin, "https://api.venice.ai/api/v1", model="grok-4-5")              # Venice private: Private
+    tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
+    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    assert "canoe" in provider.prefetch("plans", session_id="sess-1")
+    see(plugin, "https://api.venice.ai/api/v1", model="claude-opus-5-5")       # anonymized: Shared
+    block = provider.prefetch("plans", session_id="sess-1")
+    assert "canoe" not in block and "jazz" in block
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"venice_anonymized": "private"})
+    assert "canoe" in provider.prefetch("plans", session_id="sess-1")          # trusted by the user
