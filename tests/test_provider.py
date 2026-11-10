@@ -2,6 +2,7 @@
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -838,15 +839,15 @@ def test_the_duplicate_judge_runs_only_where_it_may_see_every_memory(plugin, pro
     monkeypatch.setattr(plugin.wl_judge, "find", lambda store, text, tiers, model, key, **kw: seen.append((model, tiers)))
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
     j = provider._duplicate_judge()                                                            # Clef by default
-    j("Allergic to peanuts", "private")
-    j("Likes jazz", "shared")
-    assert seen == [("clef-api", ("private", "shared")), ("clef-api", ("shared",))]          # as the word check
+    j("Allergic to peanuts", ("private", "shared"))
+    j("Likes jazz", ("shared", "private"))
+    assert seen == [("clef-api", ("private", "shared")), ("clef-api", ("shared", "private"))]
     seen.clear()
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev"})
     assert provider._duplicate_judge() is None                                                 # Jev: anonymized
     assert "Jev is anonymized" in plugin._judge_blocker(plugin._load_settings(tmp_path)[0], tmp_path)
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev", "venice_anonymized": "private"})
-    provider._duplicate_judge()("Allergic to peanuts", "private")
+    provider._duplicate_judge()("Allergic to peanuts", ("private", "shared"))
     assert seen == [("jev-latest", ("private", "shared"))]                                     # trusted
     monkeypatch.setattr(plugin, "_venice_key", lambda: "")
     assert provider._duplicate_judge() is None                                                 # no key: not running
@@ -869,14 +870,16 @@ def test_the_venice_key_is_read_through_hermes_secrets_by_name(plugin, monkeypat
 def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provider, tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(plugin.wl_judge, "find_with_model",
-                        lambda store, text, tiers, ask: seen.append(tiers))
+                        lambda store, text, tiers, ask, only=None: seen.append(tiers))
     venice = {"provider": "custom", "default": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
     monkeypatch.setattr(plugin, "_config", lambda: {"model": venice})
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "model"})
-    j = provider._duplicate_judge()
-    j("Allergic to peanuts", "private")
-    j("Likes jazz", "shared")
-    assert seen == [("private", "shared"), ("shared",)]                         # Grok on Venice: Private
+    chat = (plugin.Route("custom", "grok-4-5", "https://api.venice.ai/api/v1"), plugin.Verdict("private", "test"))
+    j = provider._duplicate_judge(*chat)
+    j("Allergic to peanuts", ("private", "shared"))
+    assert seen == [("private", "shared")]                                      # Grok on Venice: Private
+    assert provider._duplicate_judge() is None                                  # no chat: never in the background
+    assert provider._duplicate_judge(chat[0], plugin.Verdict("shared", "t")) is None   # the chat's route is Shared
     for config, why in [
         ({"model": venice, "fallback_providers": [{"provider": "openrouter", "model": "x",
                                                    "base_url": "https://openrouter.ai/api/v1"}]},
@@ -886,7 +889,7 @@ def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provid
         ({}, "no default model"),
     ]:
         monkeypatch.setattr(plugin, "_config", lambda c=config: c)
-        assert provider._duplicate_judge() is None, config                      # not running at all
+        assert provider._duplicate_judge(*chat) is None, config                 # not running at all
         assert why in plugin._settings_command(tmp_path), config
 
 
@@ -916,3 +919,53 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
     FakeLlm.model = "some-fallback"                                             # Hermes fell back
     out = tool(provider, "whos-listening_remember", {"text": "I am allergic to peanuts, badly"})
     assert out["saved"] and "duplicate" not in out
+
+
+def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin, provider, monkeypatch):
+    see(plugin, "http://127.0.0.1:9/v1")
+    private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
+    out = tool(provider, "whos-listening_remember",
+               {"text": "Bought a Santa Cruz Hightower mountain bike", "tier": "shared"})
+    new_id = out["saved"]["id"]
+    provider.on_turn_start(1, "let's review your memories")
+    assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
+    assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False
+    provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {private.id}")
+    provider.on_turn_start(3, {"image": "made-up"})                 # not words: the last turn's don't count
+    assert "doesn't name" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
+    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {private.id}")
+    out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
+    assert out["ok"] and out["forgotten"] == [private.id]
+
+
+def test_review_tool_exports_into_the_profile(plugin, provider, tmp_path):
+    see(plugin, "http://127.0.0.1:9/v1")
+    provider._store.add("Has a peanut allergy", "private", plugin.Provenance())
+    out = tool(provider, "whos-listening_review", {"action": "export"})
+    path = Path(out["file"])
+    assert path.parent == tmp_path / "whos-listening" / "exports" and "peanut" in path.read_text()
+
+
+def test_review_tool_only_in_the_main_chat(plugin, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_config_default_route", lambda: None)
+    p = plugin.WhosListeningProvider()
+    p.initialize("sess-2", hermes_home=str(tmp_path), platform="cli", agent_context="subagent")
+    try:
+        assert "main chat" in tool(p, "whos-listening_review", {"action": "list"})["error"]
+    finally:
+        p.shutdown()
+
+
+def test_slash_export_and_scan(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "off"})
+    provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
+    provider._store.add("Bought a Santa Cruz Hightower mountain bike", "shared", plugin.Provenance())
+    out = plugin._memories_command("export", platform="cli")
+    assert "Wrote your memories to" in out and "Hightower" in Path(out.split(" to ", 1)[1].rstrip(".")).read_text()
+    assert "left out here" in plugin._memories_command("export", platform="telegram")
+    out = plugin._memories_command("review scan", platform="cli")
+    assert "in the background (the word check only" in out
+    plugin._SCANS[str(tmp_path.resolve())].join(10)
+    out = plugin._memories_command("review", platform="cli")
+    assert "These may say the same thing" in out and "Last scan" in out

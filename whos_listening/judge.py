@@ -51,12 +51,15 @@ class JudgeError(Exception):
     pass
 
 
-def candidates(store: Store, text: str, tiers: Sequence[str], limit: int = CANDIDATES) -> list[Memory]:
-    """Up to ``limit`` existing memories in ``tiers``: those sharing content words with ``text`` first
-    (most in common first), then the newest of the rest."""
+def candidates(store: Store, text: str, tiers: Sequence[str], limit: int = CANDIDATES,
+               only: Optional[Callable[[Memory], bool]] = None) -> list[Memory]:
+    """Up to ``limit`` existing memories in ``tiers`` (and passing ``only``, if given): those sharing
+    content words with ``text`` first (most in common first), then the newest of the rest."""
     if not content_words(text) or not tiers:
         return []
     recent = store.list(statuses=(ACTIVE, PENDING), tiers=tuple(tiers), limit=500)      # newest first
+    if only is not None:
+        recent = [m for m in recent if only(m)]
     scored = sorted(((similarity(text, m.text), i, m) for i, m in enumerate(recent)),
                     key=lambda s: (-s[0][1], -s[0][0], s[1]))
     sharing = [m for (score, shared), _, m in scored if shared]
@@ -138,9 +141,10 @@ def parse_model_answer(reply: str, text: str, cands: Iterable[Memory]) -> Option
     return m
 
 
-def find_with_model(store: Store, text: str, tiers: Sequence[str], ask_model: Callable[[str], str]) -> Optional[Memory]:
+def find_with_model(store: Store, text: str, tiers: Sequence[str], ask_model: Callable[[str], str], *,
+                    only: Optional[Callable[[Memory], bool]] = None) -> Optional[Memory]:
     """Like ``find``, with a chat model through ``ask_model(prompt) -> reply``. None on any error."""
-    cands = candidates(store, text, tiers)
+    cands = candidates(store, text, tiers, only=only)
     if not cands:
         return None
     try:
@@ -170,9 +174,10 @@ def ask(api_key: str, body: dict, *, opener: Callable[..., Any] = urllib.request
 
 
 def find(store: Store, text: str, tiers: Sequence[str], model: str, api_key: str, *,
-         opener: Callable[..., Any] = urllib.request.urlopen) -> Optional[Memory]:
+         opener: Callable[..., Any] = urllib.request.urlopen,
+         only: Optional[Callable[[Memory], bool]] = None) -> Optional[Memory]:
     """The existing memory ``text`` repeats according to ``model``, or None (also on any error)."""
-    cands = candidates(store, text, tiers)
+    cands = candidates(store, text, tiers, only=only)
     if not cands:
         return None
     try:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import shlex
 from typing import Optional
 
+from . import resolve
 from .routes import RouteSettings, platform_verdict
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, SYNC_ACTIONS, Event, ForgottenError, Memory, Provenance, Store,
@@ -18,6 +19,11 @@ from .store import (
 
 HELP = """\
 /memories                 list what I remember
+/memories review          what waits for you: possible duplicates, saves and forgets to OK
+/memories keep N          keep #N of a possible duplicate and forget the other
+/memories keep both N     keep #N and the memory it may repeat
+/memories review scan     look for repeats saved earlier (they wait for you to choose)
+/memories export          write all your memories to a file
 /memories pending         saves and forgets waiting for you
 /memories approve N       let a waiting save or forget apply
 /memories reject N        turn it down (a turned-down save can't be saved again from chat)
@@ -66,15 +72,66 @@ def cmd_list(store: Store, show_private: bool) -> str:
     memories = store.list(limit=200)
     waiting = store.count(statuses=(PENDING,)) + len(store.forget_requests())
     lines = [_line(m, show_private) for m in memories] or ["Nothing remembered yet."]
-    if waiting:
-        lines.append(f"\n{waiting} waiting for you: /memories pending")
+    if waiting or store.flagged():
+        lines.append(f"\n{len(resolve.items(store))} waiting for you: /memories review")
     return "\n".join(lines)
+
+
+def _from(m: Memory) -> str:
+    route = m.provenance.route or ""
+    return f"  ({route.replace('sync from', 'arrived from')})" if route.startswith("sync from") else ""
+
+
+def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
+    found = resolve.items(store)
+    if not found:
+        lines = ["Nothing is waiting for you."]
+    else:
+        lines = [f"Waiting for you ({len(found)}):"]
+        for n, it in enumerate(found, 1):
+            m = it.memory
+            if it.kind == "duplicate":
+                news = it.others
+                lines += [f"\n{n}. These may say the same thing:", f"   {_line(m, show_private)}{_from(m)}"]
+                for x in news:
+                    lines.append(f"   {_line(x, show_private)}{_from(x)}")
+                    if x.pending_reason:
+                        lines.append(f"      #{x.id} also waits because: {x.pending_reason}")
+                keeps = "  ·  ".join(f"/memories keep {y.id}" for y in (m, *news))
+                both = f"/memories keep both {news[0].id}" if len(news) == 1 else f"/memories keep both {m.id}"
+                lines.append(f"   keep one: {keeps}  ·  keep all: {both}")
+            elif it.kind == "save":
+                lines += [f"\n{n}. A save waiting for your OK:", f"   {_line(m, show_private)}{_from(m)}",
+                          f"   why: {m.pending_reason or 'needs your OK'}",
+                          f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
+            else:
+                lines += [f"\n{n}. A forget waiting for your OK:", f"   {_line(m, show_private)}",
+                          f"   why: {m.forget_reason}", f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
+        lines.append('\nOr tell the assistant, such as "keep 41" or "approve 43" (with the number).')
+    lines.append("Look for repeats saved earlier: /memories review scan" + (f"  ({scan_note})" if scan_note else ""))
+    lines.append("See everything: /memories  ·  Write it all to a file: /memories export")
+    return "\n".join(lines)
+
+
+def cmd_keep(store: Store, args: list[str], show_private: bool) -> str:
+    both = bool(args) and args[0].lower() == "both"
+    rest = args[1:] if both else args
+    if len(rest) != 1:
+        raise StoreError("Say which one: /memories keep N, or /memories keep both N.")
+    if both:
+        kept = resolve.keep_both(store, _id(rest[0]), show_private=show_private)
+        return "Kept both:\n" + "\n".join(_line(m, show_private) for m in kept)
+    kept, dropped = resolve.keep(store, _id(rest[0]), show_private=show_private)
+    gone = ", ".join(f"#{m.id}" for m in dropped)
+    return f"Kept {_line(kept, show_private)}\nForgot {gone}. It can't be saved again from chat."
 
 
 def cmd_pending(store: Store, show_private: bool) -> str:
     lines = []
     for m in store.list(statuses=(PENDING,), limit=200):
-        lines.append(f"save {_line(m, show_private)}\n    why it waits: {m.pending_reason or 'needs your OK'}")
+        why = m.pending_reason or (f"it may say what #{m.duplicate_of} says: /memories review" if m.duplicate_of
+                                   else "needs your OK")
+        lines.append(f"save {_line(m, show_private)}\n    why it waits: {why}")
     for m in store.forget_requests():
         lines.append(f"forget {_line(m, show_private)}\n    why it waits: {m.forget_reason}")
     if not lines:
@@ -82,7 +139,7 @@ def cmd_pending(store: Store, show_private: bool) -> str:
     return "\n".join(lines) + "\n\n/memories approve N or /memories reject N"
 
 
-def cmd_approve(store: Store, arg: str, show_private: bool) -> str:
+def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg)
     if m.tier == PRIVATE and not show_private and (m.status == PENDING or m.forget_reason):
         # Don't let anyone approve a Private memory they can't see here.
@@ -90,24 +147,26 @@ def cmd_approve(store: Store, arg: str, show_private: bool) -> str:
                 f"local app, where you can read it first.")
     if m.status == PENDING:
         store.set_status(m.id, ACTIVE)
-        store.log_event(m.id, "approved", "user")
+        if m.duplicate_of:
+            store.set_duplicate_of(m.id, 0)         # approving a possible duplicate keeps both
+        store.log_event(m.id, "approved", actor)
         return f"Saved {_line(store.get(m.id), show_private)}"
     if m.forget_reason and m.status != FORGOTTEN:
         store.forget(m.id)
-        store.log_event(m.id, "approved_forget", "user")
+        store.log_event(m.id, "approved_forget", actor)
         return f"Forgot #{m.id}. It can't be saved again from chat."
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
 
-def cmd_reject(store: Store, arg: str, show_private: bool) -> str:
+def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg)
     if m.status == PENDING:
         store.forget(m.id)
-        store.log_event(m.id, "rejected", "user")
+        store.log_event(m.id, "rejected", actor)
         return f"Turned down #{m.id}. It can't be saved again from chat."
     if m.forget_reason and m.status != FORGOTTEN:
         store.clear_forget_request(m.id)
-        store.log_event(m.id, "rejected_forget", "user")
+        store.log_event(m.id, "rejected_forget", actor)
         return f"Kept {_line(m, show_private)}"
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
@@ -229,6 +288,14 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
             return cmd_list(store, show_private)
         if cmd == "pending":
             return cmd_pending(store, show_private)
+        if cmd == "review":
+            if rest and rest[0].lower() == "scan":
+                return "Scans run inside Hermes: type /memories review scan in a chat."
+            return cmd_review(store, show_private, resolve.scan_status(store))
+        if cmd == "keep":
+            return cmd_keep(store, rest, show_private)
+        if cmd == "export":
+            return "Exports run inside Hermes: type /memories export in a chat."
         if cmd == "approve":
             return cmd_approve(store, one(), show_private)
         if cmd == "reject":

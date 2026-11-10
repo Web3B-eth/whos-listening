@@ -111,13 +111,14 @@ def repeats(new: str, existing: str) -> bool:
     return wn <= we or shared / len(wn | we) >= THRESHOLD
 
 
-def find(store: Store, text: str, tier: str, *, statuses: Iterable[str] = (ACTIVE, PENDING)) -> Optional[Memory]:
+def find(store: Store, text: str, tier: str, *, statuses: Iterable[str] = (ACTIVE, PENDING),
+         tiers: Optional[Iterable[str]] = None) -> Optional[Memory]:
     """An existing memory that already says what ``text`` says, or None.
 
-    Only a memory at least as widely visible as the new one counts: a Shared save is not
-    swallowed by a Private memory (the user asked for any model to see it), but a Private save
-    is covered by a Shared one."""
-    tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
+    By default only a memory at least as widely visible as the new one counts: a Private save is
+    covered by a Shared one, but a Shared save is not by a Private one (that's a choice for the user:
+    resolve.py). ``tiers`` overrides which tiers are searched."""
+    tiers = tuple(tiers) if tiers is not None else (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
     best, best_score = None, 0.0
     for m in store.list(statuses=tuple(statuses), tiers=tiers, limit=CANDIDATES):
         if repeats(text, m.text):
