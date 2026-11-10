@@ -161,9 +161,12 @@ def load(sources: Sources) -> Settings:
         value = doc
         for part in path:
             value = value.get(part) if isinstance(value, Mapping) else None
+        if (key in _LISTS or key == "routes") and value not in (None, ""):
+            _check(key, value, FROM_FILE)          # any text here would be misread, "default" too
         if _is_set(key, value, FROM_FILE):
-            _check(key, value, FROM_FILE)
             origin[".".join(path)] = FROM_FILE
+        elif len(path) == 1 and key in doc and (key in _LISTS or key == "routes"):
+            doc.pop(key)                            # "" or empty: not set
     if isinstance(doc.get("sync"), Mapping):
         doc["sync"] = dict(doc["sync"])     # (any other "sync" turns only sync off, as it always has)
 

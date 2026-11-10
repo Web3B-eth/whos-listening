@@ -192,3 +192,12 @@ def test_the_copy_is_rewritten_if_it_changed_on_disk(tmp_path):
     ws.write_snapshot(tmp_path, {"gateway": "shared"}, False, cache)
     assert ws.read_snapshot(tmp_path) == ({"gateway": "shared"}, False)
     assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob(".*.tmp"))
+
+
+def test_text_where_a_list_or_routes_belongs_fails_safe(tmp_path):
+    for file in ({"routes": "default"}, {"routes": " "}, {"private_hosts": "default"},
+                 {"private_platforms": "signal"}):
+        with pytest.raises(ws.SettingsError):
+            ws.load(src(tmp_path, file=file))
+    s = ws.load(src(tmp_path, file={"routes": "", "private_hosts": ""}))     # empty: not set
+    assert ws.route_settings(s).routes == {} and ws.route_settings(s).private_hosts == ()

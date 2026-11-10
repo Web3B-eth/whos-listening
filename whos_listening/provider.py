@@ -436,10 +436,10 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
 
 def _settings_command(home: Path) -> str:
     try:
-        s = _settings(home)
-    except wl_settings.SettingsError as exc:
-        return f"{exc}. Until that's fixed, every route counts as shared and no private memory is saved."
-    return wl_settings.describe(s, token_set=bool(_sync_token()))
+        return wl_settings.describe(_settings(home), token_set=bool(_sync_token()))
+    except Exception as exc:
+        why = str(exc) if isinstance(exc, wl_settings.SettingsError) else "The settings can't be read"
+        return f"{why}. Until that's fixed, every route counts as shared and no private memory is saved."
 
 
 # -- sync between gateways (sync.py) ------------------------------------------------

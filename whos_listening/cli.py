@@ -44,22 +44,27 @@ def load_settings(home: Path) -> wl_settings.Settings:
 def route_settings_or_none(home: Path) -> RouteSettings | None:
     try:
         return wl_settings.route_settings(load_settings(home))
-    except wl_settings.SettingsError:
+    except Exception:                   # anything unexpected fails safe: no Private save
         return None
 
 
 def show_settings(home: Path) -> str:
     try:
         s = load_settings(home)
-    except wl_settings.SettingsError as exc:
-        return f"{exc}. Until that's fixed, every route counts as shared and no private memory is saved."
+        text = wl_settings.describe(s)
+    except Exception as exc:
+        return f"{_why(exc)}. Until that's fixed, every route counts as shared and no private memory is saved."
     try:
         seen = wl_settings.read_snapshot(home / DATA_DIR) is not None
     except wl_settings.SettingsError:
         seen = False
     note = ("" if seen else "\n(The gateway hasn't run this version of whos-listening yet, so settings made "
             "in Desktop aren't known here yet.)")
-    return wl_settings.describe(s) + note
+    return text + note
+
+
+def _why(exc: Exception) -> str:
+    return str(exc) if isinstance(exc, wl_settings.SettingsError) else "The settings can't be read"
 
 
 def purge(store: SQLiteStore, arg: str) -> str:
