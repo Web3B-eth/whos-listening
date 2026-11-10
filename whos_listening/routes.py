@@ -168,6 +168,7 @@ class RouteSettings:
     gateway: str = PRIVATE
     review: str = "auto"     # "auto": Auto-review checks held saves. "ask": they wait for the user.
     gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
+    duplicates: str = "skip"  # "skip": a near-duplicate save is skipped (duplicates.py). "keep": saved.
 
     @classmethod
     def from_dict(cls, data: Any) -> "RouteSettings":
@@ -181,16 +182,19 @@ class RouteSettings:
             return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
 
         review = str(data.get("review") or "auto").strip().lower()
+        duplicates = str(data.get("duplicates") or "skip").strip().lower()
         gateway = str(data.get("gateway") or PRIVATE).strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
                    private_platforms=hosts("private_platforms"), shared_platforms=hosts("shared_platforms"),
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
-                   review=review if review in ("ask", "auto") else "ask")     # a typo fails safe
+                   review=review if review in ("ask", "auto") else "ask",     # a typo fails safe
+                   duplicates=duplicates if duplicates in ("skip", "keep") else "skip")
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
                 "shared_hosts": list(self.shared_hosts), "private_platforms": list(self.private_platforms),
-                "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review}
+                "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review,
+                "duplicates": self.duplicates}
 
     @classmethod
     def load(cls, path: str | Path) -> "RouteSettings":

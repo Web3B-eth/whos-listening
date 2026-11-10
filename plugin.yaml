@@ -29,6 +29,11 @@ config_schema:
     choices: [default, ask, auto]
     label: "Held saves"
     description: "What happens to a save that is held because the chat read outside content. auto (the default): Auto-review checks it on the chat's own model and saves it if it's clearly something you said about yourself. ask: it waits until you approve it with /memories approve N."
+  duplicates:
+    type: str
+    choices: [default, skip, keep]
+    label: "Near-duplicates"
+    description: "What happens when the assistant saves something that rewords a memory you already have, such as \"Bought a Santa Cruz Hightower\" after \"Owns a Santa Cruz Hightower\". skip (the default): nothing new is saved. keep: it is saved anyway. Checked on this gateway, by comparing words; nothing is sent anywhere."
   sync_repo:
     type: str
     label: "Sync repository"
