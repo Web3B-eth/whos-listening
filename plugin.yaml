@@ -29,6 +29,11 @@ config_schema:
     choices: [default, ask, auto]
     label: "Held saves"
     description: "What happens to a save that is held because the chat read outside content. auto (the default): Auto-review checks it on the chat's own model and saves it if it's clearly something you said about yourself. ask: it waits until you approve it with /memories approve N."
+  venice_anonymized:
+    type: str
+    choices: [default, shared, private]
+    label: "Venice anonymized models"
+    description: "Venice runs some models itself (private) and passes others, such as Claude and Gemini, to the company that made them with your identity stripped (anonymized: that company sees the content). shared (the default): anonymized models get Shared memories only. private: treat them like Venice's private models. Venice's private models are Private either way."
   sync_repo:
     type: str
     label: "Sync repository"
