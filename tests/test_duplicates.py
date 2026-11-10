@@ -37,6 +37,16 @@ def test_different_facts_are_not(a, b):
     assert not d.is_near_duplicate(a, b)
 
 
+def test_a_shorter_restatement_adds_nothing_so_it_repeats():
+    longer = "I just bought an Ibis Ripmo mountain bike and I love it."
+    assert d.repeats("I own an Ibis Ripmo now.", longer)          # live test, 2026-11-10
+    assert not d.repeats(longer, "I own an Ibis Ripmo now.")       # the fuller one adds detail: kept
+    assert d.repeats("Likes spicy food", "Likes spicy Thai food")  # adds nothing
+    assert not d.repeats("Likes spicy Thai food", "Likes spicy food")   # adds "Thai": kept
+    assert not d.repeats("Prefers 27.5-inch wheels", "I prefer 29-inch wheels")
+    assert not d.repeats("Likes jazz", "Likes jazz and tea")       # one shared word is too few
+
+
 def test_find_respects_tiers(store):
     private = store.add("Owns a Santa Cruz Hightower mountain bike", PRIVATE, Provenance())
     text = "Bought a Santa Cruz Hightower mountain bike"

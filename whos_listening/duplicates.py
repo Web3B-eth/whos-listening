@@ -6,9 +6,10 @@ mountain bike and is really happy with it", which a model on a Shared route save
 can't see the Private one.
 
 The check is local and deterministic: no model, no network. It compares the content words of two
-memories (filler words like "likes", "my", "really" and word endings set aside). Two memories are
-near-duplicates when most of their content words are the same, and at least two of them are. It is
-deliberately strict: "prefers window seats on long flights" and "prefers aisle seats on short
+memories (filler words like "likes", "my", "really" and word endings set aside). A new save is a
+near-duplicate of a memory when at least two content words are shared and either most of them are
+(Jaccard >= THRESHOLD), or the new save adds no content word the memory doesn't have ("I own an Ibis
+Ripmo now" after "I just bought an Ibis Ripmo mountain bike"). It is deliberately strict: "prefers window seats on long flights" and "prefers aisle seats on short
 flights" share half their content words and are not duplicates.
 
 Nothing here imports Hermes.
@@ -76,6 +77,16 @@ def is_near_duplicate(a: str, b: str) -> bool:
     return shared >= MIN_SHARED and score >= THRESHOLD
 
 
+def repeats(new: str, existing: str) -> bool:
+    """Whether a new save says nothing an existing memory doesn't: most words shared, or every
+    content word of the new one already in the existing one (at least MIN_SHARED either way)."""
+    wn, we = content_words(new), content_words(existing)
+    shared = len(wn & we)
+    if shared < MIN_SHARED:
+        return False
+    return wn <= we or shared / len(wn | we) >= THRESHOLD
+
+
 def find(store: Store, text: str, tier: str, *, statuses: Iterable[str] = (ACTIVE, PENDING)) -> Optional[Memory]:
     """An existing memory that already says what ``text`` says, or None.
 
@@ -85,7 +96,8 @@ def find(store: Store, text: str, tier: str, *, statuses: Iterable[str] = (ACTIV
     tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
     best, best_score = None, 0.0
     for m in store.list(statuses=tuple(statuses), tiers=tiers, limit=CANDIDATES):
-        score, shared = similarity(text, m.text)
-        if shared >= MIN_SHARED and score >= THRESHOLD and score > best_score:
-            best, best_score = m, score
+        if repeats(text, m.text):
+            score, _ = similarity(text, m.text)
+            if best is None or score > best_score:
+                best, best_score = m, score
     return best
