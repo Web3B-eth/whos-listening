@@ -50,7 +50,8 @@ Pick the gateway in Desktop first: the plugin is installed on whichever gateway 
 1. **Install.** In **Capabilities → Plugins**, choose **Install from Git**, enter `https://github.com/Web3B-eth/whos-listening` and install. To pin an exact version, open **Advanced** and enter a 40-character commit SHA.
 2. **Make it the memory provider.** In **Settings → Memory & Context**, set **Memory Provider** to **Whos-Listening** (Desktop's spelling of `whos-listening`). Desktop's install doesn't do this for you (the terminal's `--enable` does), and a plugin can't change this setting itself. Until you do, `/memories` works but nothing is recalled in chats.
 3. **Turn off Hermes' built-in memory.** On the same page, turn off **Persistent Memory** and **User Profile**, so facts don't also land in `MEMORY.md` and `USER.md`, which go to every model whatever their tier.
-4. **Check it.** Type `/memories settings` in a chat. It lists the settings in effect; any note under them says what is still missing. On Hermes Cloud the first line should say the machine is hosted, so the gateway counts as Shared.
+4. **Restart.** On your own computer, quit and reopen Desktop. On Hermes Cloud, restart the instance itself: Nous Portal → Cloud → your instance → **Stop**, then **Start**. Desktop's **Restart gateway**, and the Gateway **Restart** on the instance's dashboard, only restart messaging: slash commands pick up new code, but chats keep using the old tools and recall until the instance restarts. The same goes for every update. Then start a new chat.
+5. **Check it.** Type `/memories settings` in a chat. It lists the settings in effect; any note under them says what is still missing. On Hermes Cloud the first line should say the machine is hosted, so the gateway counts as Shared.
 
 Settings, including [sync](#sync-between-gateways), are under **Settings → Plugins → whos-listening**.
 
