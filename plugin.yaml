@@ -15,7 +15,7 @@ optional_env:
   - name: WHOS_LISTENING_SYNC_TOKEN
     description: "Only for sync between gateways: a GitHub fine-grained token with read and write access to the contents of one private repository (see the README, Sync between gateways)."
     password: true
-# The settings form in Hermes Desktop (Capabilities → Plugins), for whichever gateway Desktop is
+# The settings form in Hermes Desktop (Settings → Plugins), for whichever gateway Desktop is
 # connected to. A value set here wins over settings.json; "default" or an empty field means
 # "use settings.json, else the built-in default". See the README, Settings.
 config_schema:
@@ -23,46 +23,46 @@ config_schema:
     type: str
     choices: [default, private, shared]
     label: "This gateway"
-    description: "private: this machine may keep Private memories. shared: it keeps none (choose it for a server you don't fully trust). default: private on your own machine, shared on a hosted Hermes such as Hermes Cloud."
+    description: "Whether the machine running this Hermes may keep Private memories. private: yes (your own computer). shared: no (a server you don't fully trust). default: private on your own machine, shared on a hosted Hermes such as Hermes Cloud."
   review:
     type: str
     choices: [default, ask, auto]
     label: "Held saves"
-    description: "ask (the default): held saves wait for you. auto: Auto-review checks them on the chat's own model."
+    description: "What happens to a save that waits for you. ask (the default): it waits until you approve it with /memories approve N. auto: Auto-review checks it on the chat's own model."
   sync_repo:
     type: str
     label: "Sync repository"
-    description: "owner/name of a private GitHub repository to sync Shared memories through. Empty: settings.json's, else sync is off. Once set here, settings.json's sync settings are ignored."
+    description: "The private GitHub repository to sync Shared memories through. Example: you/whos-listening-sync (a link such as https://github.com/you/whos-listening-sync works too). Empty: sync is off, unless settings.json sets it. Once set here, settings.json's sync settings are ignored."
   sync_name:
     type: str
     label: "Gateway name for sync"
-    description: "How this gateway appears in the sync file, e.g. laptop or cloud. Empty: one is made up."
+    description: "A short name for this gateway in the sync file, different on each gateway. Example: laptop, or cloud. Empty: one is made up."
   sync_interval:
     type: int
     label: "Sync interval (seconds)"
-    description: "Seconds between automatic syncs, at least 30. 0: settings.json, else 60."
+    description: "Seconds between automatic syncs, at least 30. Example: 300 for every five minutes. 0: settings.json's, else 60."
   sync_token:
     type: secret
     env: WHOS_LISTENING_SYNC_TOKEN
     label: "Sync token"
-    description: "A GitHub fine-grained token with read and write access to the contents of the sync repository only."
+    description: "A GitHub fine-grained personal access token (it starts with github_pat_) with access to the sync repository only and the Contents: Read and write permission. Create one at github.com/settings/personal-access-tokens/new."
   private_platforms:
     type: list
     label: "Extra Private platforms"
-    description: "Hermes platforms that may see Private memories besides cli, tui, desktop and local, e.g. [\"signal\"]. Added to settings.json's; [] for none."
+    description: "Hermes platforms that may see Private memories besides cli, tui, desktop and local, as a JSON list. Example: [\"signal\"]. Added to settings.json's; [] for none."
   shared_platforms:
     type: list
     label: "Shared platforms"
-    description: "Platforms that never see Private memories, even ones that would by default, e.g. [\"desktop\"]. Added to settings.json's; [] for none."
+    description: "Hermes platforms that never see Private memories, even ones that would by default, as a JSON list. Example: [\"desktop\"]. Added to settings.json's; [] for none."
   private_hosts:
     type: list
     label: "Extra Private model hosts"
-    description: "Model API hosts you trust with Private memories (a domain covers its subdomains). Added to settings.json's; [] for none."
+    description: "Model API hosts you trust with Private memories, as a JSON list of host names (a domain covers its subdomains). Example: [\"models.example.org\"]. Added to settings.json's; [] for none."
   shared_hosts:
     type: list
     label: "Shared model hosts"
-    description: "Model API hosts that never get Private memories, even default Private ones. Added to settings.json's; [] for none."
+    description: "Model API hosts that never get Private memories, even default Private ones, as a JSON list of host names. Example: [\"api.venice.ai\"]. Added to settings.json's; [] for none."
   routes:
     type: dict
     label: "Routes"
-    description: "Tier by provider/model, */model or provider, e.g. {\"nous/gpt-6-luna\": \"private\"}. Combined with settings.json's (shared wins where they disagree); {} for none."
+    description: "Private or shared by provider/model, */model or provider, as a JSON object. Example: {\"nous/gpt-6-luna\": \"private\", \"openrouter\": \"shared\"}. Combined with settings.json's (shared wins where they disagree); {} for none."

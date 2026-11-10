@@ -3,7 +3,7 @@
 Two places, merged setting by setting:
 
 1. **Hermes' own config**, under ``plugins.entries.whos-listening.settings``. That is what the
-   plugin's settings form in Hermes Desktop (Capabilities → Plugins) writes, for whichever gateway
+   plugin's settings form in Hermes Desktop (Settings → Plugins) writes, for whichever gateway
    Desktop is connected to. On Hermes Cloud it is the only place you can reach.
 2. **settings.json** in the profile's whos-listening folder.
 
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .routes import RouteSettings
-from .sync import SyncSettings
+from .sync import SyncSettings, repo_name
 
 PLUGIN_ID = "whos-listening"
 SETTINGS_FILE = "settings.json"
@@ -278,7 +278,7 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
     rows = [
         line("gateway", "gateway", d.get("gateway")),
         line("review", "review", d.get("review") or "ask"),
-        line("sync", "sync.repo", sync.get("repo") or "off"),
+        line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
     ]
     if sync.get("repo"):
         rows.append(line("sync name", "sync.name", sync.get("name") or "(made up)"))

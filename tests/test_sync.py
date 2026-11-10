@@ -78,6 +78,17 @@ def test_settings():
     assert sync.SyncSettings.from_dict("yes").error
 
 
+def test_a_pasted_github_link_works_as_the_repository():
+    for text in ("you/notes", " you/notes ", "https://github.com/you/notes", "https://github.com/you/notes/",
+                 "https://github.com/you/notes.git", "github.com/you/notes", "http://www.github.com/you/notes",
+                 "git@github.com:you/notes.git", "HTTPS://GitHub.com/you/notes"):
+        s = sync.SyncSettings.from_dict({"repo": text})
+        assert s.enabled and s.repo == "you/notes", text
+    for text in ("https://gitlab.com/you/notes", "https://github.com/you", "https://github.com/you/notes/tree/main",
+                 "you", "you/notes/extra"):
+        assert sync.SyncSettings.from_dict({"repo": text}).error, text
+
+
 def test_load_settings(tmp_path):
     f = tmp_path / "settings.json"
     assert not sync.load_settings(f).enabled
