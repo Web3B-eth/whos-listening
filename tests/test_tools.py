@@ -116,3 +116,29 @@ def test_a_shared_gateway_refuses_private_saves(store):
     out = save({"text": "Keeps bees"})
     assert out["ok"] is False and "shared gateway" in out["error"] and store.count() == 0
     assert save({"text": "Likes jazz", "tier": "shared"})["ok"] is True
+
+
+def test_a_refused_private_save_tells_the_model_what_to_do(store):
+    out = json.loads(tools.handle(store, "whos-listening_remember", {"text": "Keeps bees"}, route_tier=PRIVATE,
+                                  provenance=lambda: Provenance(),
+                                  private_refused="No private memory was saved: shared gateway."))
+    assert "Tell the user it wasn't saved" in out["error"] and "tier 'shared'" in out["error"]
+
+
+def test_while_auto_review_checks_the_user_is_not_asked_to_approve(store):
+    for route in (PRIVATE, SHARED):
+        out = json.loads(tools.handle(store, "whos-listening_remember", {"text": f"Prefers aisle seats {route}"},
+                                      route_tier=route, provenance=lambda: Provenance(), outside_tool="read_file",
+                                      on_outside_hold=lambda m: True))
+        assert "Auto-review is checking it" in out["note"] and "doesn't need to do anything" in out["note"]
+        assert "/memories approve" not in out["note"] and "/memories pending" not in out["note"]
+    # Without Auto-review the note still says how to approve.
+    out = json.loads(tools.handle(store, "whos-listening_remember", {"text": "Prefers tea"}, route_tier=PRIVATE,
+                                  provenance=lambda: Provenance(), outside_tool="read_file",
+                                  on_outside_hold=lambda m: False))
+    assert "/memories approve" in out["note"]
+
+
+def test_the_remember_tool_invites_unprompted_saves_of_lasting_facts():
+    desc = tools.SCHEMAS[0]["description"]
+    assert "without being asked" in desc and "what they own" in desc and "skip one-off" in desc

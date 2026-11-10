@@ -28,7 +28,7 @@ config_schema:
     type: str
     choices: [default, ask, auto]
     label: "Held saves"
-    description: "What happens to a save that waits for you. ask (the default): it waits until you approve it with /memories approve N. auto: Auto-review checks it on the chat's own model."
+    description: "What happens to a save that is held because the chat read outside content. auto (the default): Auto-review checks it on the chat's own model and saves it if it's clearly something you said about yourself. ask: it waits until you approve it with /memories approve N."
   sync_repo:
     type: str
     label: "Sync repository"

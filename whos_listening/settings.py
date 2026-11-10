@@ -300,7 +300,7 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
         "this machine: " + ("hosted, because " + s.hosted if s.hosted else
                             "not recognized as hosted (your own, as far as Who's Listening can tell)"),
         line("gateway", "gateway", d.get("gateway")),
-        line("review", "review", d.get("review") or "ask"),
+        line("review", "review", d.get("review") or "auto"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
     ]
     if sync.get("repo"):

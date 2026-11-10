@@ -154,7 +154,8 @@ class RouteSettings:
       ones that may see Private memories (``cli``, ``tui``, ``desktop``, ``local`` by default).
     - ``gateway``: ``"private"`` (default) or ``"shared"`` for the machine this Hermes runs on. A
       Shared gateway keeps no Private memories. Any other value counts as Shared.
-    - ``review``: ``"ask"`` (default) or ``"auto"`` for Auto-review (see autoreview.py).
+    - ``review``: ``"auto"`` (default: Auto-review, see autoreview.py) or ``"ask"`` (held saves wait
+      for the user). A value that is neither counts as ``"ask"``.
 
     settings.py merges these from Hermes' own config and settings.json.
     """
@@ -165,7 +166,7 @@ class RouteSettings:
     private_platforms: tuple[str, ...] = ()
     shared_platforms: tuple[str, ...] = ()
     gateway: str = PRIVATE
-    review: str = "ask"      # "ask": held saves wait for the user. "auto": Auto-review checks them.
+    review: str = "auto"     # "auto": Auto-review checks held saves. "ask": they wait for the user.
     gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
 
     @classmethod
@@ -179,12 +180,12 @@ class RouteSettings:
         def hosts(key: str) -> tuple[str, ...]:
             return tuple(str(h).strip().lower() for h in (data.get(key) or []) if str(h).strip())
 
-        review = str(data.get("review") or "ask").strip().lower()
+        review = str(data.get("review") or "auto").strip().lower()
         gateway = str(data.get("gateway") or PRIVATE).strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
                    private_platforms=hosts("private_platforms"), shared_platforms=hosts("shared_platforms"),
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
-                   review=review if review in ("ask", "auto") else "ask")
+                   review=review if review in ("ask", "auto") else "ask")     # a typo fails safe
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),

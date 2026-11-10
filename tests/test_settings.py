@@ -19,7 +19,7 @@ def src(tmp_path, file=None, hermes=None, hosted=False, known=True):
 def test_nothing_set_means_the_defaults(tmp_path):
     s = ws.load(src(tmp_path))
     r = ws.route_settings(s)
-    assert r.gateway == PRIVATE and r.review == "ask" and not r.gateway_hosted
+    assert r.gateway == PRIVATE and r.review == "auto" and not r.gateway_hosted
     assert s.origin == {"gateway": ws.FROM_DEFAULT}
     assert not ws.sync_settings(s).enabled
 
