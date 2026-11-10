@@ -29,6 +29,9 @@ def test_forget_after_outside_content_waits():
 def test_outside_tools():
     assert review.is_outside_tool("read_file") and review.is_outside_tool("web_search")
     assert not review.is_outside_tool("whos-listening_recall") and not review.is_outside_tool("todo")
+    # Loading an installed skill isn't outside content (on Hermes Cloud skills load in most chats).
+    assert not review.is_outside_tool("skill_view") and not review.is_outside_tool("skills_list")
+    assert review.is_outside_tool("skill_manage")                     # it can fetch and write skills
     assert not review.is_outside_tool("") and not review.is_outside_tool("x", trusted=["x"])
 
 
