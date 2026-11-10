@@ -277,12 +277,16 @@ class WhosListeningProvider(MemoryProvider):
         out = tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
                            private_refused=_private_refused(self._dir.parent if self._dir else None),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
-                           on_outside_hold=self._start_auto_review)
+                           on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode())
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
         return out
 
     # -- Auto-review ---------------------------------------------------------
+
+    def _duplicates_mode(self) -> str:
+        settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)
+        return settings.duplicates if settings is not None else "skip"
 
     def _review_mode(self) -> str:
         settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)

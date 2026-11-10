@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
+from . import duplicates as dupes
 from . import review
 from .recall import allowed_tiers, format_line
 from .store import (
@@ -96,7 +97,8 @@ def _shared_route_saved(tier: str, hold: Optional[str], reviewing: bool = False)
 
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
            provenance: Callable[[], Provenance], outside_tool: str = "",
-           on_outside_hold: Optional[Callable[[Memory], bool]] = None, private_refused: str = "") -> str:
+           on_outside_hold: Optional[Callable[[Memory], bool]] = None, private_refused: str = "",
+           duplicates: str = "skip") -> str:
     """Run one tool call. Always returns a JSON string; never raises.
 
     ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
@@ -104,7 +106,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     ``outside_tool`` names the tool that first brought outside content into this chat ("" if
     none): from then on saves and forgets wait for the user (see review.py).
     ``on_outside_hold`` is called with a save held only because of outside content (not by the
-    rule screen); it returns True if Auto-review will check it."""
+    rule screen); it returns True if Auto-review will check it.
+    ``duplicates``: "skip" (a save that rewords an existing memory saves nothing) or "keep"."""
     args = args if isinstance(args, dict) else {}
     try:
         if name == REMEMBER:
@@ -116,6 +119,15 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 screened = clean_text(text)        # screen exactly what would be saved
             except StoreError as exc:
                 return _err(str(exc))
+            if duplicates != "keep":
+                same = dupes.find(store, screened, tier)
+                if same is not None:
+                    if route_tier != PRIVATE and same.tier == PRIVATE:
+                        # Don't tell a Shared route that a Private memory says this: answer exactly
+                        # like a save, as for a forgotten Private fact.
+                        return _shared_route_saved(tier, None)
+                    return _ok(duplicate=_public(same),
+                               note=f"Already remembered as #{same.id}, so nothing new was saved.")
             hold = review.save_hold_reason(screened, outside_tool)
             try:
                 m = store.add(text, tier, provenance(), status=PENDING if hold else "active",

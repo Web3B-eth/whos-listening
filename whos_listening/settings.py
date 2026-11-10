@@ -39,6 +39,7 @@ UNSET = "default"                           # the first choice of a Desktop menu
 FIELDS: dict[str, tuple[str, ...]] = {
     "gateway": ("gateway",),
     "review": ("review",),
+    "duplicates": ("duplicates",),
     "sync_repo": ("sync", "repo"),
     "sync_name": ("sync", "name"),
     "sync_interval": ("sync", "interval"),
@@ -220,8 +221,9 @@ def load(sources: Sources) -> Settings:
         doc["routes"] = _routes(doc["routes"])
     if doc.get("sync") == {}:
         doc.pop("sync")
-    if "review" not in origin:
-        doc.pop("review", None)
+    for key in ("review", "duplicates"):
+        if key not in origin:
+            doc.pop(key, None)
     if "gateway" not in origin:
         doc["gateway"] = "shared" if sources.hosted else "private"
         origin["gateway"] = FROM_HOSTED if sources.hosted else FROM_DEFAULT
@@ -301,6 +303,7 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
                             "not recognized as hosted (your own, as far as Who's Listening can tell)"),
         line("gateway", "gateway", d.get("gateway")),
         line("review", "review", d.get("review") or "auto"),
+        line("near-duplicates", "duplicates", d.get("duplicates") or "skip"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
     ]
     if sync.get("repo"):
