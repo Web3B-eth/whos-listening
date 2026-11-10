@@ -832,30 +832,29 @@ def test_an_anonymized_venice_model_gets_shared_memories_only(plugin, provider, 
     assert "canoe" in provider.prefetch("plans", session_id="sess-1")          # trusted by the user
 
 
-def test_the_duplicate_judge_sees_only_what_its_tier_may(plugin, provider, tmp_path, monkeypatch):
+def test_the_duplicate_judge_runs_only_where_it_may_see_every_memory(plugin, provider, tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(plugin, "_venice_key", lambda: "k")
     monkeypatch.setattr(plugin.wl_judge, "find", lambda store, text, tiers, model, key, **kw: seen.append((model, tiers)))
-    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "clef"})
-    j = provider._duplicate_judge()
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
+    j = provider._duplicate_judge()                                                            # Clef by default
     j("Allergic to peanuts", "private")
     j("Likes jazz", "shared")
-    assert seen == [("clef-api", ("private", "shared")), ("clef-api", ("shared",))]          # Clef: private
+    assert seen == [("clef-api", ("private", "shared")), ("clef-api", ("shared",))]          # as the word check
     seen.clear()
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev"})
-    j = provider._duplicate_judge()
-    assert j("Allergic to peanuts", "private") is None and seen == []                          # Jev: anonymized
-    j("Likes jazz", "shared")
-    assert seen == [("jev-latest", ("shared",))]
-    seen.clear()
+    assert provider._duplicate_judge() is None                                                 # Jev: anonymized
+    assert "Jev is anonymized" in plugin._judge_blocker(plugin._load_settings(tmp_path)[0], tmp_path)
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev", "venice_anonymized": "private"})
-    plugin_judge = provider._duplicate_judge()
-    plugin_judge("Allergic to peanuts", "private")
+    provider._duplicate_judge()("Allergic to peanuts", "private")
     assert seen == [("jev-latest", ("private", "shared"))]                                     # trusted
     monkeypatch.setattr(plugin, "_venice_key", lambda: "")
-    assert provider._duplicate_judge() is None                                                 # no key: off
+    assert provider._duplicate_judge() is None                                                 # no key: not running
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
-    assert provider._duplicate_judge() is None                                                 # off by default
+    assert provider._duplicate_judge() is None
+    assert "not running: there's no Venice key in Hermes" in plugin._settings_command(tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "off"})
+    assert provider._duplicate_judge() is None and "not running" not in plugin._settings_command(tmp_path)
 
 
 def test_the_venice_key_is_read_through_hermes_secrets_by_name(plugin, monkeypatch):
@@ -867,7 +866,7 @@ def test_the_venice_key_is_read_through_hermes_secrets_by_name(plugin, monkeypat
     assert asked[:2] == ["VENICE_API_KEY", "HERMES_CUSTOM_API_VENICE_AI_API_KEY"]
 
 
-def test_the_default_model_judge_sees_private_memories_only_on_an_all_private_path(plugin, provider, monkeypatch):
+def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provider, tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(plugin.wl_judge, "find_with_model",
                         lambda store, text, tiers, ask: seen.append(tiers))
@@ -878,23 +877,17 @@ def test_the_default_model_judge_sees_private_memories_only_on_an_all_private_pa
     j("Allergic to peanuts", "private")
     j("Likes jazz", "shared")
     assert seen == [("private", "shared"), ("shared",)]                         # Grok on Venice: Private
-    seen.clear()
-    for config, settings in [
+    for config, why in [
         ({"model": venice, "fallback_providers": [{"provider": "openrouter", "model": "x",
-                                                   "base_url": "https://openrouter.ai/api/v1"}]}, {}),
-        ({"model": dict(venice, default="claude-opus-5-5")}, {}),               # anonymized on Venice
-        ({"model": {"provider": "auto", "default": "grok-4-5"}}, {}),
-        ({"model": venice}, {"gateway": "shared"}),                             # a Shared gateway
+                                                   "base_url": "https://openrouter.ai/api/v1"}]},
+         "a fallback provider is shared"),
+        ({"model": dict(venice, default="claude-opus-5-5")}, "(claude-opus-5-5) is shared"),   # anonymized
+        ({"model": {"provider": "auto", "default": "grok-4-5"}}, "is shared"),
+        ({}, "no default model"),
     ]:
         monkeypatch.setattr(plugin, "_config", lambda c=config: c)
-        monkeypatch.setattr(plugin, "_hermes_settings", lambda s=settings: dict(s, duplicate_judge="model"))
-        j = provider._duplicate_judge()
-        assert j("Allergic to peanuts", "private") is None and seen == []      # never sent
-        j("Likes jazz", "shared")
-        assert seen == [("shared",)]
-        seen.clear()
-    monkeypatch.setattr(plugin, "_config", lambda: {})
-    assert provider._duplicate_judge() is None                                  # no default model: off
+        assert provider._duplicate_judge() is None, config                      # not running at all
+        assert why in plugin._settings_command(tmp_path), config
 
 
 def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin, provider, monkeypatch):

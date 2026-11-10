@@ -36,9 +36,9 @@ config_schema:
     description: "What happens when the assistant saves something that rewords a memory you already have, such as \"Bought a Santa Cruz Hightower\" after \"Owns a Santa Cruz Hightower\". skip (the default): nothing new is saved. keep: it is saved anyway. Checked on this gateway, by comparing words; nothing is sent anywhere."
   duplicate_judge:
     type: str
-    choices: [default, off, clef, jev, model]
+    choices: [default, clef, jev, model, off]
     label: "Duplicate judge"
-    description: "A second check for near-duplicates, by a model. It catches rewordings the word check misses, such as \"Allergic to peanuts\" after \"Has a peanut allergy\". clef: Clef, a decision model that runs privately on Venice (uses the Venice key Hermes already has), so it can check Private memories too. jev: Jev, a decision model that is anonymized on Venice (TypeSafe sees the text), so it only checks Shared memories unless you trust anonymized Venice models. model: your default model in Hermes; it checks Private memories only if that model and every fallback are Private, and takes seconds instead of under one. off (the default): words only. Each check sends the new memory and up to 20 others."
+    description: "A second check for near-duplicates, by a model. It catches rewordings the word check misses, such as \"Allergic to peanuts\" after \"Has a peanut allergy\". clef (the default): Clef, a decision model that runs privately on Venice, using the Venice key Hermes already has; without a key, only the word check runs. jev: Jev, a decision model that is anonymized on Venice (TypeSafe sees the text); it runs only if you treat anonymized Venice models as private. model: your default model in Hermes; it runs only if that model and every fallback are private, and takes seconds instead of under one. off: words only, nothing sent. Each check sends the new memory and up to 20 others, private ones included. /memories settings says if the judge can't run."
   venice_anonymized:
     type: str
     choices: [default, shared, private]

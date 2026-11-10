@@ -117,10 +117,14 @@ def test_the_tool_uses_the_judge_when_words_dont_match(store):
 def test_the_setting(tmp_path):
     f = tmp_path / "settings.json"
     s = ws.load(ws.Sources(f, {}, False))
-    assert ws.route_settings(s).duplicate_judge == "off" and "duplicate judge: off  (default)" in ws.describe(s)
-    s = ws.load(ws.Sources(f, {"duplicate_judge": "clef"}, False))
+    assert ws.route_settings(s).duplicate_judge == "clef" and "duplicate judge: clef  (default)" in ws.describe(s)
+    assert "duplicate judge: clef  (default), not running: there's no Venice key in Hermes" in ws.describe(
+        s, judge_off="there's no Venice key in Hermes")
+    s = ws.load(ws.Sources(f, {"duplicate_judge": "default"}, False))      # Desktop's "not set"
     assert ws.route_settings(s).duplicate_judge == "clef"
-    f.write_text('{"duplicate_judge": "gpt"}')
+    s = ws.load(ws.Sources(f, {"duplicate_judge": "off"}, False))
+    assert ws.route_settings(s).duplicate_judge == "off" and "duplicate judge: off  (Hermes settings)" in ws.describe(s)
+    f.write_text('{"duplicate_judge": "gpt"}')                          # a typo sends nothing
     assert ws.route_settings(ws.load(ws.Sources(f, {}, False))).duplicate_judge == "off"
 
 

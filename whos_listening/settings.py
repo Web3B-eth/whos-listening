@@ -292,8 +292,9 @@ def read_snapshot(data_dir: Path) -> Optional[tuple[dict, str]]:
     return dict(data["settings"]), _why_hosted(data.get("hosted"))
 
 
-def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
-    """The settings in effect, one per line, each with where it came from."""
+def describe(s: Settings, *, token_set: Optional[bool] = None, judge_off: str = "") -> str:
+    """The settings in effect, one per line, each with where it came from. ``judge_off``: why the
+    duplicate judge can't run on this gateway ("" if it can or is off)."""
     d, o = s.doc, s.origin
 
     def line(label: str, key: str, value: Any) -> str:
@@ -306,7 +307,8 @@ def describe(s: Settings, *, token_set: Optional[bool] = None) -> str:
         line("gateway", "gateway", d.get("gateway")),
         line("review", "review", d.get("review") or "auto"),
         line("near-duplicates", "duplicates", d.get("duplicates") or "skip"),
-        line("duplicate judge", "duplicate_judge", d.get("duplicate_judge") or "off"),
+        line("duplicate judge", "duplicate_judge", d.get("duplicate_judge") or "clef")
+        + (f", not running: {judge_off}" if judge_off else ""),
         line("venice anonymized models", "venice_anonymized", d.get("venice_anonymized") or "shared"),
         line("sync", "sync.repo", repo_name(sync.get("repo")) or "off"),
     ]

@@ -23,7 +23,7 @@ from . import sync as wl_sync
 from . import judge as wl_judge
 from . import venice
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, gateway_verdict, layered_verdict,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
     private_storage_refusal, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
@@ -289,62 +289,35 @@ class WhosListeningProvider(MemoryProvider):
     # -- Auto-review ---------------------------------------------------------
 
     def _duplicate_judge(self) -> Optional[Any]:
-        """The second near-duplicate check, if the user turned it on. It only sees memories its own
-        tier may: Clef (private on Venice) any; Jev (anonymized) Shared ones only, unless the user
-        trusts anonymized Venice models; Hermes' default model as _default_model_judge says."""
+        """The second near-duplicate check (judge.py), or None when it's off or can't run here.
+
+        It runs only on a Private judge, which may see every memory: a judge that saw only the
+        Shared ones would skip most saves (they're Private by default) and miss what matters
+        most, a Shared route rewording a Private memory it can't see. See _judge_blocker."""
         home = self._dir.parent if self._dir is not None else None
         settings, _ = _load_settings(home)
-        if settings is None or self._store is None:
+        if settings is None or self._store is None or settings.duplicate_judge == "off":
             return None
-        if settings.duplicate_judge == "model":
-            return self._default_model_judge(settings, home)
-        if settings.duplicate_judge not in wl_judge.MODELS:
-            return None
-        model = wl_judge.MODELS[settings.duplicate_judge]
-        _venice_list(home)
-        judge_tier = classify(Route("venice", model, VENICE_API), settings).tier
-        key = _venice_key()
-        if not key:
+        if _judge_blocker(settings, home):
             return None
         store = self._store
 
-        def run(text: str, tier: str) -> Optional[Memory]:
-            tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
-            if judge_tier != PRIVATE:
-                if tier == PRIVATE:
-                    return None          # a Private memory never goes to a Shared judge
-                tiers = (SHARED,)
-            return wl_judge.find(store, text, tiers, model, key)
+        def tiers(tier: str) -> tuple[str, ...]:
+            return (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)     # as in duplicates.find
 
-        return run
+        if settings.duplicate_judge == "model":
+            route = default_route_from_config(_config())
+            if route is None:
+                return None
+            expected = route.model
 
-    def _default_model_judge(self, settings: RouteSettings, home: Optional[Path]) -> Optional[Any]:
-        """Hermes' default model (config.yaml) as the duplicate judge: one side call, like
-        Auto-review. Private memories go to it only if this gateway, that route and every
-        fallback are Private; otherwise it checks Shared memories only."""
-        config = _config()
-        route = default_route_from_config(config)
-        if route is None or not route.model:
-            return None
-        _venice_list(home)
-        private = (gateway_verdict(settings) is None
-                   and classify(route, settings).tier == PRIVATE
-                   and side_call_routes_private(config, settings).tier == PRIVATE)
-        store, expected = self._store, route.model
+            def ask_model(prompt: str) -> str:
+                return _ask_chat_model(prompt, expected, max_tokens=wl_judge.MODEL_MAX_TOKENS,
+                                       timeout=wl_judge.MODEL_TIMEOUT, purpose="whos-listening duplicate check")
 
-        def ask_model(prompt: str) -> str:
-            return _ask_chat_model(prompt, expected, max_tokens=wl_judge.MODEL_MAX_TOKENS,
-                                   timeout=wl_judge.MODEL_TIMEOUT, purpose="whos-listening duplicate check")
-
-        def run(text: str, tier: str) -> Optional[Memory]:
-            tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
-            if not private:
-                if tier == PRIVATE:
-                    return None          # a Private memory never goes to a Shared side call
-                tiers = (SHARED,)
-            return wl_judge.find_with_model(store, text, tiers, ask_model)
-
-        return run
+            return lambda text, tier: wl_judge.find_with_model(store, text, tiers(tier), ask_model)
+        model, key = wl_judge.MODELS[settings.duplicate_judge], _venice_key()
+        return lambda text, tier: wl_judge.find(store, text, tiers(tier), model, key)
 
     def _duplicates_mode(self) -> str:
         settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)
@@ -545,9 +518,38 @@ def _with_setup_notes(text: str) -> str:
     return text + ("\n\n" + "\n".join(notes) if notes else "")
 
 
+def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
+    """Why the duplicate judge the user picked can't run on this gateway ("" if it can, or is off).
+    Clef and Jev need Hermes' Venice key, and Jev counts only if anonymized Venice models are
+    trusted; ``model`` needs a default model in config.yaml that is Private, with every fallback
+    Private (as for Auto-review), and a reply from that same model."""
+    choice = settings.duplicate_judge
+    if choice == "off":
+        return ""
+    _venice_list(home)
+    if choice == "model":
+        config = _config()
+        route = default_route_from_config(config)
+        if route is None or not route.model:
+            return "there's no default model in Hermes' config"
+        if classify(route, settings).tier != PRIVATE:
+            return f"your default model ({route.model}) is shared, so it may not see your private memories"
+        side = side_call_routes_private(config, settings)
+        if side.tier != PRIVATE:
+            return side.reason
+        return ""
+    if classify(Route("venice", wl_judge.MODELS[choice], VENICE_API), settings).tier != PRIVATE:
+        return "Jev is anonymized on Venice; set venice_anonymized to private to trust it"
+    if not _venice_key():
+        return "there's no Venice key in Hermes"
+    return ""
+
+
 def _settings_command(home: Path) -> str:
     try:
-        return wl_settings.describe(_settings(home), token_set=bool(_sync_token()))
+        s = _settings(home)
+        return wl_settings.describe(s, token_set=bool(_sync_token()),
+                                    judge_off=_judge_blocker(wl_settings.route_settings(s), home))
     except Exception as exc:
         why = str(exc) if isinstance(exc, wl_settings.SettingsError) else "The settings can't be read"
         return f"{why}. Until that's fixed, every route counts as shared and no private memory is saved."
