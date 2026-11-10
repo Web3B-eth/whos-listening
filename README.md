@@ -8,7 +8,11 @@ Every memory is **Private** or **Shared**. Three things see a memory when it's u
 
 ## Install
 
-Needs Hermes Agent 0.23.0 or later. Run these where your Hermes backend runs (this computer, or the server Desktop connects to):
+Needs Hermes Agent 0.23.0 or later. You can install from a terminal or from Hermes Desktop; on Hermes Cloud, where you have no terminal, use Desktop.
+
+### From a terminal
+
+Run these where your Hermes backend runs (this computer, or the server Desktop connects to):
 
 ```bash
 hermes plugins install Web3B-eth/whos-listening --enable
@@ -36,6 +40,17 @@ Then restart the gateway so it loads the plugin (quit and reopen Desktop, or run
 - `/memories` in a chat answers "Nothing remembered yet."
 
 No setup is needed after that. To change what counts as Private, see [Settings](#settings); you can change them in Desktop under **Settings → Plugins → whos-listening**. On a hosted Hermes such as Hermes Cloud the gateway counts as Shared until you say otherwise, so it keeps no Private memories.
+
+### From Hermes Desktop (and Hermes Cloud)
+
+Pick the gateway in Desktop first: the plugin is installed on whichever gateway Desktop is connected to.
+
+1. **Install.** In **Capabilities → Plugins**, choose **Install from Git**, enter `https://github.com/Web3B-eth/whos-listening` and install. To pin an exact version, open **Advanced** and enter a 40-character commit SHA.
+2. **Make it the memory provider.** In **Settings → Memory & Context**, set **Memory Provider** to whos-listening. Desktop's install doesn't do this for you (the terminal's `--enable` does), and a plugin can't change this setting itself. Until you do, `/memories` works but nothing is recalled in chats.
+3. **Turn off Hermes' built-in memory.** On the same page, turn off **Persistent Memory** and **User Profile**, so facts don't also land in `MEMORY.md` and `USER.md`, which go to every model whatever their tier.
+4. **Check it.** Type `/memories settings` in a chat. It lists the settings in effect; any note under them says what is still missing. On Hermes Cloud the first line should say the machine is hosted, so the gateway counts as Shared.
+
+Settings, including [sync](#sync-between-gateways), are under **Settings → Plugins → whos-listening**.
 
 To stop using it, run `hermes memory off` (and `hermes plugins remove whos-listening` to delete the plugin). Your memories stay in `$HERMES_HOME/whos-listening/` until you delete that folder.
 
@@ -85,6 +100,8 @@ Type these in any Hermes chat. They need the plugin enabled with `hermes plugins
 | `/memories sync` | Sync Shared memories with your other gateways now (when sync is set up). |
 | `/memories sync status` | How sync is set up, when it last ran and what it did. |
 | `/memories settings` | The settings in effect, and where each one comes from (Desktop, `settings.json` or the default). |
+
+`/memories`, `/memories pending` and `/memories settings` end with a note when whos-listening isn't Hermes' memory provider, or Hermes' built-in memory is still on, saying where to fix it. Every `/memories` command first syncs with your other gateways if a sync is due (at most once per `interval`), waiting up to a few seconds, so what you see is current.
 
 Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). In a chat app such as Telegram, whose servers would see the reply, it shows as "(private)", and a waiting Private memory can only be approved where you can read it first.
 
@@ -153,7 +170,7 @@ Each gateway (the machine running Hermes) keeps its own memories. If you run mor
 
 **Undo:** `/memories undo` undoes your own changes only. If a change from another gateway reached a memory after your change, undo says so instead of replaying yours over it.
 
-**When:** when the gateway starts, at the start of a turn (at most once per `interval`), right after a Shared memory changes, and whenever you type `/memories sync`. Syncs run in the background, so a chat never waits for one.
+**When:** at the first chat turn after the gateway starts and then at the start of a turn at most once per `interval`, before any `/memories` command when one is due, right after a Shared memory changes, and whenever you type `/memories sync`. Syncs at a turn run in the background, so a chat never waits for one; a `/memories` command waits a few seconds at most. If a background sync has just brought the changes in, `/memories sync` says so ("already up to date", and what last changed). Sync at chat turns needs whos-listening to be Hermes' memory provider.
 
 **Set it up:**
 

@@ -743,3 +743,59 @@ def test_a_broken_hermes_config_fails_safe(plugin, provider, monkeypatch, tmp_pa
     assert "can't be read" in plugin._memories_command("settings", platform="cli")
     with pytest.raises(ws.SettingsError):           # and the command line's copy says so too
         ws.read_snapshot(tmp_path / "whos-listening")
+
+
+# -- setup notes, sync before a command, an honest sync report ----------------------------------
+
+def _memory_config(plugin, monkeypatch, **memory):
+    monkeypatch.setattr(plugin, "_config", lambda: {"memory": memory})
+
+
+def test_memories_says_when_whos_listening_isnt_the_memory_provider(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    _memory_config(plugin, monkeypatch, provider="", memory_enabled=False, user_profile_enabled=False)
+    out = plugin._memories_command("", platform="desktop")
+    assert plugin.SETUP_NOT_PROVIDER in out and plugin.SETUP_BUILT_IN_ON not in out
+    assert plugin.SETUP_NOT_PROVIDER in plugin._memories_command("settings", platform="desktop")
+    assert plugin.SETUP_NOT_PROVIDER in plugin._memories_command("pending", platform="desktop")
+    assert plugin.SETUP_NOT_PROVIDER not in plugin._memories_command("add shared Likes jazz", platform="desktop")
+
+
+def test_memories_says_when_hermes_built_in_memory_is_on(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    _memory_config(plugin, monkeypatch, provider="whos-listening")            # Hermes' defaults: both on
+    out = plugin._memories_command("", platform="desktop")
+    assert plugin.SETUP_BUILT_IN_ON in out and plugin.SETUP_NOT_PROVIDER not in out
+    _memory_config(plugin, monkeypatch, provider="whos-listening", memory_enabled=True, user_profile_enabled=False)
+    assert plugin.SETUP_BUILT_IN_ON in plugin._memories_command("", platform="desktop")
+    _memory_config(plugin, monkeypatch, provider="whos-listening", memory_enabled="false", user_profile_enabled=False)
+    out = plugin._memories_command("", platform="desktop")
+    assert "Note:" not in out                                                   # all set up
+
+
+def test_no_setup_notes_when_hermes_config_cant_be_read(plugin, provider, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_config", lambda: None)
+    assert "Note:" not in plugin._memories_command("", platform="desktop")
+
+
+def test_a_memories_command_syncs_first_when_one_is_due(plugin, provider, tmp_path, monkeypatch):
+    """A fresh gateway: the first /memories shows what the other gateways have, without a chat turn."""
+    from test_sync import FakeFile
+    from whos_listening import sync as wsync
+    file = _sync_setup(plugin, tmp_path, monkeypatch)
+    other = SQLiteStoreFor(tmp_path / "other.sqlite")
+    other.add("Likes jazz", "shared", plugin.Provenance())
+    wsync.sync_once(other, file, "cloud")
+    other.close()
+    monkeypatch.setattr(plugin, "SYNC_STATE", {})                             # nothing synced yet here
+    out = plugin._memories_command("", platform="desktop")
+    assert "Likes jazz" in out
+    out = plugin._memories_command("sync", platform="desktop")                # already brought in
+    assert "already up to date" in out and "1 arrived" in out
+    assert "Last change:" in plugin._memories_command("sync status", platform="desktop")
+
+
+def SQLiteStoreFor(path):
+    from whos_listening.store import SQLiteStore
+    return SQLiteStore(path)
