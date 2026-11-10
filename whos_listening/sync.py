@@ -55,6 +55,16 @@ ATTEMPTS = 4                                   # reads and merges after a write 
 _UID = re.compile(r"^[0-9a-f]{32}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# A GitHub link pasted instead of owner/name: https://github.com/o/n, github.com/o/n.git, git@github.com:o/n.git
+_REPO_LINK = re.compile(r"^(?:(?:https?://)?(?:www\.)?github\.com/|git@github\.com:)([^/\s]+/[^/\s]+?)(?:\.git)?/?$",
+                        re.IGNORECASE)
+
+
+def repo_name(text: str) -> str:
+    """``owner/name`` from what the user typed: owner/name itself, or a github.com link to it."""
+    text = str(text or "").strip()
+    m = _REPO_LINK.match(text)
+    return m.group(1) if m else text
 _NAME = re.compile(r"[^A-Za-z0-9 _.-]")
 
 
@@ -90,7 +100,7 @@ class SyncSettings:
             return cls()
         if not isinstance(data, Mapping):
             return cls(error='"sync" must be an object')
-        repo = str(data.get("repo") or "").strip()
+        repo = repo_name(data.get("repo"))
         path = str(data.get("path") or DEFAULT_PATH).strip().strip("/")
         branch = str(data.get("branch") or "").strip()
         name = _NAME.sub("", str(data.get("name") or "")).strip()[:40]
@@ -103,7 +113,7 @@ class SyncSettings:
         if not repo:
             return cls()
         if not _REPO.match(repo):
-            return cls(error='"sync.repo" must look like "owner/name"')
+            return cls(error='"sync.repo" must look like "owner/name", for example "you/whos-listening-sync"')
         if not path or ".." in path.split("/") or "\\" in path:
             return cls(error='"sync.path" must be a plain path inside the repository')
         if branch and not re.match(r"^[A-Za-z0-9_./-]+$", branch):
@@ -490,7 +500,7 @@ def status(store: Store, settings: SyncSettings, has_token: bool) -> str:
         return f"Sync is off: {settings.error}."
     if not settings.enabled:
         return ("Sync is off. To turn it on, set the sync repository and token in whos-listening's settings "
-                'in Hermes Desktop (Capabilities → Plugins), or add "sync": {"repo": "owner/name"} to '
+                'in Hermes Desktop (Settings → Plugins), or add "sync": {"repo": "owner/name"} to '
                 f"settings.json and set {TOKEN_ENV} (see the README).")
     lines = [f"Sync with {settings.repo} ({settings.path}) as {gateway_name(store, settings)}."]
     if not has_token:

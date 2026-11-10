@@ -35,7 +35,7 @@ Then restart the gateway so it loads the plugin (quit and reopen Desktop, or run
 - `hermes memory status` shows `whos-listening ← active`, with built-in memory disabled.
 - `/memories` in a chat answers "Nothing remembered yet."
 
-No setup is needed after that. To change what counts as Private, see [Settings](#settings); you can change them in Desktop under **Capabilities → Plugins → whos-listening**. On a hosted Hermes such as Hermes Cloud the gateway counts as Shared until you say otherwise, so it keeps no Private memories.
+No setup is needed after that. To change what counts as Private, see [Settings](#settings); you can change them in Desktop under **Settings → Plugins → whos-listening**. On a hosted Hermes such as Hermes Cloud the gateway counts as Shared until you say otherwise, so it keeps no Private memories.
 
 To stop using it, run `hermes memory off` (and `hermes plugins remove whos-listening` to delete the plugin). Your memories stay in `$HERMES_HOME/whos-listening/` until you delete that folder.
 
@@ -108,7 +108,7 @@ Only the guard records routes. So if the guard isn't running (Hermes only logs a
 
 Optional. You can set them in two places, and a setting made in Hermes wins:
 
-- **In Hermes Desktop**, under **Capabilities → Plugins → whos-listening**, for whichever gateway Desktop is connected to. On Hermes Cloud this is the only place you can reach. Hermes keeps these in its own config (`plugins.entries.whos-listening.settings`) and the sync token in its secrets. A menu left on `default`, an empty text field, `[]`, `{}` or an interval of `0` means "not set here": `settings.json` applies, or else the built-in default. Lists and `routes` combine both places, since the form doesn't show what `settings.json` holds; where the two disagree on a route, Shared wins. The form names the sync settings `sync_repo`, `sync_name` and `sync_interval`. `path`, `branch` and `api_url` are only in the file, and they apply only to the file's repository: once you set a sync repository in Desktop, the file's sync settings are ignored.
+- **In Hermes Desktop**, under **Settings → Plugins → whos-listening**, for whichever gateway Desktop is connected to. On Hermes Cloud this is the only place you can reach. Hermes keeps these in its own config (`plugins.entries.whos-listening.settings`) and the sync token in its secrets. A menu left on `default`, an empty text field, `[]`, `{}` or an interval of `0` means "not set here": `settings.json` applies, or else the built-in default. Lists and `routes` combine both places, since the form doesn't show what `settings.json` holds; where the two disagree on a route, Shared wins. The form names the sync settings `sync_repo`, `sync_name` and `sync_interval`. `path`, `branch` and `api_url` are only in the file, and they apply only to the file's repository: once you set a sync repository in Desktop, the file's sync settings are ignored.
 - **In `$HERMES_HOME/whos-listening/settings.json`:**
 
 ```json
@@ -133,7 +133,7 @@ Optional. You can set them in two places, and a setting made in Hermes wins:
 - `private_platforms` adds Hermes platforms that may see Private memories, for example `signal` if you trust its end-to-end encryption (messages are decrypted only on the gateway and your phone). `shared_platforms` wins over every default, so you can make `desktop` Shared too.
 - `gateway` is `"private"` or `"shared"`, for the machine this Hermes runs on. Any other value counts as Shared. By default it is Private, except on a hosted Hermes: one that gets its config from a remote service (`HERMES_CONFIG_BACKEND=remote`), as Hermes Cloud does. That machine is someone else's, so it counts as Shared unless you set `gateway` to `"private"` because you trust the host. whos-listening can't tell your laptop from a server you rent, so for any other machine only you can say whether you trust it.
 - `review` is `"ask"` (the default: held saves wait for you) or `"auto"` (Auto-review, above).
-- `sync` turns on [sync between gateways](#sync-between-gateways): `repo` (`owner/name`, required), and optionally `path` (default `whos-listening/shared.json`), `branch` (default: the repository's default branch), `name` (how this gateway appears in the file; one is made up if you leave it out) and `interval` (seconds between automatic syncs, default 60, at least 30).
+- `sync` turns on [sync between gateways](#sync-between-gateways): `repo` (`owner/name`, such as `you/whos-listening-sync`; a pasted `https://github.com/...` link works too; required), and optionally `path` (default `whos-listening/shared.json`), `branch` (default: the repository's default branch), `name` (how this gateway appears in the file; one is made up if you leave it out) and `interval` (seconds between automatic syncs, default 60, at least 30).
 - If the settings can't be read (a broken `settings.json`, a value of the wrong shape such as a list given as text, Hermes' `config.yaml` itself, or the command line's copy), every route counts as Shared, no Private memory is saved, sync is off, and every held save waits for you until it is fixed. `/memories settings` says what is wrong.
 - `/memories settings` lists each setting in effect and where it comes from. The command line (`python -m whos_listening.cli settings`) can't ask Hermes, so it uses a copy of the Desktop settings that the gateway keeps in `whos-listening/hermes-settings.json`.
 
@@ -159,7 +159,7 @@ Each gateway (the machine running Hermes) keeps its own memories. If you run mor
 
 1. Create a **private** GitHub repository just for this, for example `you/whos-listening-sync`. It can be empty.
 2. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with access to **only that repository** and the **Contents: Read and write** permission.
-3. On each gateway, give Hermes the token: in Desktop, the **Sync token** field of whos-listening's settings (Capabilities → Plugins), or `WHOS_LISTENING_SYNC_TOKEN` in that gateway's `.env`. whos-listening reads it only through Hermes' secrets.
+3. On each gateway, give Hermes the token: in Desktop, the **Sync token** field of whos-listening's settings (Settings → Plugins), or `WHOS_LISTENING_SYNC_TOKEN` in that gateway's `.env`. whos-listening reads it only through Hermes' secrets.
 4. On each gateway, set the repository and a name for that gateway: in Desktop, **Sync repository** (`you/whos-listening-sync`) and **Gateway name for sync** (`laptop`, `cloud`, …), or `"sync": {"repo": "you/whos-listening-sync", "name": "laptop"}` in `settings.json`. Use a different name per gateway.
 5. Type `/memories sync` on each gateway, then `/memories sync status` to check.
 

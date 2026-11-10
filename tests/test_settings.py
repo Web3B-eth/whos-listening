@@ -201,3 +201,8 @@ def test_text_where_a_list_or_routes_belongs_fails_safe(tmp_path):
             ws.load(src(tmp_path, file=file))
     s = ws.load(src(tmp_path, file={"routes": "", "private_hosts": ""}))     # empty: not set
     assert ws.route_settings(s).routes == {} and ws.route_settings(s).private_hosts == ()
+
+
+def test_describe_shows_a_pasted_link_as_owner_and_name(tmp_path):
+    s = ws.load(src(tmp_path, hermes={"sync_repo": "https://github.com/me/notes.git"}))
+    assert "sync: me/notes  (Hermes settings)" in ws.describe(s) and ws.sync_settings(s).repo == "me/notes"
