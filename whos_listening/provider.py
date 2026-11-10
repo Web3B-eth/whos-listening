@@ -20,9 +20,10 @@ from agent.memory_provider import MemoryProvider
 from . import autoreview, commands, guard, recall, review, tools
 from . import settings as wl_settings
 from . import sync as wl_sync
+from . import judge as wl_judge
 from . import venice
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, default_route_from_config, layered_verdict,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
     private_storage_refusal, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
@@ -279,12 +280,39 @@ class WhosListeningProvider(MemoryProvider):
         out = tools.handle(self._store, tool_name, args, route_tier=verdict.tier, provenance=provenance,
                            private_refused=_private_refused(self._dir.parent if self._dir else None),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
-                           on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode())
+                           on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
+                           judge=self._duplicate_judge())
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
         return out
 
     # -- Auto-review ---------------------------------------------------------
+
+    def _duplicate_judge(self) -> Optional[Any]:
+        """The decision-model check for near-duplicates, if the user turned it on and a Venice key
+        is there. It only sees memories its own tier may: Clef (private on Venice) any; Jev
+        (anonymized) Shared ones only, unless the user trusts anonymized Venice models."""
+        home = self._dir.parent if self._dir is not None else None
+        settings, _ = _load_settings(home)
+        if settings is None or settings.duplicate_judge not in wl_judge.MODELS or self._store is None:
+            return None
+        model = wl_judge.MODELS[settings.duplicate_judge]
+        _venice_list(home)
+        judge_tier = classify(Route("venice", model, VENICE_API), settings).tier
+        key = _venice_key()
+        if not key:
+            return None
+        store = self._store
+
+        def run(text: str, tier: str) -> Optional[Memory]:
+            tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
+            if judge_tier != PRIVATE:
+                if tier == PRIVATE:
+                    return None          # a Private memory never goes to a Shared judge
+                tiers = (SHARED,)
+            return wl_judge.find(store, text, tiers, model, key)
+
+        return run
 
     def _duplicates_mode(self) -> str:
         settings, _ = _load_settings(self._dir.parent if self._dir is not None else None)
@@ -689,6 +717,30 @@ def _sync_command(home: Path, sub: str) -> str:
 
 
 # -- the guard: the hard line ------------------------------------------------
+
+VENICE_API = "https://api.venice.ai/api/v1"
+
+
+def _venice_key() -> str:
+    """The Venice key Hermes already has, read through Hermes' secrets (never from a file): Hermes'
+    own Venice provider (VENICE_API_KEY), or a custom endpoint on a Venice host, whose key Hermes
+    keeps as HERMES_CUSTOM_<HOST>_API_KEY (hermes_cli.config.custom_endpoint_key_env)."""
+    try:
+        from agent.secret_scope import get_secret
+    except Exception:
+        return ""
+    names = ["VENICE_API_KEY"] + [
+        "HERMES_CUSTOM_" + re.sub(r"[^A-Z0-9]+", "_", ident.upper()).strip("_") + "_API_KEY"
+        for ident in ("api.venice.ai", "api.venice.ai:443", "venice.ai", "venice")]
+    for name in names:
+        try:
+            value = get_secret(name)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+    return ""
+
 
 def _venice_list(home: Optional[Path]) -> None:
     """Load Venice's model privacy list for this profile and refresh it in the background when it's

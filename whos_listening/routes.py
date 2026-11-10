@@ -171,6 +171,7 @@ class RouteSettings:
     review: str = "auto"     # "auto": Auto-review checks held saves. "ask": they wait for the user.
     gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
     duplicates: str = "skip"  # "skip": a near-duplicate save is skipped (duplicates.py). "keep": saved.
+    duplicate_judge: str = "off"   # a decision model as a second check (judge.py): "off", "clef" or "jev"
     venice_anonymized: str = SHARED   # how to treat Venice's anonymized models: "shared" or "private"
 
     @classmethod
@@ -186,6 +187,7 @@ class RouteSettings:
 
         review = str(data.get("review") or "auto").strip().lower()
         duplicates = str(data.get("duplicates") or "skip").strip().lower()
+        judge = str(data.get("duplicate_judge") or "off").strip().lower()
         gateway = str(data.get("gateway") or PRIVATE).strip().lower()
         venice_anon = str(data.get("venice_anonymized") or SHARED).strip().lower()
         return cls(routes=routes, private_hosts=hosts("private_hosts"), shared_hosts=hosts("shared_hosts"),
@@ -193,13 +195,14 @@ class RouteSettings:
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
                    review=review if review in ("ask", "auto") else "ask",     # a typo fails safe
                    duplicates=duplicates if duplicates in ("skip", "keep") else "skip",
+                   duplicate_judge=judge if judge in ("clef", "jev") else "off",
                    venice_anonymized=PRIVATE if venice_anon == PRIVATE else SHARED)
 
     def to_dict(self) -> dict:
         return {"routes": dict(self.routes), "private_hosts": list(self.private_hosts),
                 "shared_hosts": list(self.shared_hosts), "private_platforms": list(self.private_platforms),
                 "shared_platforms": list(self.shared_platforms), "gateway": self.gateway, "review": self.review,
-                "duplicates": self.duplicates,
+                "duplicates": self.duplicates, "duplicate_judge": self.duplicate_judge,
                 "venice_anonymized": self.venice_anonymized}
 
     @classmethod

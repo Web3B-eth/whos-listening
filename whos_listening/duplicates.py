@@ -45,6 +45,30 @@ when can if this that these those there here some any one try tries tried trying
 """.split())
 
 
+# Words that make a memory about someone other than the user. Two memories where one names such a
+# person and the other doesn't (or names another) are never repeats: "Brother Sam lives in Denver"
+# isn't "Lives in Denver".
+# Words for the same kind of person map to one name, so "daughter" and "kid" match.
+_PEOPLE_GROUPS = {
+    "child": "son sons daughter daughters kid kids child children baby",
+    "parent": "mom mum mother dad father parent parents",
+    "partner": "wife husband partner spouse girlfriend boyfriend fiance fiancee",
+    "brother": "brother brothers", "sister": "sister sisters", "friend": "friend friends",
+    "coworker": "boss manager coworker colleague", "neighbor": "neighbor neighbour", "roommate": "roommate",
+    "relative": "aunt uncle cousin niece nephew in-law family",
+    "grandparent": "grandma grandpa grandmother grandfather grandparent",
+}
+PEOPLE = {w: group for group, words in _PEOPLE_GROUPS.items() for w in words.split()}
+_PEOPLE_WORD = re.compile(r"[a-z]+(?:-[a-z]+)?")
+# "children's hospital" or "kids' table" describe a thing, not a person the memory is about.
+_NOT_A_PERSON = re.compile(r"\b(?:children|kids)['’]s?(?=\s)")
+
+
+def people_words(text: str) -> frozenset[str]:
+    text = _NOT_A_PERSON.sub(" ", str(text or "").lower())
+    return frozenset(PEOPLE[w] for w in _PEOPLE_WORD.findall(text) if w in PEOPLE)
+
+
 def _stem(word: str) -> str:
     """A light, predictable ending trim, so ride, rides, riding and rided all become "rid", and
     bike and bikes "bik". Only used to compare two memories, never shown."""
@@ -82,7 +106,7 @@ def repeats(new: str, existing: str) -> bool:
     content word of the new one already in the existing one (at least MIN_SHARED either way)."""
     wn, we = content_words(new), content_words(existing)
     shared = len(wn & we)
-    if shared < MIN_SHARED:
+    if shared < MIN_SHARED or people_words(new) != people_words(existing):
         return False
     return wn <= we or shared / len(wn | we) >= THRESHOLD
 

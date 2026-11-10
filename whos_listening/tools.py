@@ -98,7 +98,8 @@ def _shared_route_saved(tier: str, hold: Optional[str], reviewing: bool = False)
 def handle(store: Store, name: str, args: dict, *, route_tier: str,
            provenance: Callable[[], Provenance], outside_tool: str = "",
            on_outside_hold: Optional[Callable[[Memory], bool]] = None, private_refused: str = "",
-           duplicates: str = "skip") -> str:
+           duplicates: str = "skip",
+           judge: Optional[Callable[[str, str], Optional[Memory]]] = None) -> str:
     """Run one tool call. Always returns a JSON string; never raises.
 
     ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
@@ -107,7 +108,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     none): from then on saves and forgets wait for the user (see review.py).
     ``on_outside_hold`` is called with a save held only because of outside content (not by the
     rule screen); it returns True if Auto-review will check it.
-    ``duplicates``: "skip" (a save that rewords an existing memory saves nothing) or "keep"."""
+    ``duplicates``: "skip" (a save that rewords an existing memory saves nothing) or "keep".
+    ``judge``: a second near-duplicate check (judge.py), called as ``judge(text, tier)`` when the
+    word check finds nothing; it returns the memory the save repeats, or None."""
     args = args if isinstance(args, dict) else {}
     try:
         if name == REMEMBER:
@@ -121,6 +124,11 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 return _err(str(exc))
             if duplicates != "keep":
                 same = dupes.find(store, screened, tier)
+                if same is None and judge is not None:
+                    try:
+                        same = judge(screened, tier)
+                    except Exception:
+                        same = None
                 if same is not None:
                     if route_tier != PRIVATE and same.tier == PRIVATE:
                         # Don't tell a Shared route that a Private memory says this: answer exactly
