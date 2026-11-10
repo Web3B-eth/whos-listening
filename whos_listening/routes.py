@@ -171,7 +171,7 @@ class RouteSettings:
     review: str = "auto"     # "auto": Auto-review checks held saves. "ask": they wait for the user.
     gateway_hosted: bool = False   # gateway is Shared only by the hosted-Hermes default (for the reason)
     duplicates: str = "skip"  # "skip": a near-duplicate save is skipped (duplicates.py). "keep": saved.
-    duplicate_judge: str = "off"   # a decision model as a second check (judge.py): "off", "clef" or "jev"
+    duplicate_judge: str = "off"   # a second near-duplicate check (judge.py): "off", "clef", "jev" or "model"
     venice_anonymized: str = SHARED   # how to treat Venice's anonymized models: "shared" or "private"
 
     @classmethod
@@ -195,7 +195,7 @@ class RouteSettings:
                    gateway=PRIVATE if gateway == PRIVATE else SHARED,       # a typo fails safe
                    review=review if review in ("ask", "auto") else "ask",     # a typo fails safe
                    duplicates=duplicates if duplicates in ("skip", "keep") else "skip",
-                   duplicate_judge=judge if judge in ("clef", "jev") else "off",
+                   duplicate_judge=judge if judge in ("clef", "jev", "model") else "off",
                    venice_anonymized=PRIVATE if venice_anon == PRIVATE else SHARED)
 
     def to_dict(self) -> dict:

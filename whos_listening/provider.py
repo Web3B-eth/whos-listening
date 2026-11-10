@@ -23,7 +23,7 @@ from . import sync as wl_sync
 from . import judge as wl_judge
 from . import venice
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
+    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, gateway_verdict, layered_verdict,
     private_storage_refusal, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
@@ -289,12 +289,16 @@ class WhosListeningProvider(MemoryProvider):
     # -- Auto-review ---------------------------------------------------------
 
     def _duplicate_judge(self) -> Optional[Any]:
-        """The decision-model check for near-duplicates, if the user turned it on and a Venice key
-        is there. It only sees memories its own tier may: Clef (private on Venice) any; Jev
-        (anonymized) Shared ones only, unless the user trusts anonymized Venice models."""
+        """The second near-duplicate check, if the user turned it on. It only sees memories its own
+        tier may: Clef (private on Venice) any; Jev (anonymized) Shared ones only, unless the user
+        trusts anonymized Venice models; Hermes' default model as _default_model_judge says."""
         home = self._dir.parent if self._dir is not None else None
         settings, _ = _load_settings(home)
-        if settings is None or settings.duplicate_judge not in wl_judge.MODELS or self._store is None:
+        if settings is None or self._store is None:
+            return None
+        if settings.duplicate_judge == "model":
+            return self._default_model_judge(settings, home)
+        if settings.duplicate_judge not in wl_judge.MODELS:
             return None
         model = wl_judge.MODELS[settings.duplicate_judge]
         _venice_list(home)
@@ -311,6 +315,34 @@ class WhosListeningProvider(MemoryProvider):
                     return None          # a Private memory never goes to a Shared judge
                 tiers = (SHARED,)
             return wl_judge.find(store, text, tiers, model, key)
+
+        return run
+
+    def _default_model_judge(self, settings: RouteSettings, home: Optional[Path]) -> Optional[Any]:
+        """Hermes' default model (config.yaml) as the duplicate judge: one side call, like
+        Auto-review. Private memories go to it only if this gateway, that route and every
+        fallback are Private; otherwise it checks Shared memories only."""
+        config = _config()
+        route = default_route_from_config(config)
+        if route is None or not route.model:
+            return None
+        _venice_list(home)
+        private = (gateway_verdict(settings) is None
+                   and classify(route, settings).tier == PRIVATE
+                   and side_call_routes_private(config, settings).tier == PRIVATE)
+        store, expected = self._store, route.model
+
+        def ask_model(prompt: str) -> str:
+            return _ask_chat_model(prompt, expected, max_tokens=wl_judge.MODEL_MAX_TOKENS,
+                                   timeout=wl_judge.MODEL_TIMEOUT, purpose="whos-listening duplicate check")
+
+        def run(text: str, tier: str) -> Optional[Memory]:
+            tiers = (PRIVATE, SHARED) if tier == PRIVATE else (SHARED,)
+            if not private:
+                if tier == PRIVATE:
+                    return None          # a Private memory never goes to a Shared side call
+                tiers = (SHARED,)
+            return wl_judge.find_with_model(store, text, tiers, ask_model)
 
         return run
 
@@ -399,15 +431,16 @@ def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
     return _load_settings(Path(data_dir).parent)[0] if data_dir else None
 
 
-def _ask_chat_model(prompt: str, expected_model: str = "") -> str:
+def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 120,
+                    timeout: float = AUTO_REVIEW_TIMEOUT, purpose: str = "whos-listening auto-review") -> str:
     """One request on the chat's own model, through Hermes' PluginLlm (built directly: memory
     providers don't get ``ctx.llm``; see docs/spike.md). If Hermes answered from another model
     (its fallback), the answer doesn't count."""
     from agent.plugin_llm import PluginLlm
 
     result = PluginLlm(plugin_id=PROVIDER_NAME).complete(
-        messages=[{"role": "user", "content": prompt}], max_tokens=120, temperature=0,
-        timeout=AUTO_REVIEW_TIMEOUT, purpose="whos-listening auto-review")
+        messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0,
+        timeout=timeout, purpose=purpose)
     if expected_model and str(result.model or "") != expected_model:
         raise RuntimeError("the check ran on a different model")
     return result.text
