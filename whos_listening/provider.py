@@ -598,8 +598,9 @@ def _with_setup_notes(text: str) -> str:
 
 def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
     """Why the duplicate judge the user picked can't run on this gateway ("" if it can, or is off).
-    Clef and Jev need Hermes' Venice key, and Jev counts only if anonymized Venice models are
-    trusted; ``model`` needs a default model in config.yaml that is Private, with every fallback
+    Clef and Jev need Hermes' Venice key (checked first: it's the fix that matters most), and
+    each must count as Private: Jev only if anonymized Venice models are trusted, and neither
+    until Venice's model list has loaded on this gateway; ``model`` needs a default model in config.yaml that is Private, with every fallback
     Private (as for Auto-review), and a reply from that same model."""
     choice = settings.duplicate_judge
     if choice == "off":
@@ -610,16 +611,21 @@ def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
         route = default_route_from_config(config)
         if route is None or not route.model:
             return "there's no default model in Hermes' config"
-        if classify(route, settings).tier != PRIVATE:
-            return f"your default model ({route.model}) is shared, so it may not see your private memories"
+        verdict = classify(route, settings)
+        if verdict.tier != PRIVATE:
+            return f"your default model ({route.model}) may not see your private memories: {verdict.reason}"
         side = side_call_routes_private(config, settings)
         if side.tier != PRIVATE:
             return side.reason
         return ""          # it also needs the chat's own route to be Private: see _make_judge
-    if classify(Route("venice", wl_judge.MODELS[choice], VENICE_API), settings).tier != PRIVATE:
-        return "Jev is anonymized on Venice; set venice_anonymized to private to trust it"
     if not _venice_key():
         return "there's no Venice key in Hermes"
+    model = wl_judge.MODELS[choice]
+    verdict = classify(Route("venice", model, VENICE_API), settings)
+    if verdict.tier != PRIVATE:
+        if venice.privacy(model) == venice.ANONYMIZED:
+            return f"{choice.capitalize()} is anonymized on Venice; set venice_anonymized to private to trust it"
+        return verdict.reason          # e.g. Venice's model list hasn't loaded yet
     return ""
 
 

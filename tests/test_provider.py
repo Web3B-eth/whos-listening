@@ -884,8 +884,8 @@ def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provid
         ({"model": venice, "fallback_providers": [{"provider": "openrouter", "model": "x",
                                                    "base_url": "https://openrouter.ai/api/v1"}]},
          "a fallback provider is shared"),
-        ({"model": dict(venice, default="claude-opus-5-5")}, "(claude-opus-5-5) is shared"),   # anonymized
-        ({"model": {"provider": "auto", "default": "grok-4-5"}}, "is shared"),
+        ({"model": dict(venice, default="claude-opus-5-5")}, "(claude-opus-5-5) may not see your private memories"),
+        ({"model": {"provider": "auto", "default": "grok-4-5"}}, "may not see your private memories"),
         ({}, "no default model"),
     ]:
         monkeypatch.setattr(plugin, "_config", lambda c=config: c)
@@ -969,3 +969,27 @@ def test_slash_export_and_scan(plugin, provider, tmp_path, monkeypatch):
     plugin._SCANS[str(tmp_path.resolve())].join(10)
     out = plugin._memories_command("review", platform="cli")
     assert "These may say the same thing" in out and "Last scan" in out
+
+
+def test_the_judge_says_the_real_reason_it_isnt_running(plugin, provider, tmp_path, monkeypatch):
+    """A fresh gateway (Hermes Cloud after a restart) has no Venice list yet: the reason must name
+    the judge picked, and a missing key comes first."""
+    monkeypatch.setattr(plugin, "_venice_list", lambda home: None)          # nothing fetched in the test
+    plugin.venice._reset_for_tests(None)                                   # no list yet
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})            # Clef by default
+    monkeypatch.setattr(plugin, "_venice_key", lambda: "")
+    out = plugin._settings_command(tmp_path)
+    assert "clef  (default), not running: there's no Venice key in Hermes" in out and "Jev" not in out
+    monkeypatch.setattr(plugin, "_venice_key", lambda: "k")
+    out = plugin._settings_command(tmp_path)
+    assert "not running: Venice's model list hasn't loaded yet, so clef-api counts as shared" in out
+    assert provider._duplicate_judge() is None                             # and it doesn't run
+    venice = {"provider": "custom", "default": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
+    monkeypatch.setattr(plugin, "_config", lambda: {"model": venice})
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "model"})
+    assert "grok-4-5 counts as shared for now" in plugin._settings_command(tmp_path)
+    plugin.venice._reset_for_tests(dict(FAKE_VENICE))                      # the list arrives
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "jev"})
+    assert "not running: Jev is anonymized on Venice" in plugin._settings_command(tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
+    assert "not running" not in plugin._settings_command(tmp_path)         # Clef runs

@@ -67,6 +67,12 @@ def configure(data_dir: Path) -> None:
             pass
 
 
+def loaded() -> bool:
+    """Whether Venice's list is here yet (a fresh gateway fetches it in the background)."""
+    with _lock:
+        return bool(_state["models"])
+
+
 def privacy(model: str) -> Optional[str]:
     """"private", "anonymized", or None when the model isn't on the list or there is no list yet."""
     with _lock:
