@@ -492,6 +492,8 @@ def run(store: Store, settings: SyncSettings, token: str, *, transport=None) -> 
         raise SyncError(f"Sync stopped: {exc} Try again.") from None
     store.meta_set("sync.last_error", "")
     store.meta_set("sync.last_summary", result.summary())
+    if result.summary() != "nothing new":
+        store.meta_set("sync.last_change", f"{now_iso()} {result.summary()}")
     return result
 
 
@@ -508,6 +510,10 @@ def status(store: Store, settings: SyncSettings, has_token: bool) -> str:
     last_ok = store.meta_get("sync.last_ok")
     lines.append(f"Last sync: {last_ok or 'never'}" + (f", {store.meta_get('sync.last_summary')}"
                                                         if last_ok and store.meta_get("sync.last_summary") else ""))
+    last_change = store.meta_get("sync.last_change") or ""
+    if last_change and " " in last_change:
+        stamp, what = last_change.split(" ", 1)
+        lines.append(f"Last change: {stamp}, {what}")
     if store.meta_get("sync.last_error"):
         lines.append(f"Last error: {store.meta_get('sync.last_error')}")
     return "\n".join(lines)

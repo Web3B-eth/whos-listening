@@ -13,7 +13,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from agent.memory_provider import MemoryProvider
 
@@ -421,7 +421,8 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if words and words[0].lower() == "sync":
         return _sync_command(home, words[1].lower() if len(words) > 1 else "")
     if words and words[0].lower() == "settings":
-        return _settings_command(home)
+        return _with_setup_notes(_settings_command(home))
+    _sync_if_due(home)              # so what you see includes changes from your other gateways
     settings, _ = _load_settings(home)
     store_path = home / DATA_DIR / DB_FILE
     before = _stamp_at(store_path)
@@ -430,7 +431,49 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
                                 private_refused=_private_refused(home))
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)
+    if not words or words[0].lower() in ("list", "pending"):
+        out = _with_setup_notes(out)
     return out
+
+
+# -- is whos-listening set up in Hermes? ------------------------------------------
+
+SETUP_NOT_PROVIDER = (
+    "Note: whos-listening isn't Hermes' memory provider on this gateway, so no memory is recalled in "
+    "chats and sync only runs on /memories commands. Turn it on in Desktop: Settings → Memory & Context "
+    "→ Memory Provider → whos-listening (or run: hermes config set memory.provider whos-listening).")
+SETUP_BUILT_IN_ON = (
+    "Note: Hermes' built-in memory is on here. Its notes (MEMORY.md and USER.md) go to every model, "
+    "whatever the tier. Turn off Persistent Memory and User Profile in Desktop: Settings → Memory & "
+    "Context (or run: hermes config set memory.memory_enabled false, and the same for "
+    "memory.user_profile_enabled).")
+
+
+def _is_on(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no", "off")
+    return bool(value)
+
+
+def _setup_notes() -> list[str]:
+    """What's missing in Hermes for whos-listening to work as intended. A plugin can't change these
+    core settings itself (Hermes lets it write only its own), so it says so. Nothing if Hermes'
+    config can't be read."""
+    config = _config()
+    if not isinstance(config, Mapping) or getattr(config, "read_error", None) is not None:
+        return []
+    memory = config.get("memory") if isinstance(config.get("memory"), Mapping) else {}
+    notes = []
+    if str(memory.get("provider") or "").strip() != PROVIDER_NAME:
+        notes.append(SETUP_NOT_PROVIDER)
+    if _is_on(memory.get("memory_enabled", True)) or _is_on(memory.get("user_profile_enabled", True)):
+        notes.append(SETUP_BUILT_IN_ON)     # Hermes' defaults turn both on
+    return notes
+
+
+def _with_setup_notes(text: str) -> str:
+    notes = _setup_notes()
+    return text + ("\n\n" + "\n".join(notes) if notes else "")
 
 
 def _settings_command(home: Path) -> str:
@@ -564,6 +607,44 @@ def maybe_sync(home: Optional[Path], *, force: bool = False) -> bool:
         return False
 
 
+SYNC_LIST_WAIT = 5.0     # seconds a /memories command waits for a due sync before answering
+
+
+def _sync_if_due(home: Path) -> None:
+    """Before a /memories command: start a sync if one is due (at most once per interval) and wait
+    briefly for it, so a fresh gateway or a forget made elsewhere shows up. Never raises."""
+    try:
+        if not maybe_sync(home):
+            return
+        st, deadline = _sync_state(home), time.monotonic() + SYNC_LIST_WAIT
+        while time.monotonic() < deadline:
+            with st.lock:
+                if not st.running:
+                    return
+            time.sleep(0.05)
+    except Exception as exc:
+        logger.debug("whos-listening: sync before a command failed: %s", exc)
+
+
+def _when(stamp: str) -> str:
+    """An ISO time as "2026-11-10 17:21 UTC"."""
+    try:
+        from datetime import datetime, timezone
+        t = datetime.fromisoformat(stamp)
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        return t.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return str(stamp)
+
+
+def _last_change(home: Path) -> str:
+    store = SQLiteStore(home / DATA_DIR / DB_FILE)
+    try:
+        return store.meta_get("sync.last_change") or ""
+    finally:
+        store.close()
+
+
 def _sync_command(home: Path, sub: str) -> str:
     """``/memories sync`` (run one now and report) and ``/memories sync status``."""
     settings, token = _sync_settings(home), _sync_token()
@@ -589,6 +670,13 @@ def _sync_command(home: Path, sub: str) -> str:
         st.run_lock.release()
     with st.lock:
         st.last = time.monotonic()
+    if result.summary() == "nothing new":
+        last = _last_change(home)
+        stamp, _, what = last.partition(" ")
+        if what:
+            # A sync in the background may have just done the work: say what last changed.
+            return (f"Synced with {settings.repo}: already up to date. The last sync that changed "
+                    f"something was at {_when(stamp)}: {what}.")
     return f"Synced with {settings.repo}: {result.summary()}."
 
 
