@@ -597,11 +597,10 @@ class SQLiteStore(Store):
             if m.status == FORGOTTEN:
                 return m
             stamp = at or stamp_after(m.updated_at)
-            was = ACTIVE if everywhere and m.tier == SHARED else m.status
             self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, duplicate_of = 0, "
-                             "forget_reason = '', updated_at = ? WHERE id = ?", (was, stamp, m.id))
+                             "forget_reason = '', updated_at = ? WHERE id = ?", (m.status, stamp, m.id))
             if travels is None:
-                travels = m.tier == SHARED and was == ACTIVE
+                travels = m.tier == SHARED and (m.status == ACTIVE or everywhere)
             self._tombstone(m.text, m.id, m.tier, stamp, travels)
             return self.get(m.id)
 

@@ -4,7 +4,8 @@ user, a scan for repeats saved earlier, and an export of everything to a file.
 A possible duplicate is a pair: the newer memory is flagged (``duplicate_of``) with the older
 one it may repeat. That happens when a Shared memory says what a Private one says (a save, or an
 arrival from another gateway, under the ``tier_duplicates`` setting "ask") and when a scan finds
-two memories saying the same thing. The user keeps one (the other is forgotten), or both.
+two memories saying the same thing. A flag doesn't hold a memory back: it stays as it was
+(active, or waiting for another reason) until the user keeps one (the others are forgotten) or all.
 
 - **Keeping one forgets the other.** A Shared memory that was active is forgotten on every
   gateway (as any forget of it is); one that arrived by sync and waits here is too, so the other
@@ -36,8 +37,8 @@ EXPORT_DIR = "exports"
 @dataclass(frozen=True)
 class Item:
     kind: str                  # "duplicate", "save" (waiting for an OK) or "forget" (waiting for an OK)
-    memory: Memory             # the newer memory (duplicate), or the one waiting
-    other: Optional[Memory] = None     # the older memory of a duplicate pair
+    memory: Memory             # the older memory of a duplicate group, or the one waiting
+    others: tuple[Memory, ...] = ()    # the newer memories flagged as saying what ``memory`` says
 
 
 # -- pairs -----------------------------------------------------------------------------------
@@ -56,16 +57,18 @@ def partners(store: Store, m: Memory) -> list[Memory]:
 
 
 def items(store: Store) -> list[Item]:
-    """Everything waiting for the user, duplicates first, oldest first. A flag whose other memory
-    is gone is cleared on the way."""
-    out: list[Item] = []
+    """Everything waiting for the user, oldest first: possible duplicates (grouped by the memory
+    they may repeat), then saves and forgets to approve. A flag whose other memory is gone is
+    cleared on the way."""
+    groups: dict[int, list[Memory]] = {}
     for m in store.flagged():
         other = store.get(m.duplicate_of)
-        if not _live(other):
+        if _live(other):
+            groups.setdefault(other.id, []).append(m)
+        else:
             store.set_duplicate_of(m.id, 0)
-            continue
-        out.append(Item("duplicate", m, other))
-    flagged = {i.memory.id for i in out}
+    out = [Item("duplicate", store.get(old), tuple(news)) for old, news in sorted(groups.items())]
+    flagged = {m.id for news in groups.values() for m in news}
     for m in sorted(store.list(statuses=(PENDING,), limit=500), key=lambda x: x.id):
         if m.id not in flagged:
             out.append(Item("save", m))
@@ -98,19 +101,27 @@ def _activate(store: Store, m: Memory, actor: str) -> None:
         store.set_duplicate_of(m.id, 0)
 
 
+def not_flagged(memory_id: int) -> str:
+    return f"#{memory_id} isn't marked as a possible duplicate."
+
+
 def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user") -> tuple[Memory, list[Memory]]:
-    """Keep ``memory_id`` and forget the memories flagged as saying the same. Returns (kept, forgotten)."""
+    """Keep ``memory_id`` and forget what it may repeat: for an older memory, every newer one
+    flagged against it; for a newer one, the older one (the other newer ones are then flagged
+    against the one kept). Returns (kept, forgotten)."""
     m = store.get(int(memory_id))
     if not _live(m):
         raise StoreError(f"No memory #{memory_id} to keep.")
     others = partners(store, m)
     if not others:
-        raise StoreError(f"#{m.id} isn't marked as a possible duplicate."
-                         + (f" To approve it: /memories approve {m.id}." if m.status == PENDING else ""))
-    _check_visible([m, *others], show_private)
+        raise StoreError(not_flagged(m.id) + (f" To approve it: /memories approve {m.id}." if m.status == PENDING else ""))
+    siblings = [x for x in store.flagged() if m.duplicate_of and x.duplicate_of == m.duplicate_of and x.id != m.id]
+    _check_visible([m, *others, *siblings], show_private)
     for other in others:
         _drop(store, other, actor)
     _activate(store, m, actor)
+    for x in siblings:
+        store.set_duplicate_of(x.id, m.id)          # they may repeat the one kept just as well
     return store.get(m.id), [store.get(o.id) for o in others]
 
 
@@ -121,7 +132,7 @@ def keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str = 
         raise StoreError(f"No memory #{memory_id}.")
     others = partners(store, m)
     if not others:
-        raise StoreError(f"#{m.id} isn't marked as a possible duplicate.")
+        raise StoreError(not_flagged(m.id))
     _check_visible([m, *others], show_private)
     kept = _kept_both(store)
     for other in others:
@@ -151,11 +162,11 @@ def scan(store: Store, judge: Optional[Callable[..., Optional[Memory]]] = None, 
     """Look for memories that repeat an older one (the word check, then the judge if given) and
     flag them for the user. Never forgets anything. Returns how many it flagged."""
     memories = sorted(store.list(statuses=(ACTIVE, PENDING), limit=5000), key=lambda m: m.id)
-    kept = _kept_both(store)
     paired = {m.id for m in memories if m.duplicate_of} | {m.duplicate_of for m in memories if m.duplicate_of}
     found = 0
     for i, m in enumerate(memories, 1):
-        if m.id not in paired:
+        kept = _kept_both(store)        # read each time: the user may choose while a slow scan runs
+        if m.id not in paired and _live(store.get(m.id)):
             def ok(o: Memory, m: Memory = m) -> bool:
                 return o.id < m.id and o.id not in paired and _pair_key(m, o) not in kept
 
@@ -170,7 +181,7 @@ def scan(store: Store, judge: Optional[Callable[..., Optional[Memory]]] = None, 
                     hit = judge(m.text, TIERS, only=ok)
                 except Exception:
                     hit = None
-            if hit is not None and ok(hit):
+            if hit is not None and ok(hit) and _live(store.get(hit.id)):
                 store.set_duplicate_of(m.id, hit.id)
                 paired |= {m.id, hit.id}
                 found += 1

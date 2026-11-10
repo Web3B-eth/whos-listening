@@ -43,7 +43,7 @@ config_schema:
     type: str
     choices: [default, ask, shared, private]
     label: "Private and Shared duplicates"
-    description: "What happens when a Shared memory says what a Private one already says, such as \"Owns a Subaru\" saved as Shared while \"Drives a Subaru Outback\" is Private (from a save, or arriving from another gateway). ask (the default): the new one waits until you choose which to keep (/memories review, or tell the assistant, such as \"keep 41\"). shared: keep the Shared one and forget the Private one. private: keep the Private one; the Shared one is not kept (one that arrived from another gateway is forgotten there too). A Private save that repeats a Shared memory is always skipped."
+    description: "What happens when a Shared memory says what a Private one already says, such as \"Owns a Subaru\" saved as Shared while \"Drives a Subaru Outback\" is Private (from a save, or arriving from another gateway). ask (the default): the new one is saved and flagged until you choose which to keep (/memories review, or tell the assistant, such as \"keep 41\"). shared: keep the Shared one and forget the Private one. private: keep the Private one; the Shared one is not kept (one that arrived from another gateway is forgotten there too). A Private save that repeats a Shared memory is always skipped."
   venice_anonymized:
     type: str
     choices: [default, shared, private]

@@ -89,12 +89,17 @@ def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
     else:
         lines = [f"Waiting for you ({len(found)}):"]
         for n, it in enumerate(found, 1):
-            m, o = it.memory, it.other
+            m = it.memory
             if it.kind == "duplicate":
-                lines += [f"\n{n}. These may say the same thing:",
-                          f"   new  {_line(m, show_private)}{_from(m)}",
-                          f"   old  {_line(o, show_private)}{_from(o)}",
-                          f"   /memories keep {m.id}  ·  /memories keep {o.id}  ·  /memories keep both {m.id}"]
+                news = it.others
+                lines += [f"\n{n}. These may say the same thing:", f"   {_line(m, show_private)}{_from(m)}"]
+                for x in news:
+                    lines.append(f"   {_line(x, show_private)}{_from(x)}")
+                    if x.pending_reason:
+                        lines.append(f"      #{x.id} also waits because: {x.pending_reason}")
+                keeps = "  ·  ".join(f"/memories keep {y.id}" for y in (m, *news))
+                both = f"/memories keep both {news[0].id}" if len(news) == 1 else f"/memories keep both {m.id}"
+                lines.append(f"   keep one: {keeps}  ·  keep all: {both}")
             elif it.kind == "save":
                 lines += [f"\n{n}. A save waiting for your OK:", f"   {_line(m, show_private)}{_from(m)}",
                           f"   why: {m.pending_reason or 'needs your OK'}",
@@ -124,7 +129,9 @@ def cmd_keep(store: Store, args: list[str], show_private: bool) -> str:
 def cmd_pending(store: Store, show_private: bool) -> str:
     lines = []
     for m in store.list(statuses=(PENDING,), limit=200):
-        lines.append(f"save {_line(m, show_private)}\n    why it waits: {m.pending_reason or 'needs your OK'}")
+        why = m.pending_reason or (f"it may say what #{m.duplicate_of} says: /memories review" if m.duplicate_of
+                                   else "needs your OK")
+        lines.append(f"save {_line(m, show_private)}\n    why it waits: {why}")
     for m in store.forget_requests():
         lines.append(f"forget {_line(m, show_private)}\n    why it waits: {m.forget_reason}")
     if not lines:
@@ -132,7 +139,7 @@ def cmd_pending(store: Store, show_private: bool) -> str:
     return "\n".join(lines) + "\n\n/memories approve N or /memories reject N"
 
 
-def cmd_approve(store: Store, arg: str, show_private: bool) -> str:
+def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg)
     if m.tier == PRIVATE and not show_private and (m.status == PENDING or m.forget_reason):
         # Don't let anyone approve a Private memory they can't see here.
@@ -142,24 +149,24 @@ def cmd_approve(store: Store, arg: str, show_private: bool) -> str:
         store.set_status(m.id, ACTIVE)
         if m.duplicate_of:
             store.set_duplicate_of(m.id, 0)         # approving a possible duplicate keeps both
-        store.log_event(m.id, "approved", "user")
+        store.log_event(m.id, "approved", actor)
         return f"Saved {_line(store.get(m.id), show_private)}"
     if m.forget_reason and m.status != FORGOTTEN:
         store.forget(m.id)
-        store.log_event(m.id, "approved_forget", "user")
+        store.log_event(m.id, "approved_forget", actor)
         return f"Forgot #{m.id}. It can't be saved again from chat."
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
 
-def cmd_reject(store: Store, arg: str, show_private: bool) -> str:
+def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg)
     if m.status == PENDING:
         store.forget(m.id)
-        store.log_event(m.id, "rejected", "user")
+        store.log_event(m.id, "rejected", actor)
         return f"Turned down #{m.id}. It can't be saved again from chat."
     if m.forget_reason and m.status != FORGOTTEN:
         store.clear_forget_request(m.id)
-        store.log_event(m.id, "rejected_forget", "user")
+        store.log_event(m.id, "rejected_forget", actor)
         return f"Kept {_line(m, show_private)}"
     raise StoreError(f"#{m.id} isn't waiting for you.")
 

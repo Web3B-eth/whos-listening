@@ -378,12 +378,18 @@ def main() -> int:
         _, reqs = run.chat('Remember this, any model may see it. [[call whos-listening_remember '
                            '{"text": "Keeps a vegetarian diet on all weekdays", "tier": "shared"}]]',
                            provider="private-sim", model="private-model")
-        run.check("tier duplicate: the shared save waits for the user",
-                  has(reqs, f"it says what private memory #{private_id} says"))
+        offered = [sorted(t.get("function", {}).get("name", "") for t in json.loads(r["text"]).get("tools") or [])
+                   for r in main_requests(reqs)]
+        run.check("tools: all four memory tools are offered to the model directly",
+                  bool(offered) and all({f"whos-listening_{x}" for x in ("remember", "recall", "forget", "review")}
+                                        <= set(names) for names in offered),
+                  str([n for n in (offered[0] if offered else []) if n.startswith(("whos", "tool_"))]))
+        run.check("tier duplicate: the shared save is flagged for the user",
+                  has(reqs, f"it may say what private memory #{private_id} says"))
         _, reqs = run.chat(f'Let us keep {private_id}. [[call whos-listening_review {{"action": "keep", "id": {private_id}}}]]',
                            provider="private-sim", model="private-model")
         flagged = [m for m in memories_in(data) if m.text == "Keeps a vegetarian diet on all weekdays"]
-        run.check("tier duplicate: keeping the private one by number turns the shared one down",
+        run.check("tier duplicate: keeping the private one by number forgets the shared one",
                   bool(flagged) and flagged[0].status == "forgotten" and has(reqs, "kept"),
                   flagged[0].status if flagged else "no memory")
 

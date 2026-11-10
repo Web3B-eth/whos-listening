@@ -321,7 +321,7 @@ class SyncResult:
     duplicates: int = 0       # arrivals skipped because the same words are already here
     kept_out: int = 0         # arrivals skipped because their words were forgotten here
     near_repeats: int = 0     # arrivals left out because a Shared memory here already says it
-    flagged: int = 0          # arrivals that say what a Private memory says, waiting for the user
+    flagged: int = 0          # arrivals that say what a Private memory says, flagged for the user
     replaced: int = 0         # Private memories here forgotten for an arrival ("shared" setting)
     removed: int = 0          # arrivals forgotten everywhere for a Private memory ("private" setting)
     wrote: bool = False
@@ -341,7 +341,7 @@ class SyncResult:
         if self.near_repeats:
             parts.append(f"{self.near_repeats} left out (already said here)")
         if self.flagged:
-            parts.append(f"{self.flagged} like a private memory, waiting for you to choose: /memories review")
+            parts.append(f"{self.flagged} like a private memory, for you to choose: /memories review")
         if self.replaced:
             parts.append(f"{self.replaced} replaced a private memory")
         if self.removed:
@@ -398,9 +398,10 @@ def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = no
 
 def _add_up(total: SyncResult, part: SyncResult) -> None:
     for name in ("arrived", "held", "forgotten", "restored", "duplicates", "kept_out", "near_repeats",
-                 "flagged", "replaced", "removed"):
+                 "flagged", "replaced"):
         setattr(total, name, getattr(total, name) + getattr(part, name))
     total.sent = part.sent              # what this attempt sends is what the file gets
+    total.removed = part.removed        # likewise: a retry decides these again
 
 
 @dataclass
@@ -425,6 +426,13 @@ def _near_drops(store: Store) -> dict[str, int]:
         return {}
 
 
+def _forget_travels(store: Store, m) -> bool:
+    """Whether a forgotten memory's tombstone says other gateways should forget it too (a Shared
+    arrival the user chose against while it waited: resolve.py)."""
+    tomb = store.tombstone(fingerprint(m.text))
+    return bool(tomb and tomb[1] == SHARED and tomb[2])
+
+
 def _still_here(store: Store, memory_id: int) -> bool:
     m = store.get(memory_id)
     return m is not None and m.status in (ACTIVE, PENDING)
@@ -445,7 +453,7 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
     for m in store.shared_for_sync():
         if not m.uid or m.tier != SHARED:
             continue
-        if m.status == FORGOTTEN and m.forgotten_from == PENDING:
+        if m.status == FORGOTTEN and m.forgotten_from == PENDING and not _forget_travels(store, m):
             continue            # never active here: a turn-down is local, a synced forget is already out
         theirs = remote.get(m.uid)
         ours = local_record(m, theirs.origin if theirs and theirs.origin else name)
@@ -521,15 +529,12 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
         origin = r.origin or "another gateway"
         concern = review.rule_concern(r.text or "")
         flag = match is not None and (near.tier_duplicates != SHARED or bool(concern))
-        reason = " ".join(x for x in (
-            f"It arrived by sync from {origin}." if (concern or flag) else "", concern,
-            f"It says what private memory #{match.id} says. Choose which to keep: /memories review." if flag else "")
-            if x)
+        reason = f"It arrived by sync from {origin}. {concern}" if concern else ""    # never the pair
         m = store.import_synced(
             uid, r.text or "",
             Provenance(written_by="sync", via="sync", route=f"sync from {origin}", route_tier=SHARED),
             created_at=r.created_at or r.updated_at, updated_at=r.updated_at,
-            status=PENDING if (concern or flag) else ACTIVE, pending_reason=reason,
+            status=PENDING if concern else ACTIVE, pending_reason=reason,
             duplicate_of=match.id if flag else 0)
         _log(store, m.id, "synced_in")
         result.arrived += 1

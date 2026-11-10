@@ -160,6 +160,7 @@ class WhosListeningProvider(MemoryProvider):
         self._turn = ""
         self._author = ""
         self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
+        self._turn_message = ""
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
 
@@ -211,6 +212,7 @@ class WhosListeningProvider(MemoryProvider):
         self._author = str(kwargs.get("author_name") or "")
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
+        self._turn_message = ""        # the user's own words this turn: a review choice must name its number
         if self._dir is not None:
             maybe_sync(self._dir.parent)
         if kwargs.get("author_is_bot") or not isinstance(message, str):
@@ -219,6 +221,7 @@ class WhosListeningProvider(MemoryProvider):
         if text:
             author = str(kwargs.get("author_id") or "")
             self._user_messages = (self._user_messages + [(author, text)])[-10:]
+            self._turn_message = text
 
     def _own_words(self) -> list[str]:
         """The newest messages from the current turn's author (other people in a group chat,
@@ -282,9 +285,9 @@ class WhosListeningProvider(MemoryProvider):
                            private_refused=_private_refused(self._dir.parent if self._dir else None),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
                            on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
-                           judge=self._duplicate_judge() if tool_name == tools.REMEMBER else None,
+                           judge=self._duplicate_judge(route, verdict) if tool_name == tools.REMEMBER else None,
                            tier_duplicates=self._tier_duplicates(),
-                           user_message=self._user_messages[-1][1] if self._user_messages else "",
+                           user_message=self._turn_message,
                            export=self._export, scan=self._scan)
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
@@ -292,7 +295,7 @@ class WhosListeningProvider(MemoryProvider):
 
     # -- Auto-review ---------------------------------------------------------
 
-    def _duplicate_judge(self) -> Optional[Any]:
+    def _duplicate_judge(self, route: Optional[Route] = None, verdict: Optional[Verdict] = None) -> Optional[Any]:
         """The second near-duplicate check (judge.py), or None when it's off or can't run here.
 
         It runs only on a Private judge, which may see every memory: a judge that saw only the
@@ -304,7 +307,7 @@ class WhosListeningProvider(MemoryProvider):
             return None
         if _judge_blocker(settings, home):
             return None
-        return _make_judge(self._store, settings, home)
+        return _make_judge(self._store, settings, home, chat=(route, verdict) if verdict is not None else None)
 
     def _export(self, show_private: bool) -> str:
         home = self._dir.parent if self._dir is not None else None
@@ -520,9 +523,11 @@ def start_scan(home: Path) -> str:
         _SCANS[key] = thread
         thread.start()
     settings, _ = _load_settings(home)
-    with_judge = settings is not None and settings.duplicate_judge != "off" and not _judge_blocker(settings, home)
-    how = f" (the word check, then {settings.duplicate_judge.capitalize() if settings.duplicate_judge != 'model' else 'your default model'})" \
-        if with_judge else " (the word check only: the duplicate judge isn't running here)"
+    with_judge = settings is not None and settings.duplicate_judge in wl_judge.MODELS and not _judge_blocker(settings, home)
+    how = f" (the word check, then {settings.duplicate_judge.capitalize()})" if with_judge else \
+        " (the word check only: Clef or Jev isn't running here, and your default model only checks inside chats)" \
+        if settings is not None and settings.duplicate_judge == "model" else \
+        " (the word check only: the duplicate judge isn't running here)"
     return (f"Looking for repeats among your memories in the background{how}. Nothing is forgotten: what it "
             "finds waits for you to choose, in /memories review.")
 
@@ -609,7 +614,7 @@ def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
         side = side_call_routes_private(config, settings)
         if side.tier != PRIVATE:
             return side.reason
-        return ""
+        return ""          # it also needs the chat's own route to be Private: see _make_judge
     if classify(Route("venice", wl_judge.MODELS[choice], VENICE_API), settings).tier != PRIVATE:
         return "Jev is anonymized on Venice; set venice_anonymized to private to trust it"
     if not _venice_key():
@@ -617,14 +622,19 @@ def _judge_blocker(settings: RouteSettings, home: Optional[Path]) -> str:
     return ""
 
 
-def _make_judge(store: Any, settings: RouteSettings, home: Optional[Path]) -> Optional[Any]:
+def _make_judge(store: Any, settings: RouteSettings, home: Optional[Path],
+                chat: Optional[tuple[Optional[Route], Verdict]] = None) -> Optional[Any]:
     """The duplicate judge for ``store``, called as ``judge(text, tiers, only=None)`` (``only``
-    narrows which memories it compares with), or None when it's off or can't run here."""
+    narrows which memories it compares with), or None when it's off or can't run here.
+
+    ``model`` runs only inside a chat (``chat``: its route and verdict) whose route is Private:
+    a plugin's side call runs on the chat's current model, which may not be the default
+    (docs/spike.md), so it never runs from sync or a scan in the background."""
     if store is None or settings.duplicate_judge == "off" or _judge_blocker(settings, home):
         return None
     if settings.duplicate_judge == "model":
-        route = default_route_from_config(_config())
-        if route is None:
+        route, verdict = chat if chat is not None else (None, None)
+        if route is None or verdict is None or verdict.tier != PRIVATE or not route.model:
             return None
         expected = route.model
 

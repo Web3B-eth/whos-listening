@@ -874,9 +874,12 @@ def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provid
     venice = {"provider": "custom", "default": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
     monkeypatch.setattr(plugin, "_config", lambda: {"model": venice})
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"duplicate_judge": "model"})
-    j = provider._duplicate_judge()
+    chat = (plugin.Route("custom", "grok-4-5", "https://api.venice.ai/api/v1"), plugin.Verdict("private", "test"))
+    j = provider._duplicate_judge(*chat)
     j("Allergic to peanuts", ("private", "shared"))
     assert seen == [("private", "shared")]                                      # Grok on Venice: Private
+    assert provider._duplicate_judge() is None                                  # no chat: never in the background
+    assert provider._duplicate_judge(chat[0], plugin.Verdict("shared", "t")) is None   # the chat's route is Shared
     for config, why in [
         ({"model": venice, "fallback_providers": [{"provider": "openrouter", "model": "x",
                                                    "base_url": "https://openrouter.ai/api/v1"}]},
@@ -886,7 +889,7 @@ def test_the_default_model_judge_runs_only_on_an_all_private_path(plugin, provid
         ({}, "no default model"),
     ]:
         monkeypatch.setattr(plugin, "_config", lambda c=config: c)
-        assert provider._duplicate_judge() is None, config                      # not running at all
+        assert provider._duplicate_judge(*chat) is None, config                 # not running at all
         assert why in plugin._settings_command(tmp_path), config
 
 
@@ -923,11 +926,14 @@ def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin,
     private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
     out = tool(provider, "whos-listening_remember",
                {"text": "Bought a Santa Cruz Hightower mountain bike", "tier": "shared"})
-    new_id = out["pending"]["id"]
+    new_id = out["saved"]["id"]
     provider.on_turn_start(1, "let's review your memories")
     assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
     assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False
     provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {private.id}")
+    provider.on_turn_start(3, {"image": "made-up"})                 # not words: the last turn's don't count
+    assert "doesn't name" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
+    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {private.id}")
     out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
     assert out["ok"] and out["forgotten"] == [private.id]
 
