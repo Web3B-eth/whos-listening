@@ -377,6 +377,7 @@ def main() -> int:
         #     A near Private original stays in place for the ordinary duplicate review.
         store = SQLiteStore(data / "memories.sqlite")
         private_id = next(m.id for m in store.list() if m.text == PRIVATE_TEXT)
+        private_ref = display_ref(store.get(private_id))
         store.close()
         _, reqs = run.chat('Keeps a vegetarian diet on all weekdays. Any model may see this. [[call whos-listening_remember '
                            '{"text": "Keeps a vegetarian diet on all weekdays", "tier": "shared"}]]',
@@ -421,20 +422,20 @@ def main() -> int:
         #     outside content it applies on the user's word; after outside content Auto-review checks
         #     it first, and only a "yes" from the user lets it through.
         def pair(text: str) -> int:
-            run.chat(f'Remember this, any model may see it. [[call whos-listening_remember '
+            run.chat(f'{text}. Remember this, any model may see it. [[call whos-listening_remember '
                      f'{{"text": "{text}", "tier": "shared"}}]]', provider="private-sim", model="private-model")
             return next(m.id for m in memories_in(data) if m.text == text)
 
         choice_file = home / "choice.json"
         sid = pair("Keeps a strict vegetarian diet on weekdays")
-        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_ref}))
         run.chat("Keep my private one, please. [[call whos-listening_review file:" + str(choice_file) + "]]",
                  provider="private-sim", model="private-model")
         gone = [m for m in memories_in(data) if m.id == sid]
         run.check("plain words: with no outside content, a choice applies without a number",
                   bool(gone) and gone[0].status == "forgotten", gone[0].status if gone else "no memory")
         sid = pair("Keeps a vegetarian diet during weekdays")
-        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_ref}))
         script = f'[[call read_file {{"path": "{notes}"}}]] [[call whos-listening_review file:{choice_file}]]'
         _, reqs = run.chat(f"Read my notes, then keep my private one. {script}", provider="private-sim",
                            model="private-model")
