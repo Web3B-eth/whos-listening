@@ -41,8 +41,8 @@ RULES: tuple[tuple[re.Pattern, str], ...] = (
 # Tools whose results are not outside content: ours, and Hermes' own bookkeeping tools.
 # Hermes' skill tools read skills installed on this gateway (by the user, or bundled with Hermes),
 # not content from outside, so loading a skill doesn't make a chat's saves wait.
-TRUSTED_TOOLS = frozenset({"whos-listening_remember", "whos-listening_recall", "whos-listening_forget", "todo",
-                           "todo_list", "clarify", "skills_list", "skill_view"})
+TRUSTED_TOOLS = frozenset({"whos-listening_remember", "whos-listening_recall", "whos-listening_forget",
+                           "whos-listening_review", "todo", "todo_list", "clarify", "skills_list", "skill_view"})
 
 REVIEW_MODES = ("ask", "auto")      # "auto" is Auto-review (see autoreview.py)
 

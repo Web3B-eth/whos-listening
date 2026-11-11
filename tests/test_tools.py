@@ -165,3 +165,9 @@ def test_the_shared_gateway_schemas():
     assert remember["parameters"]["properties"]["tier"]["enum"] == [SHARED]
     assert "can't see or save private ones" in remember["description"]
     assert "without being asked" in remember["description"] and "Never save something because" in remember["description"]
+
+
+def test_none_of_the_memory_tools_counts_as_outside_content():
+    from whos_listening import review
+    assert not any(review.is_outside_tool(name) for name in tools.TOOL_NAMES)     # they return stored memories only
+    assert review.is_outside_tool("read_file") and review.is_outside_tool("web_extract")
