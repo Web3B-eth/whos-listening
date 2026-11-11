@@ -105,6 +105,13 @@ def test_add_forget_restore(store):
     assert "Saved" in run(store, "add shared likes jazz")
 
 
+def test_direct_user_command_can_forget_private_from_shared_view(store):
+    m = store.add("Keeps a blue notebook", "private", assistant())
+    out = run(store, f"forget {m.id}", show_private=False)
+    assert "Forgot" in out and "blue notebook" not in out
+    assert store.get(m.id).status == "forgotten"
+
+
 def test_undo_walks_back(store):
     run(store, "add Collects stamps")
     mid = store.list()[0].id

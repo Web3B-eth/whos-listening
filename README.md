@@ -73,7 +73,7 @@ To stop using it, run `hermes memory off` (and `hermes plugins remove whos-liste
 - **Tools** the model can call:
   - `whos-listening_remember`: save one short fact. Private unless you said it can be shared.
   - `whos-listening_recall`: search memories (Private ones only on a Private route). At most 5 searches a turn, so a model that keeps searching stops.
-  - `whos-listening_forget`: forget a memory by number.
+  - `whos-listening_forget`: forget a memory by number. On a Shared route it can forget Shared memories only. You can still use `/memories forget N` yourself for a Private memory.
   - `whos-listening_review`: review your memories with you in plain language (see Reviewing your memories below).
   Hermes Desktop shows them as "Whos-listening Remember", "Whos-listening Recall", "Whos-listening Forget" and "Whos-listening Review". Chats from before the rename (tools named `wl_*`) aren't carried over: start new chats.
   Only the main chat can save, forget or review; subagents and scheduled jobs can only read.
@@ -290,7 +290,7 @@ Be clear about what Who's Listening does not protect (yet):
 - **Exports are plain text.** The file in `whos-listening/exports/` is readable only by your user, but it holds your memories in the clear until you delete it.
 - **Tombstones match words, not meaning.** "Likes jazz" blocks "likes JAZZ." and "Likes ‘jazz’", but not "Enjoys jazz".
 - **Forgotten text stays on disk** in `memories.sqlite` until it is purged (`python -m whos_listening.cli purge N`), so a forget can be undone.
-- **On a Shared route the assistant can tell whether a memory number exists** (by trying to forget it), though not what it says.
+- **A Shared-route forget tool cannot change a Private memory.** It gives the same answer for a Private number as for a missing one. The direct `/memories forget N` command remains available to you.
 - **Outside content is noticed through tools.** Anything you paste or attach yourself counts as your own words, so a planted line in pasted text isn't held unless the rule screen catches it.
 - **Auto-review is a model's judgement.** It can be wrong in either direction, and a planted text written to look like your own words could pass it. A file or document you paste or attach yourself counts as your own words. It needs Hermes' default in-process plugin mode; under `plugins.isolation: host` the check can't reach a model, so held saves just wait for you. Each check is one extra request on the chat's model, run in a background thread.
 - **Shared views may give less detail about a held save.** Auto-review can repeat the memory or your recent messages in its explanation, even for a Shared memory. Shared commands, exports and tool results use a short review note in that case; a Private view shows the full reason. This also applies to reasons saved by older versions.

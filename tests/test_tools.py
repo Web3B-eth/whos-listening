@@ -1,7 +1,7 @@
 import json
 
 from whos_listening import guard, tools
-from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance
+from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance, SQLiteStore
 
 
 def call(store, name, args, route_tier):
@@ -52,11 +52,32 @@ def test_private_review_reason_is_removed_from_shared_replay(store):
 
 def test_forget(store):
     mid = call(store, tools.REMEMBER, {"text": "Drives a blue van"}, PRIVATE)["saved"]["id"]
-    r = call(store, tools.FORGET, {"id": mid}, SHARED)
-    assert r["ok"] and r["forgotten"] == {"id": mid, "tier": PRIVATE}
+    r = call(store, tools.FORGET, {"id": mid}, PRIVATE)
+    assert r["ok"] and r["forgotten"]["id"] == mid
     assert store.get(mid).status == FORGOTTEN
     assert call(store, tools.FORGET, {"id": mid}, PRIVATE)["ok"] is False
     assert call(store, tools.FORGET, {"id": "abc"}, PRIVATE)["ok"] is False
+
+
+def test_shared_route_cannot_forget_private_or_distinguish_missing_id(store, tmp_path):
+    active = store.add("Keeps a blue notebook", PRIVATE, Provenance())
+    pending = store.add("Prefers window seats", PRIVATE, Provenance(), status="pending",
+                        pending_reason="Outside content.")
+    empty = SQLiteStore(tmp_path / "empty.sqlite")
+    try:
+        for outside in ("", "read_file"):
+            for m in (active, pending):
+                hidden = json.loads(tools.handle(store, tools.FORGET, {"id": m.id}, route_tier=SHARED,
+                                                 provenance=lambda: Provenance(), outside_tool=outside))
+                missing = json.loads(tools.handle(empty, tools.FORGET, {"id": m.id}, route_tier=SHARED,
+                                                  provenance=lambda: Provenance(), outside_tool=outside))
+                assert hidden == missing
+                assert store.get(m.id).status == m.status and not store.get(m.id).forget_reason
+                assert not store.is_forgotten_text(m.text)
+    finally:
+        empty.close()
+    shared = store.add("Likes tea", SHARED, Provenance())
+    assert call(store, tools.FORGET, {"id": shared.id}, SHARED)["ok"]
 
 
 def test_bad_input_returns_error_json(store):

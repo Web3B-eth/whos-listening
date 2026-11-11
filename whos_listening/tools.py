@@ -347,7 +347,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             except (TypeError, ValueError):
                 return _err("Give the memory number to forget.")
             m = store.get(memory_id)
-            if m is None or m.status == FORGOTTEN:
+            if m is None or m.status == FORGOTTEN or (m.tier == PRIVATE and route_tier != PRIVATE):
                 return _err(f"No memory #{memory_id}.")
             hold = review.forget_hold_reason(outside_tool)
             if hold:
@@ -358,9 +358,6 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             store.forget(memory_id)
             store.log_event(memory_id, "forgot", "assistant")
             note = "It won't be saved again from chat."
-            if m.tier == PRIVATE and route_tier != PRIVATE:
-                # Don't confirm what a Private memory says on a Shared route; forgetting is still fine.
-                return _ok(forgotten={"id": memory_id, "tier": PRIVATE}, note=note)
             return _ok(forgotten=_public(m), note=note)
 
         return _err(f"Unknown tool {name}.")
