@@ -4,6 +4,7 @@ What changed in whos-listening, newest first. Format follows [Keep a Changelog](
 
 ## [Unreleased]
 
+- README wording (2026-11-11, from B's read-through): How it works says "Three layers" and "Shared by default" for unknown routes (you can mark them Private), and a Shared gateway is one you don't fully trust.
 - README (2026-11-11): Install leads with the Hermes plugin catalog (`hermes plugins install whos-listening`, or search in Desktop's Plugins page), with the GitHub install kept for before it's listed or for a specific commit.
 - README (2026-11-11): the opening no longer says the plugin was built for the Hermes Agent Plugin Hackathon; that stays in the catalog PR text for reviewers.
 - Review choices on your word (2026-11-11): keep, keep both, approve and reject no longer always need the memory's number in your message. In a chat that read no outside content they go through on your OK, as saves and forgets do. After outside content, the number still applies at once; without it, Auto-review (one request on the chat's own model, seeing the exact change, the assistant's last message and your newest messages, never the outside content) lets the choice through only on a clear yes, and otherwise the assistant asks for the number. With `review: ask`, or where Auto-review can't run, choices after outside content need the number. A turn with no words of yours still can't make a choice. Choices are logged (which way each went through). Asked for in live testing: the number felt unnecessary next to how other AI apps take an explicit OK.
