@@ -12,19 +12,29 @@ The Private rule is enforced on every main chat request, and you review what the
 
 Needs Hermes Agent 0.23.0 or later. You can install from a terminal or from Hermes Desktop; on Hermes Cloud, where you have no terminal, use Desktop.
 
+Who's Listening is submitted to the Hermes plugin catalog. Until it's listed there, use the GitHub install described under each option.
+
 ### From a terminal
 
 Run these where your Hermes backend runs (this computer, or the server Desktop connects to):
 
 ```bash
-hermes plugins install Web3B-eth/whos-listening --enable
+hermes plugins install whos-listening --enable
 ```
 
 ```bash
 hermes plugins enable whos-listening
 ```
 
-The first command installs the plugin and makes it your memory provider. The second lets Hermes load it at startup, so `/memories` works from the first message (for a memory provider, `--enable` alone only sets `memory.provider`). To pin an exact version, add `--ref <40-character commit SHA>` to the install.
+The first command installs the version the catalog lists and makes it your memory provider. The second lets Hermes load it at startup, so `/memories` works from the first message (for a memory provider, `--enable` alone only sets `memory.provider`).
+
+Before it's listed in the catalog, or to install a specific commit, install from GitHub instead, then run the same `enable` command:
+
+```bash
+hermes plugins install Web3B-eth/whos-listening --enable
+```
+
+To pin an exact commit, add `--ref <40-character commit SHA>`.
 
 Turn off Hermes' built-in memory, so facts don't also land in `MEMORY.md` and `USER.md`, which go to every model whatever their tier:
 
@@ -47,7 +57,7 @@ No setup is needed after that. To change what counts as Private, see [Settings](
 
 Pick the gateway in Desktop first: the plugin is installed on whichever gateway Desktop is connected to.
 
-1. **Install.** In **Capabilities → Plugins**, choose **Install from Git**, enter `https://github.com/Web3B-eth/whos-listening` and install. To pin an exact version, open **Advanced** and enter a 40-character commit SHA.
+1. **Install.** In **Capabilities → Plugins**, search for `whos-listening` and install it. Before it's listed in the catalog, or to install a specific commit, choose **Install from Git** instead, enter `https://github.com/Web3B-eth/whos-listening` and install; to pin a commit, open **Advanced** and enter its 40-character SHA.
 2. **Make it the memory provider.** In **Settings → Memory & Context**, set **Memory Provider** to **Whos-Listening** (Desktop's spelling of `whos-listening`). Desktop's install doesn't do this for you (the terminal's `--enable` does), and a plugin can't change this setting itself. Until you do, `/memories` works but nothing is recalled in chats.
 3. **Turn off Hermes' built-in memory.** On the same page, turn off **Persistent Memory** and **User Profile**, so facts don't also land in `MEMORY.md` and `USER.md`, which go to every model whatever their tier.
 4. **Restart.** On your own computer, quit and reopen Desktop. On Hermes Cloud, restart the instance itself: Nous Portal → Cloud → your instance → **Stop**, then **Start**. Desktop's **Restart gateway**, and the Gateway **Restart** on the instance's dashboard, only restart messaging: slash commands pick up new code, but chats keep using the old tools and recall until the instance restarts. The same goes for every update. Then start a new chat.
