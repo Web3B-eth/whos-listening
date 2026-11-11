@@ -1,6 +1,6 @@
 # Draft: catalog PR to NousResearch/hermes-agent
 
-**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `9b0fb0a…` below with the final commit, and re-run the checks under How to Test.
+**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `b9a52cb…` below with the final commit if main has moved, and re-run the checks under How to Test.
 
 **Title:** `feat(plugin-catalog): add whos-listening plugin`
 
@@ -10,7 +10,7 @@
 
 ## What does this PR do?
 
-Adds Who's Listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `9b0fb0a2101ed469cba16af39dda3c72821215df`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
+Adds Who's Listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
 
 Who's Listening is a memory provider that knows who is listening. Every memory is Private or Shared. A request carries Private memories only if all three layers that see it are Private:
 - **the gateway**, the machine running Hermes, which stores the memories. A hosted Hermes (a Fly.io machine or remote config, as on Hermes Cloud) is Shared by default and keeps Shared memories only;
@@ -28,7 +28,7 @@ It also:
 
 ## Disclosure (rule 13)
 
-The README has the same list under [What it sends, stores and runs](https://github.com/Web3B-eth/whos-listening/blob/9b0fb0a2101ed469cba16af39dda3c72821215df/README.md#what-it-sends-stores-and-runs).
+The README has the same list under [What it sends, stores and runs](https://github.com/Web3B-eth/whos-listening/blob/b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d/README.md#what-it-sends-stores-and-runs).
 
 - **Storage:** SQLite in the active Hermes home only (`$HERMES_HOME/whos-listening/`), including forgotten text until the user purges it. Also a cached copy of Venice's model list, a copy of the Desktop settings for the command line, and files from `/memories export`, which are plain text with mode 600. It stores no credentials.
 - **Network, third party:**
@@ -39,6 +39,7 @@ The README has the same list under [What it sends, stores and runs](https://gith
   - **Auto-review** (on by default), only after the chat read outside content, and only when Hermes' fallback providers are as trusted as the chat's route (Shared memories only on a Shared route). At most 3 checks a turn in all. It never sees the outside content.
     - **A held save:** one call in the background (45 s limit). It sends the memory and the user's three newest messages.
     - **A review choice** (keep, keep both, approve, reject) the user's message makes without the memory's number: one call while the user waits (20 s limit). It sends the exact change, the assistant's last reply and the user's three newest messages. In a chat with no outside content, a choice goes through on the user's word, and the number always applies at once.
+  - **The sharing check**, on a Private-capable gateway, for each Shared save the assistant makes: one call while the user waits. It sends the memory and the user's three newest messages, and the memory becomes Shared only if the user's own words say any model may see it; otherwise it is saved Private. Approving a share later (a review choice without the memory's number) always goes through Auto-review, even with no outside content.
   - **The optional `model` duplicate judge:** only in chats on a Private route whose fallbacks are all Private.
 - **Rewrites requests:** the `llm_request` middleware removes Private memories from outgoing main chat requests that aren't Private.
 - **Reads (rule 11):**
@@ -58,18 +59,20 @@ The README has the same list under [What it sends, stores and runs](https://gith
 
 ## How to Test
 
-Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `9b0fb0a2101ed469cba16af39dda3c72821215df`:
+Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d`:
 - `python scripts/validate_plugin_catalog.py` on the entry with `removed.yaml`: OK, 2 files valid, no warnings.
 - `python scripts/scan_plugin_payloads.py <clean checkout>` (from hermes-agent `main`): exit 0.
 - `hermes plugins validate --install-deps <clean checkout>`: passed (security scan safe; no core override; declared tools, hooks and middleware match; no warnings).
 - `hermes plugins doctor --ci <clean checkout>`: OK.
 - On a fresh home, `hermes plugins install Web3B-eth/whos-listening --ref <sha> --enable`, then `hermes plugins enable whos-listening`: `hermes memory status` shows `whos-listening ← active`.
-- The repo's own checks: 386 unit tests, and 56 end-to-end checks that run real Hermes 0.23.0 against a fake local model server. The e2e checks cover:
+- The repo's own checks: 524 unit tests, and 59 end-to-end checks that run real Hermes 0.23.0 against a fake local model server. The e2e checks cover:
   - recall on Private and Shared routes;
   - a mid-chat switch from Private to Shared (the guard strips the replayed Private memory);
   - forget plus a blocked re-save;
   - a planted instruction in a file (the save waits);
   - Auto-review of a held save and of a review choice without a number;
+  - a checked Shared save with explicit permission, and one that falls back to Private;
+  - a `/memories` reply never reaching a later model request;
   - a Shared save over a Private memory, resolved through the review tool;
   - sync between two gateways against a fake GitHub (only Shared memories travel);
   - a Shared gateway saving Shared only;
@@ -80,6 +83,8 @@ Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `9b0fb0a2101ed
 - Live, with made-up memories:
   - on a 0.23.0 install with Venice `grok-4-5` (Private) and Nous `openai/gpt-6.1-terra` (Shared);
   - on Hermes Cloud, which counts as a Shared gateway: there an unprompted fact saved Shared without a question, and "keep that private" was refused with an explanation.
+  - in Hermes Desktop against a local gateway: plain-words sharing ("yes, that one's fine to share") through the check, finding what waits for the user, and undoing a share;
+  - sync v2 between that local gateway and Hermes Cloud, both at this commit.
 
 ## Checklist
 
