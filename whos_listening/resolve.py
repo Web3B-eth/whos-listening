@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import duplicates as dupes
+from . import duplicates as dupes, review
 from .store import ACTIVE, PENDING, PRIVATE, SHARED, TIERS, Memory, Store, StoreError
 
 KEPT_BOTH_KEY = "review.kept_both"     # pairs of uids the user kept both of: a scan skips them
@@ -228,7 +228,8 @@ def export_markdown(store: Store, data_dir: Path, *, show_private: bool, now: Op
     waiting = [m for m in store.list(statuses=(PENDING,), tiers=tiers, limit=5000)]
     if waiting:
         lines += [f"## Waiting for you ({len(waiting)})", ""]
-        lines += [f"- #{m.id} [{m.tier}] {m.text}: {m.pending_reason or 'needs your OK'}" for m in waiting]
+        lines += [f"- #{m.id} [{m.tier}] {m.text}: {review.shown_reason(m, m.pending_reason, show_private)}"
+                  for m in waiting]
         lines.append("")
     if not show_private:
         hidden = store.count(tiers=(PRIVATE,))

@@ -129,10 +129,14 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
                 continue        # not even counted: a Shared route mustn't learn a Private match exists
             if it.kind == "duplicate":
                 entry = {"kind": "duplicate", "memories": [_public(m) for m in group],
-                         "also_held": {str(m.id): m.pending_reason for m in it.others if m.pending_reason}}
+                         "also_held": {str(m.id): review.shown_reason(m, m.pending_reason, show_private,
+                                                                      replayable=True)
+                                       for m in it.others if m.pending_reason}}
             else:
                 entry = {"kind": it.kind, "memory": _public(it.memory),
-                         "why": it.memory.pending_reason or it.memory.forget_reason or "needs the user's OK"}
+                         "why": review.shown_reason(it.memory,
+                                                    it.memory.pending_reason or it.memory.forget_reason,
+                                                    show_private, replayable=True)}
             out.append(entry)
         return _ok(waiting=out,
                    note="A duplicate group lists memories that may say the same thing: the user keeps one (keep: the "

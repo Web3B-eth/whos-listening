@@ -39,11 +39,15 @@ def _escape(text: str) -> str:
     return text.replace("<", "‹").replace(">", "›")
 
 
+def private_span(memory_id: int, text: str) -> str:
+    """Tag Private-derived text so the request guard can remove replayed copies."""
+    return PRIVATE_OPEN.format(id=memory_id) + _escape(text) + PRIVATE_CLOSE
+
+
 def format_line(m: Memory) -> str:
-    text = _escape(m.text)
     if m.tier == PRIVATE:
-        return f"- #{m.id} " + PRIVATE_OPEN.format(id=m.id) + text + PRIVATE_CLOSE
-    return f"- #{m.id} {text}"
+        return f"- #{m.id} " + private_span(m.id, m.text)
+    return f"- #{m.id} {_escape(m.text)}"
 
 
 def format_block(memories: Iterable[Memory], *, max_chars: int = MAX_BLOCK_CHARS) -> str:

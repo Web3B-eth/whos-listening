@@ -10,7 +10,7 @@ from __future__ import annotations
 import shlex
 from typing import Optional
 
-from . import resolve
+from . import resolve, review
 from .routes import RouteSettings, platform_verdict
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, SYNC_ACTIONS, Event, ForgottenError, Memory, Provenance, Store,
@@ -96,17 +96,18 @@ def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
                 for x in news:
                     lines.append(f"   {_line(x, show_private)}{_from(x)}")
                     if x.pending_reason:
-                        lines.append(f"      #{x.id} also waits because: {x.pending_reason}")
+                        lines.append(f"      #{x.id} also waits because: {review.shown_reason(x, x.pending_reason, show_private)}")
                 keeps = "  ·  ".join(f"/memories keep {y.id}" for y in (m, *news))
                 both = f"/memories keep both {news[0].id}" if len(news) == 1 else f"/memories keep both {m.id}"
                 lines.append(f"   keep one: {keeps}  ·  keep all: {both}")
             elif it.kind == "save":
                 lines += [f"\n{n}. A save waiting for your OK:", f"   {_line(m, show_private)}{_from(m)}",
-                          f"   why: {m.pending_reason or 'needs your OK'}",
+                          f"   why: {review.shown_reason(m, m.pending_reason, show_private)}",
                           f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
             else:
                 lines += [f"\n{n}. A forget waiting for your OK:", f"   {_line(m, show_private)}",
-                          f"   why: {m.forget_reason}", f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
+                          f"   why: {review.shown_reason(m, m.forget_reason, show_private)}",
+                          f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
         lines.append('\nOr tell the assistant, such as "keep 41" or "approve 43" (with the number).')
     lines.append("Look for repeats saved earlier: /memories review scan" + (f"  ({scan_note})" if scan_note else ""))
     lines.append("See everything: /memories  ·  Write it all to a file: /memories export")
@@ -131,9 +132,9 @@ def cmd_pending(store: Store, show_private: bool) -> str:
     for m in store.list(statuses=(PENDING,), limit=200):
         why = m.pending_reason or (f"it may say what #{m.duplicate_of} says: /memories review" if m.duplicate_of
                                    else "needs your OK")
-        lines.append(f"save {_line(m, show_private)}\n    why it waits: {why}")
+        lines.append(f"save {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}")
     for m in store.forget_requests():
-        lines.append(f"forget {_line(m, show_private)}\n    why it waits: {m.forget_reason}")
+        lines.append(f"forget {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, m.forget_reason, show_private)}")
     if not lines:
         return "Nothing is waiting for you."
     return "\n".join(lines) + "\n\n/memories approve N or /memories reject N"
@@ -207,8 +208,8 @@ def cmd_show(store: Store, arg: str, show_private: bool) -> str:
     p = m.provenance
     out = [
         _line(m, show_private),
-        f"status: {m.status}" + (f" ({m.pending_reason})" if m.status == PENDING else "")
-        + (f" (forget requested: {m.forget_reason})" if m.forget_reason else ""),
+        f"status: {m.status}" + (f" ({review.shown_reason(m, m.pending_reason, show_private)})" if m.status == PENDING else "")
+        + (f" (forget requested: {review.shown_reason(m, m.forget_reason, show_private)})" if m.forget_reason else ""),
         f"written by: {p.written_by}" + (f" via {p.via}" if p.via else ""),
         f"route: {p.route or 'unknown'}" + (f" ({p.route_tier})" if p.route_tier else ""),
         f"session: {p.session_id or '-'}  turn: {p.turn or '-'}" + (f"  author: {p.author}" if p.author else ""),

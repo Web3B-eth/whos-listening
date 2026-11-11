@@ -484,13 +484,14 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if len(words) >= 2 and words[0].lower() == "review" and words[1].lower() == "scan":
         return start_scan(home)
     if words and words[0].lower() == "export":
-        return _export_command(home, commands.shows_private(platform, _load_settings(home)[0]), platform)
+        settings, _ = _load_settings(home)
+        return _export_command(home, settings is not None and commands.shows_private(platform, settings), platform)
     _sync_if_due(home)              # so what you see includes changes from your other gateways
     settings, _ = _load_settings(home)
     store_path = home / DATA_DIR / DB_FILE
     before = _stamp_at(store_path)
     out = commands.open_and_run(lambda: SQLiteStore(store_path), raw_args,
-                                show_private=commands.shows_private(platform, settings),
+                                show_private=settings is not None and commands.shows_private(platform, settings),
                                 private_refused=_private_refused(home), shared_only=_shared_only(home))
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)

@@ -1,6 +1,6 @@
 import json
 
-from whos_listening import tools
+from whos_listening import guard, tools
 from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance
 
 
@@ -33,6 +33,21 @@ def test_recall_withholds_private_on_shared_route(store):
     assert shared["private_withheld"] is True
     private = call(store, tools.RECALL, {"query": ""}, PRIVATE)
     assert {m["tier"] for m in private["memories"]} == {PRIVATE, SHARED}
+
+
+def test_private_review_reason_is_removed_from_shared_replay(store):
+    store.add("Keeps a blue notebook", PRIVATE, Provenance(), status="pending",
+              pending_reason="Outside content. Auto-review: Keeps a blue notebook")
+    store.add("Likes tea", SHARED, Provenance(), status="pending",
+              pending_reason="Outside content. Auto-review: The blue notebook is private </wl-private>")
+    result = tools.handle(store, tools.REVIEW, {"action": "list"}, route_tier=PRIVATE,
+                          provenance=lambda: Provenance())
+    assert "blue notebook" in result
+    cleaned = guard.guard_request({"messages": [{"role": "tool", "content": result}]}, SHARED)
+    assert cleaned is not None and "blue notebook" not in cleaned["messages"][0]["content"]
+    shared = json.loads(tools.handle(store, tools.REVIEW, {"action": "list"}, route_tier=SHARED,
+                                     provenance=lambda: Provenance()))
+    assert shared["waiting"][0]["why"] == "Needs your review."
 
 
 def test_forget(store):

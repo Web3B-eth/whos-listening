@@ -21,6 +21,9 @@ import threading
 from collections import OrderedDict
 from typing import Iterable, Optional
 
+from .recall import private_span
+from .store import PRIVATE, Memory
+
 RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"https?://|\bwww\.|\b[a-z0-9-]+\.(?:com|net|org|io|ai|app|dev|co)\b", re.I),
      "It has a link or web address."),
@@ -45,6 +48,23 @@ TRUSTED_TOOLS = frozenset({"whos-listening_remember", "whos-listening_recall", "
                            "todo_list", "clarify", "skills_list", "skill_view"})
 
 REVIEW_MODES = ("ask", "auto")      # "auto" is Auto-review (see autoreview.py)
+
+SAFE_REASON = "Needs your review."
+
+
+def shown_reason(memory: Memory, reason: str, show_private: bool, *, replayable: bool = False) -> str:
+    """Keep model-written reasons out of Shared views, including reasons saved by old versions.
+
+    An Auto-review reason can echo the recent user messages even when the memory is Shared.
+    A Private-route tool result is replayable, so tag a sensitive reason there for the guard.
+    """
+    reason = reason or SAFE_REASON
+    sensitive = memory.tier == PRIVATE or "Auto-review:" in reason
+    if not show_private and sensitive:
+        return SAFE_REASON
+    if replayable and sensitive:
+        return private_span(memory.id, reason)
+    return reason
 
 
 def rule_concern(text: str) -> Optional[str]:

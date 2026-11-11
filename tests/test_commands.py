@@ -1,6 +1,6 @@
 """The /memories commands over a real store. All data is made up."""
 
-from whos_listening import commands
+from whos_listening import commands, resolve
 from whos_listening.store import PENDING, Provenance
 
 
@@ -35,6 +35,25 @@ def test_pending_approve_and_reject(store):
     assert store.is_forgotten_text("Visit www.example.com daily")
     assert run(store, "pending") == "Nothing is waiting for you."
     assert "isn't waiting" in run(store, f"approve {a.id}")
+
+
+def test_shared_views_hide_legacy_auto_review_reasons(store, tmp_path):
+    private = store.add("Keeps a blue notebook", "private", assistant(), status=PENDING,
+                        pending_reason="Outside content. Auto-review: Keeps a blue notebook")
+    shared = store.add("Likes tea", "shared", assistant(), status=PENDING,
+                       pending_reason="Outside content. Auto-review: The blue notebook is private")
+    safe = store.add("Visits www.example.com", "shared", assistant(), status=PENDING,
+                     pending_reason="It has a link or web address.")
+    for command in ("pending", "review", f"show {private.id}", f"show {shared.id}"):
+        out = run(store, command, show_private=False)
+        assert "blue notebook" not in out
+        assert "Needs your review" in out
+    exported = resolve.export_markdown(store, tmp_path, show_private=False).read_text()
+    assert "blue notebook" not in exported and "Likes tea" in exported
+    assert "It has a link or web address." in exported
+    assert "It has a link or web address." in run(store, f"show {safe.id}", show_private=False)
+    assert "Keeps a blue notebook" in run(store, "pending", show_private=True)
+    assert "The blue notebook is private" in run(store, "review", show_private=True)
 
 
 def test_forget_requests(store):

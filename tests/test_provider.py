@@ -681,6 +681,23 @@ def test_unreadable_hermes_settings_fail_safe(plugin, provider, monkeypatch, tmp
     assert "can't be read" in plugin._memories_command("settings", platform="cli")
 
 
+def test_unreadable_settings_hide_private_slash_and_export(plugin, provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"shared_platforms": ["desktop"]})
+    provider._store.add("Keeps a blue notebook", "private", plugin.Provenance())
+    assert "blue notebook" not in plugin._memories_command("list", platform="desktop")
+    assert "blue notebook" in plugin._memories_command("list", platform="cli")
+    provider._store.add("Prefers window seats", "private", plugin.Provenance(), status="pending",
+                        pending_reason="Outside content.")
+    monkeypatch.setattr(plugin, "_hermes_settings", lambda: None)
+    for command in ("list", "pending", "review", "show 1", "show 2"):
+        output = plugin._memories_command(command, platform="desktop")
+        assert "blue notebook" not in output and "window seats" not in output
+    output = plugin._memories_command("export", platform="desktop")
+    path = Path(output.split("Wrote your memories to ", 1)[1].split(". Private memories", 1)[0].rstrip("."))
+    assert "blue notebook" not in path.read_text() and "window seats" not in path.read_text()
+
+
 def test_sync_set_up_from_desktop_alone(plugin, provider, tmp_path, monkeypatch):
     from test_sync import FakeFile
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
