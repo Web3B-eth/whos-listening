@@ -14,7 +14,8 @@ def test_cli_runs_commands_and_purges(tmp_path, capsys):
     assert "Forget memory" in capsys.readouterr().out   # forget first
     cli.main(["--home", str(tmp_path), "forget", str(m.id)])
     cli.main(["--home", str(tmp_path), "purge", str(m.id)])
-    assert "Purged" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Purged" in output and "record was removed" in output and "Old bytes may remain" in output
     cli.main(["--home", str(tmp_path), "add", "shared", "Likes jazz, a lot"])
     assert "Likes jazz, a lot" in capsys.readouterr().out
 

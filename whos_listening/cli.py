@@ -4,8 +4,8 @@
 
 Run it from the plugin's folder (``$HERMES_HOME/plugins/whos-listening``). It takes the same
 commands as ``/memories`` and shows Private text, since it runs on this computer. It also has
-``purge N``, which deletes a forgotten memory's text from the file for good; that is only here,
-not in chat. Nothing here imports Hermes, so for whos-listening's settings in Hermes (Desktop's
+``purge N``, which removes a forgotten memory's record from SQLite. Old bytes can remain in the
+database, WAL or backups. Nothing here imports Hermes, so for whos-listening's settings in Hermes (Desktop's
 plugin form) it uses the copy the gateway keeps (settings.py).
 """
 
@@ -76,12 +76,13 @@ def purge(store: SQLiteStore, arg: str) -> str:
         store.purge(memory_id)
     except StoreError as exc:
         return str(exc)
-    return f"Purged #{memory_id}: its text is gone from the file. Its tombstone stays, so it can't be saved again from chat."
+    return (f"Purged #{memory_id}: its record was removed from SQLite. Old bytes may remain in the "
+            "database, WAL or backups. Its tombstone stays, so it can't be saved again from chat.")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m whos_listening.cli", description=__doc__.splitlines()[0],
-                                 epilog=commands.HELP.replace("/memories", "cli") + "\ncli purge N           delete a forgotten memory's text for good",
+                                 epilog=commands.HELP.replace("/memories", "cli") + "\ncli purge N           remove a forgotten memory's SQLite record",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--home", type=Path, default=None, help="the Hermes home (default: $HERMES_HOME or ~/.hermes)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="a /memories command, or purge N")
