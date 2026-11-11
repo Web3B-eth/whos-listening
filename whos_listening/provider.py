@@ -415,7 +415,7 @@ class WhosListeningProvider(MemoryProvider):
                     route.model if route else "?")
         since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
-                             args=(self._store, memory.id, memory.text, self._own_words(), since,
+                             args=(self._dir / DB_FILE, memory.id, memory.text, self._own_words(), since,
                                    route.model if route else "")).start()
         return True
 
@@ -474,13 +474,18 @@ def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 
     return result.text
 
 
-def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: list[str],
+def _auto_review(store: Any, memory_id: int, text: str, user_messages: list[str],
                  since_event: int, expected_model: str = "", ask: Any = None) -> None:
     """Run in a background thread. The verdict applies only if nothing happened to the memory
-    since the check started (the user's decision always wins)."""
+    since the check started (the user's decision always wins). ``store`` is the database's path
+    (the thread opens its own connection: the chat that started the check may end, and close its
+    own, before the answer comes back) or an open store."""
     asker = ask or (lambda prompt: _ask_chat_model(prompt, expected_model))
     verdict = autoreview.check(text, user_messages, asker)
+    own = isinstance(store, (str, Path))
     try:
+        if own:
+            store = SQLiteStore(Path(store))
         applied = store.apply_review(memory_id, since_event, verdict.save, verdict.reason)
         # Fixed words only: the model's reason can quote the memory.
         logger.info("whos-listening: Auto-review for held save #%d: %s", memory_id,
@@ -488,6 +493,9 @@ def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: l
                     else "not applied (the memory changed meanwhile)")
     except Exception as exc:
         logger.warning("whos-listening: could not apply the auto-review verdict: %s", type(exc).__name__)
+    finally:
+        if own and not isinstance(store, (str, Path)):
+            store.close()
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:

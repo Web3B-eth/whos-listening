@@ -1071,3 +1071,20 @@ def test_auto_review_is_logged_without_memory_text_or_the_models_words(plugin, p
     assert any(f"review choice keep #{mid} not applied: the chat read outside content (web_extract) and "
                "Auto-review didn't confirm it" in m for m in caplog.messages)
     assert not any("bassoon" in m.lower() for m in caplog.messages)       # no memory text, no model words
+
+
+
+def test_auto_review_applies_its_verdict_after_the_chat_closed(plugin, tmp_path):
+    """Hermes may close the chat's provider (and its database) before the background check answers."""
+    from whos_listening.store import SQLiteStore
+    path = tmp_path / "closed.sqlite"
+    store = SQLiteStore(path)
+    m = store.add("Prefers tea", "private", plugin.Provenance(), status="pending", pending_reason="r")
+    since = store.last_event_id(m.id)
+    store.close()                                                   # the chat ended
+    plugin._auto_review(path, m.id, m.text, ["I prefer tea"], since, ask=lambda p: '{"save": true}')
+    again = SQLiteStore(path)
+    try:
+        assert again.get(m.id).status == "active"
+    finally:
+        again.close()
