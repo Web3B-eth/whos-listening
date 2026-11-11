@@ -12,6 +12,7 @@ import threading
 import unicodedata
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -200,6 +201,7 @@ class Store(ABC):
     @abstractmethod
     def set_status(self, memory_id: int, status: str, *, pending_reason: str = "") -> Memory: ...
     def ensure_change_possible(self, memory_id: int) -> None: ...
+    def atomic_choice(self): ...
 
     @abstractmethod
     def propose_shared(self, text: str, provenance: Provenance, *, memory_id: Optional[int] = None) -> Memory:
@@ -307,7 +309,8 @@ class Store(ABC):
     def withdrawals_for_sync(self) -> list[Withdrawal]: ...
 
     @abstractmethod
-    def withdraw_approval(self, memory_id: int, reason: str = "You undid the approval.") -> Memory: ...
+    def withdraw_approval(self, memory_id: int, reason: str = "You undid the approval.", *,
+                          require_sharing_choice: bool = False) -> Memory: ...
 
     @abstractmethod
     def apply_withdrawal(self, uid: str, fp: str, at: str, created_at: str, origin: str,
@@ -369,6 +372,7 @@ class SQLiteStore(Store):
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._choice_depth = 0
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
@@ -767,7 +771,7 @@ class SQLiteStore(Store):
                         action = "share_approved"
                     else:
                         # Declining a proposal creates no tombstone and sends no sync forget.
-                        stamp, order_key = self._change(m)
+                        stamp, order_key = self._change(m, terminal_tie=True)
                         self._db.execute("UPDATE memories SET status = 'forgotten', updated_at = ?, order_key = ? WHERE id = ?",
                                          (stamp, order_key, m.id))
                         action = "share_rejected"
@@ -834,7 +838,7 @@ class SQLiteStore(Store):
             raise StoreError(f"Unknown status {status!r}.")
         if status == FORGOTTEN:
             return self.forget(memory_id)  # a forget always leaves a tombstone
-        with self._lock, self._db:
+        with self._lock, self._write():
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
@@ -859,12 +863,41 @@ class SQLiteStore(Store):
                 raise StoreError(f"No memory #{memory_id}.")
             self._change(m)
 
+    @contextmanager
+    def atomic_choice(self):
+        """Keep a multi-row owner choice together and block competing SQLite writers."""
+        with self._lock:
+            started = not self._db.in_transaction
+            self._db.execute("BEGIN IMMEDIATE" if started else "SAVEPOINT wl_owner_choice")
+            self._choice_depth += 1
+            try:
+                yield
+                self._db.execute("COMMIT" if started else "RELEASE SAVEPOINT wl_owner_choice")
+            except BaseException:
+                if started:
+                    self._db.execute("ROLLBACK")
+                else:
+                    self._db.execute("ROLLBACK TO SAVEPOINT wl_owner_choice")
+                    self._db.execute("RELEASE SAVEPOINT wl_owner_choice")
+                raise
+            finally:
+                self._choice_depth -= 1
+
+    @contextmanager
+    def _write(self):
+        if self._choice_depth:
+            yield
+        else:
+            with self._db:
+                yield
+
     def forget(self, memory_id, *, at=None, order_key=None, travels=None, everywhere=False):
-        with self._lock, self._db:
+        with self._lock, self._write():
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            if m.audience_consent_required:
+            if m.audience_consent_required and not (
+                    m.tier == SHARED and at is not None and order_key is not None and travels is True):
                 raise StoreError("That sharing proposal needs the direct local share command.")
             if m.status == FORGOTTEN:
                 tomb = self.tombstone(fingerprint(m.text))
@@ -926,7 +959,8 @@ class SQLiteStore(Store):
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            if m.audience_consent_required:
+            if m.audience_consent_required and not (
+                    m.tier == SHARED and at is not None and order_key is not None):
                 raise StoreError("That sharing proposal cannot be restored.")
             if m.status != FORGOTTEN:
                 raise StoreError(f"Memory #{m.id} is not forgotten.")
@@ -947,7 +981,7 @@ class SQLiteStore(Store):
                 self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (m.uid,))
             return self.get(m.id)
 
-    def withdraw_approval(self, memory_id, reason="You undid the approval."):
+    def withdraw_approval(self, memory_id, reason="You undid the approval.", *, require_sharing_choice=False):
         """Keep a Shared approval pending and publish a UID-only withdrawal atomically."""
         with self._lock, self._db:
             m = self.get(memory_id)
@@ -955,7 +989,8 @@ class SQLiteStore(Store):
                 raise StoreError(f"No active Shared memory #{memory_id} to withdraw.")
             stamp, order_key = self._change(m, terminal_tie=True)
             self._db.execute("UPDATE memories SET status = 'pending', pending_reason = ?, "
-                             "updated_at = ?, order_key = ? WHERE id = ?", (reason, stamp, order_key, m.id))
+                             "audience_consent_required = ?, updated_at = ?, order_key = ? WHERE id = ?",
+                             (reason, int(require_sharing_choice), stamp, order_key, m.id))
             self._db.execute("INSERT OR REPLACE INTO withdrawals "
                              "(uid, fingerprint, updated_at, created_at, origin, order_key) VALUES (?,?,?,?,?,?)",
                              (m.uid, fingerprint(m.text), stamp, m.created_at, "", order_key))
@@ -1002,7 +1037,7 @@ class SQLiteStore(Store):
                 self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (str(uid),))
 
     def set_duplicate_of(self, memory_id, other_id):
-        with self._lock, self._db:
+        with self._lock, self._write():
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
@@ -1069,7 +1104,7 @@ class SQLiteStore(Store):
         if action not in EVENT_ACTIONS:
             raise StoreError(f"Unknown event {action!r}.")
         stamp = now_iso()
-        with self._lock, self._db:
+        with self._lock, self._write():
             cur = self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
                                    (int(memory_id), action, str(actor or "user"), stamp))
             return Event(cur.lastrowid, int(memory_id), action, str(actor or "user"), stamp)
@@ -1207,7 +1242,7 @@ class SQLiteStore(Store):
         return row["value"] if row else default
 
     def meta_set(self, key, value):
-        with self._lock, self._db:
+        with self._lock, self._write():
             self._db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (str(key), str(value)))
 
     def close(self):

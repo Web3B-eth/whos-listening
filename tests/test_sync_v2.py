@@ -163,6 +163,21 @@ def test_v2_non_map_memories_refuses_file(tmp_path):
         s.close()
 
 
+@pytest.mark.parametrize("bad_version", [True, False, 1.0, 2.0, "1", "2", None])
+def test_noninteger_version_refuses_without_v1_rewrite(tmp_path, bad_version):
+    s, file = SQLiteStore(tmp_path / "version.sqlite"), FakeFile()
+    try:
+        raw = {"format": sync.FORMAT, "version": bad_version, "memories": {
+            "a" * 32: {"status": ACTIVE, "text": FACT, "updated_at": "invalid"}}}
+        file.raw = (json.dumps(raw) + "\n").encode()
+        before = file.raw
+        with pytest.raises(sync.SyncError, match="newer"):
+            sync.sync_once(s, file, "peer")
+        assert s.by_uid("a" * 32) is None and file.raw == before
+    finally:
+        s.close()
+
+
 def test_genuine_forget_after_equal_key_withdrawal_installs_global_tombstone(tmp_path):
     s, file = SQLiteStore(tmp_path / "withdrawn.sqlite"), FakeFile()
     try:
@@ -229,6 +244,33 @@ def test_terminal_v2_active_can_be_forgotten_and_converges(tmp_path):
     finally:
         a.close()
         b.close()
+
+
+def test_terminal_private_preference_suppresses_matching_shared_arrival(tmp_path):
+    s, file = SQLiteStore(tmp_path / "private-terminal.sqlite"), FakeFile()
+    try:
+        private = s.add(FACT, PRIVATE, USER)
+        uid, unrelated_uid = "d" * 32, "e" * 32
+        terminal = str(order.MAX_VALUE)
+        stamp = "2026-01-01T00:00:00+00:00"
+        matching = {"status": ACTIVE, "text": FACT, "fingerprint": fingerprint(FACT),
+                    "updated_at": stamp, "order": terminal}
+        unrelated_text = "Collects stamps"
+        unrelated = {"status": ACTIVE, "text": unrelated_text,
+                     "fingerprint": fingerprint(unrelated_text), "updated_at": stamp,
+                     "order": order.from_iso(stamp)}
+        file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                                "memories": {uid: matching, unrelated_uid: unrelated}}) + "\n").encode()
+        near = sync.NearRepeats(find=lambda text: private if text == FACT else None,
+                                tier_duplicates=PRIVATE)
+        sync.sync_once(s, file, "peer", near=near)
+        wire = file.doc()["memories"]
+        assert wire[uid]["status"] == FORGOTTEN and wire[uid]["order"] == terminal
+        assert wire[unrelated_uid]["status"] == ACTIVE
+        assert s.get(private.id).status == ACTIVE
+        assert s.by_uid(unrelated_uid).status == ACTIVE
+    finally:
+        s.close()
 
 
 def test_max_legacy_pending_approval_and_forget_restore(tmp_path):

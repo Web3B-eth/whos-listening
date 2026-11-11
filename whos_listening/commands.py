@@ -294,6 +294,12 @@ def _undo(store: Store, e: Event, show_private: bool) -> str:
     m = store.get(e.memory_id)
     if m is None:
         raise StoreError("That memory was purged, so the last change can't be undone.")
+    if e.action == "share_approved":
+        if m.status != ACTIVE or m.tier != SHARED or m.audience_consent_required:
+            raise StoreError("That sharing approval changed; review the current memory before deciding.")
+        store.withdraw_approval(m.id, "Review sharing again before any model sees this memory.",
+                                require_sharing_choice=True)
+        return f"Undid sharing approval for P{m.id}. Use /memories share to review it again."
     if e.action in ("saved", "held", "restored", "approved"):
         if e.action == "approved":
             if m.tier == SHARED and m.status == ACTIVE:
@@ -320,9 +326,17 @@ def _undo(store: Store, e: Event, show_private: bool) -> str:
 
 def cmd_undo(store: Store, show_private: bool) -> str:
     for e in store.events(limit=50):
-        if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS or e.action.startswith("share_"):
+        if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS:
             continue        # a change that arrived by sync isn't yours to undo here
+        if e.action == "share_held":
+            return "A sharing proposal is waiting. Use /memories share to review it."
+        if e.action == "share_rejected":
+            store.mark_undone(e.id)
+            return "That sharing proposal was declined. Use /memories undo again for an earlier change."
         current = store.get(e.memory_id)
+        if e.action == "share_approved" and current is not None and current.audience_consent_required:
+            store.mark_undone(e.id)
+            return "That sharing approval is already waiting for a fresh /memories share choice."
         if current is not None and current.audience_consent_required:
             continue        # a hidden proposal is not an ordinary undo choice
         if current is not None and current.tier == PRIVATE and not show_private:

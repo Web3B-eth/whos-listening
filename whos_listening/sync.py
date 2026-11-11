@@ -180,7 +180,7 @@ def parse(raw: Optional[bytes]) -> dict[str, Record]:
         raise SyncError("The sync file is not valid JSON.") from exc
     if not isinstance(doc, Mapping) or doc.get("format") != FORMAT:
         raise SyncError("The sync file is not a Who's Listening sync file.")
-    if not isinstance(doc.get("version"), int) or doc["version"] not in (1, VERSION):
+    if type(doc.get("version")) is not int or doc["version"] not in (1, VERSION):
         raise SyncError("The sync file was written by a newer Who's Listening; update this one first.")
     out: dict[str, Record] = {}
     memories = doc.get("memories")
@@ -621,7 +621,12 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
                 continue
             if match is not None and near.tier_duplicates == PRIVATE:
                 # The user keeps the Private one: the Shared copy is forgotten on every gateway.
-                next_order = sync_order.next_key(r.order_key, now_iso())
+                try:
+                    next_order = sync_order.next_key(r.order_key, now_iso())
+                except sync_order.OrderError:
+                    if sync_order.parse(r.order_key) != sync_order.MAX_VALUE:
+                        raise
+                    next_order = r.order_key  # a genuine forget wins an active tie at the ceiling
                 merged[uid] = replace(r, status=FORGOTTEN, text=None,
                                       updated_at=sync_order.display(next_order, now_iso()), order_key=next_order)
                 result.sent += 1

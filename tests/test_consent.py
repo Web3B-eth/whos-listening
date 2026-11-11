@@ -5,7 +5,7 @@ import json
 import pytest
 
 from test_sync import FakeFile
-from whos_listening import cli, commands, sync, tools
+from whos_listening import cli, commands, order, sync, tools
 from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError
 
 
@@ -109,6 +109,120 @@ def test_proposal_is_absent_from_actual_sync_until_owner_approves(store):
     assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
     sync.sync_once(store, file, "local")
     assert FACT in file.raw.decode()
+
+
+def test_undo_direct_share_approval_withdraws_uid_and_requires_fresh_choice(tmp_path):
+    a, b, file = SQLiteStore(tmp_path / "owner.sqlite"), SQLiteStore(tmp_path / "peer.sqlite"), FakeFile()
+    try:
+        private = a.add(FACT, PRIVATE, USER)
+        propose(a)
+        p = a.consent_proposals()[0]
+        old_token = f"P{p.id}@{p.order_key}"
+        assert "Approved Shared" in commands.cmd_share(a, f"keep-both {old_token}")
+        approved = a.get(p.id)
+        sync.sync_once(a, file, "owner")
+        sync.sync_once(b, file, "peer")
+        same_words = b.add(FACT, SHARED, USER)
+        assert "Undid sharing approval" in commands.cmd_undo(a, True)
+        waiting = a.get(p.id)
+        assert waiting.status == PENDING and waiting.audience_consent_required
+        assert int(waiting.order_key) > int(approved.order_key)
+        assert a.get(private.id).status == ACTIVE
+        assert a.withdrawal(p.uid) is not None
+        assert a.shared_for_sync() == []
+        assert "changed" in commands.cmd_share(a, f"approve {old_token}")
+        with pytest.raises(StoreError, match="No memory"):
+            commands.cmd_approve(a, str(p.id), True)
+        assert not a.apply_review(p.id, a.last_event_id(p.id), waiting.order_key, True, "")
+        sync.sync_once(a, file, "owner")
+        assert file.doc()["memories"][p.uid]["status"] == sync.WITHDRAWN
+        assert FACT not in file.raw.decode()
+        sync.sync_once(b, file, "peer")
+        assert b.by_uid(p.uid).status == FORGOTTEN
+        assert b.get(same_words.id).status == ACTIVE
+        assert b.tombstone(sync.fingerprint(FACT)) is None
+        fresh_token = f"P{p.id}@{waiting.order_key}"
+        assert "Approved Shared" in commands.cmd_share(a, f"keep-both {fresh_token}")
+        assert a.get(p.id).status == ACTIVE and not a.get(p.id).audience_consent_required
+        sync.sync_once(a, file, "owner")
+        assert file.doc()["memories"][p.uid]["status"] == ACTIVE
+    finally:
+        a.close()
+        b.close()
+
+
+def test_pending_or_declined_share_choice_does_not_undo_older_action(store):
+    old = store.add("Likes jazz", PRIVATE, USER)
+    store.log_event(old.id, "saved", "user")
+    propose(store)
+    p = store.consent_proposals()[0]
+    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
+    assert store.get(old.id).status == ACTIVE
+    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{p.order_key}")
+    assert "proposal was declined" in commands.cmd_undo(store, True)
+    assert store.get(old.id).status == ACTIVE
+    assert "forgot" in commands.cmd_undo(store, True).lower()
+    assert store.get(old.id).status == FORGOTTEN
+
+
+def test_already_withdrawn_share_approval_does_not_undo_older_action(store):
+    old = store.add("Likes jazz", PRIVATE, USER)
+    store.log_event(old.id, "saved", "user")
+    propose(store)
+    p = store.consent_proposals()[0]
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
+    store.withdraw_approval(p.id, require_sharing_choice=True)
+    assert "already waiting" in commands.cmd_undo(store, True)
+    assert store.get(old.id).status == ACTIVE
+
+
+def test_terminal_share_undo_can_still_be_declined_and_purged(store):
+    propose(store)
+    p = store.consent_proposals()[0]
+    near_end = str(order.MAX_VALUE - 1)
+    store._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (near_end, p.id))
+    store._db.commit()
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{near_end}")
+    assert store.get(p.id).order_key == str(order.MAX_VALUE)
+    assert "Undid sharing approval" in commands.cmd_undo(store, True)
+    waiting = store.get(p.id)
+    assert waiting.status == PENDING and waiting.audience_consent_required
+    assert waiting.order_key == str(order.MAX_VALUE)
+    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{waiting.order_key}")
+    assert store.get(p.id).status == FORGOTTEN
+    assert not store.is_forgotten_text(FACT)
+    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
+    assert store.get(p.id) is None
+
+
+def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
+    propose(store)
+    p = store.consent_proposals()[0]
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
+    assert "Undid sharing approval" in commands.cmd_undo(store, True)
+    withdrawal = store.withdrawal(p.uid)
+    file = FakeFile()
+    stamp = "2026-01-01T00:00:00+00:00"
+    forgotten = {"status": FORGOTTEN, "fingerprint": sync.fingerprint(FACT),
+                 "updated_at": stamp, "order": withdrawal.order_key}
+    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                            "memories": {p.uid: forgotten}}) + "\n").encode()
+    sync.sync_once(store, file, "peer")
+    hidden = store.get(p.id)
+    assert hidden.status == FORGOTTEN and hidden.audience_consent_required
+    assert store.tombstone(sync.fingerprint(FACT))[2] is True
+    newer = order.next_key(withdrawal.order_key, stamp)
+    active = {"status": ACTIVE, "text": FACT, "fingerprint": sync.fingerprint(FACT),
+              "updated_at": stamp, "order": newer}
+    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                            "memories": {p.uid: active}}) + "\n").encode()
+    sync.sync_once(store, file, "peer")
+    waiting = store.get(p.id)
+    assert waiting.status == PENDING and waiting.audience_consent_required
+    assert store.consent_proposals()[0].id == p.id
+    assert store.shared_for_sync() == []
+    with pytest.raises(StoreError, match="No memory"):
+        commands.cmd_approve(store, str(p.id), True)
 
 
 def test_second_connection_cannot_decide_a_stale_proposal(tmp_path):

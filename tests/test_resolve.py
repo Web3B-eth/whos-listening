@@ -2,13 +2,14 @@
 review tool and commands). All data is made up."""
 
 import json
+import sqlite3
 
 import pytest
 
 from test_sync import FakeFile
 from whos_listening import commands, resolve, sync, tools
 from whos_listening import settings as ws
-from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore
+from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError
 
 USER = Provenance(written_by="user", via="test")
 
@@ -42,6 +43,64 @@ def test_review_reject_pending_save_rejects_save_when_forget_is_requested(store)
     out = review(store, "reject", id=held.id, said=f"Reject the pending save {held.id}")
     assert out["ok"] and out["status"] == FORGOTTEN
     assert store.is_forgotten_text(held.text)
+
+
+def test_keep_rolls_back_forget_if_pending_keeper_cannot_activate(store, monkeypatch):
+    older = store.add("Likes jazz", SHARED, USER)
+    kept = store.add("Enjoys jazz music", SHARED, USER, status=PENDING, duplicate_of=older.id)
+    before_events = len(store.events(limit=100))
+    def fail_activation(*_args, **_kwargs):
+        raise StoreError("The sync order limit was reached; this change was not made.")
+    monkeypatch.setattr(store, "set_status", fail_activation)
+    with pytest.raises(StoreError, match="order limit"):
+        resolve.keep(store, kept.id, show_private=True)
+    assert store.get(older.id).status == ACTIVE
+    assert store.get(kept.id).status == PENDING
+    assert store.get(kept.id).duplicate_of == older.id
+    assert not store.is_forgotten_text(older.text)
+    assert len(store.events(limit=100)) == before_events
+
+
+def test_keep_both_rolls_back_first_activation_if_second_fails(store, monkeypatch):
+    older = store.add("Likes jazz", SHARED, USER, status=PENDING)
+    newer = store.add("Enjoys jazz music", SHARED, USER, status=PENDING, duplicate_of=older.id)
+    original = store.set_status
+    calls = 0
+    def fail_second(memory_id, status, *, pending_reason=""):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise StoreError("The sync order limit was reached; this change was not made.")
+        return original(memory_id, status, pending_reason=pending_reason)
+    monkeypatch.setattr(store, "set_status", fail_second)
+    with pytest.raises(StoreError, match="order limit"):
+        resolve.keep_both(store, older.id, show_private=True)
+    assert store.get(older.id).status == PENDING
+    assert store.get(newer.id).status == PENDING
+    assert store.get(newer.id).duplicate_of == older.id
+    assert store.meta_get(resolve.KEPT_BOTH_KEY) == ""
+
+
+def test_atomic_choice_blocks_other_connection_and_preserves_caller_transaction(tmp_path):
+    path = tmp_path / "choice.sqlite"
+    first, second = SQLiteStore(path), SQLiteStore(path)
+    try:
+        m = first.add("Likes jazz", SHARED, USER)
+        second._db.execute("PRAGMA busy_timeout = 0")
+        with first.atomic_choice():
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                second._db.execute("UPDATE memories SET text = text WHERE id = ?", (m.id,))
+            with pytest.raises(StoreError, match="claimed before"):
+                first.claim_memory_id()
+        first._db.execute("BEGIN")
+        with first.atomic_choice():
+            first.meta_set("choice-test", "temporary")
+        assert first._db.in_transaction
+        first._db.execute("ROLLBACK")
+        assert first.meta_get("choice-test") == ""
+    finally:
+        first.close()
+        second.close()
 
 
 BIKE = "Owns a Santa Cruz Hightower mountain bike"

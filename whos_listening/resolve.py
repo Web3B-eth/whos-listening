@@ -116,6 +116,11 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
     """Keep ``memory_id`` and forget what it may repeat: for an older memory, every newer one
     flagged against it; for a newer one, the older one (the other newer ones are then flagged
     against the one kept). Returns (kept, forgotten)."""
+    with store.atomic_choice():
+        return _keep(store, memory_id, show_private=show_private, actor=actor)
+
+
+def _keep(store: Store, memory_id: int, *, show_private: bool, actor: str) -> tuple[Memory, list[Memory]]:
     m = store.get(int(memory_id))
     if not _live(m):
         raise StoreError(f"No memory #{memory_id} to keep.")
@@ -137,6 +142,11 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
 
 def keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str = "user") -> list[Memory]:
     """Keep ``memory_id`` and the memories flagged with it; a scan won't flag the pair again."""
+    with store.atomic_choice():
+        return _keep_both(store, memory_id, show_private=show_private, actor=actor)
+
+
+def _keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str) -> list[Memory]:
     m = store.get(int(memory_id))
     if not _live(m):
         raise StoreError(f"No memory #{memory_id}.")
