@@ -3,7 +3,7 @@
 # Pinned to main at 4eb5ea8 (2026-11-11, after #45), where the checks in docs/catalog-pr.md passed.
 # Re-pin `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
 name: whos-listening
-title: Who's Listening
+title: "Who's Listening?"
 repo: https://github.com/Web3B-eth/whos-listening
 sha: 4eb5ea8f64362109c140dc3f2ce4c8eba0bf116c
 subdir: ""
