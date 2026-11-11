@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import types
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -55,6 +56,52 @@ def _process_wide(name: str, factory: Any) -> Any:
 ROUTES = _process_wide("routes", RouteBook)
 # Chats that have read outside content (tool names only). Saves and forgets in them wait.
 OUTSIDE = _process_wide("outside", review.OutsideBook)
+
+
+class _SharedRequestWords:
+    """Recent user text from the actual guarded Shared request, without memory injection."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sessions: OrderedDict[str, list[str]] = OrderedDict()
+
+    def record(self, session_id: str, request: Any, tier: Optional[str]) -> None:
+        if not session_id:
+            return
+        words = []
+        if tier == SHARED and isinstance(request, dict) and isinstance(request.get("messages"), list):
+            for message in reversed(request["messages"]):
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = " ".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+                if isinstance(content, str):
+                    own = _QUOTE_RE.sub("", content.split("\n\n<memory-context>", 1)[0]).strip()
+                    if own:
+                        words.append(own[:autoreview.USER_MESSAGE_MAX_CHARS])
+                        if len(words) == autoreview.USER_MESSAGE_COUNT:
+                            break
+            words.reverse()
+        with self._lock:
+            if words:
+                self._sessions[session_id] = words
+                self._sessions.move_to_end(session_id)
+                while len(self._sessions) > 512:
+                    self._sessions.popitem(last=False)
+            else:
+                self._sessions.pop(session_id, None)
+
+    def get(self, session_id: str) -> list[str]:
+        with self._lock:
+            return list(self._sessions.get(session_id, []))
+
+    def clear(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+
+SHARED_REQUEST_WORDS = _process_wide("shared_request_words", _SharedRequestWords)
 
 
 def _config() -> Any:
@@ -367,8 +414,9 @@ class WhosListeningProvider(MemoryProvider):
     def _check_sharing(self, text: str) -> autoreview.Verdict:
         """Check the candidate against the user's own words before any Shared write.
 
-        On a Shared route, only this turn's user text goes to the side call; older Private
-        turns and stored Private memories never enter its prompt.
+        On a Shared route, the guarded main request supplies recent user text on local,
+        single-user platforms, including resumed CLI turns. Stored Private memories and
+        injected memory context never enter the side call.
         """
         route, verdict = self._route()
         if route is None or not route.model or self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
@@ -378,8 +426,12 @@ class WhosListeningProvider(MemoryProvider):
             if side.tier != PRIVATE:
                 return autoreview.Verdict(False, "The check could not run.", answered=False)
             words = self._own_words()
+        elif self._platform in ("cli", "local", "tui", "desktop"):
+            words = SHARED_REQUEST_WORDS.get(self._session_id)
+            if not words or words[-1] != self._turn_message[:autoreview.USER_MESSAGE_MAX_CHARS]:
+                words = [self._turn_message] if self._turn_message else []
         else:
-            words = [self._turn_message] if self._turn_message else []
+            words = self._own_words()  # author ids matter on messaging/group platforms
         if not words:
             return autoreview.Verdict(False, "The check found none of your words.", answered=False)
         self._checks_this_turn += 1
@@ -983,6 +1035,12 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",
                        type(exc).__name__)
     cleaned = guard.guard_request(request, tier)
+    session_id = str(kwargs.get("session_id") or "")
+    try:
+        SHARED_REQUEST_WORDS.record(session_id, cleaned if cleaned is not None else request, tier)
+    except Exception as exc:
+        SHARED_REQUEST_WORDS.clear(session_id)
+        logger.debug("whos-listening: could not capture Shared user context: %s", type(exc).__name__)
     if cleaned is None:
         return None
     return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}

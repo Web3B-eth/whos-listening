@@ -49,6 +49,7 @@ def see(plugin, base_url, model="m", session="sess-1"):
 @pytest.fixture(autouse=True)
 def fresh_routes(plugin, monkeypatch):
     monkeypatch.setattr(plugin, "ROUTES", plugin.RouteBook())
+    monkeypatch.setattr(plugin, "SHARED_REQUEST_WORDS", plugin._SharedRequestWords())
 
 
 def tool(p, name, args):
@@ -491,6 +492,52 @@ def test_a_reply_from_another_model_does_not_count(plugin, monkeypatch):
     with pytest.raises(RuntimeError):
         plugin._ask_chat_model("prompt", expected_model="m")
     assert plugin._ask_chat_model("prompt") == '{"save": true}'      # no expectation: accepted
+
+
+def test_shared_followup_uses_three_own_messages_without_stored_private_text(plugin, provider, monkeypatch):
+    prompts = []
+    messages = []
+
+    def shared_turn(text):
+        messages.append({"role": "user", "content": text + "\n\n<memory-context>\nPrivate canary</memory-context>"})
+        plugin._on_pre_llm_call(session_id="sess-1", model="m")
+        plugin._on_llm_request(request={"messages": list(messages)}, session_id="sess-1",
+                               provider="custom", model="m", base_url="https://api.example.com/v1")
+
+    def answer(prompt, model, **_):
+        prompts.append(prompt)
+        messages = prompt.split("<<user-messages>>\n", 1)[1].split("\n<</user-messages>>", 1)[0]
+        return json.dumps({"save": "Remember that I like jazz" in messages,
+                           "share": "That fact may be shared with any model" in messages})
+
+    monkeypatch.setattr(plugin, "_ask_chat_model", answer)
+    provider._store.add("Private canary: owns a red canoe", "private", plugin.Provenance())
+    provider.on_turn_start(1, "Remember that I like jazz", author_id="owner")
+    shared_turn("Remember that I like jazz")
+    first = tool(provider, "whos-listening_remember", {"text": "I like jazz", "tier": "shared"})
+    assert first["private"] == {"tier": "private"}
+    provider.on_turn_start(2, "Did you save that fact?", author_id="owner")
+    shared_turn("Did you save that fact?")
+    provider.on_turn_start(3, "That fact may be shared with any model", author_id="owner")
+    shared_turn("That fact may be shared with any model")
+    second = tool(provider, "whos-listening_remember", {"text": "I like jazz", "tier": "shared"})
+    assert second["saved"] == {"tier": "shared"}
+    assert all(s in prompts[-1] for s in ("Remember that I like jazz", "Did you save that fact?",
+                                           "That fact may be shared with any model"))
+    assert "Private canary" not in prompts[-1]
+
+
+def test_shared_group_check_does_not_borrow_another_authors_fact(plugin, provider, monkeypatch):
+    prompts = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model, **_: prompts.append(prompt)
+                        or '{"save": false, "share": false}')
+    provider._platform = "telegram"
+    provider.on_turn_start(1, "Remember that I like jazz", author_id="person-one")
+    provider.on_turn_start(2, "That fact may be shared with any model", author_id="person-two")
+    see(plugin, "https://api.example.com/v1")
+    tool(provider, "whos-listening_remember", {"text": "I like jazz", "tier": "shared"})
+    assert "Remember that I like jazz" not in prompts[-1]
+    assert "That fact may be shared with any model" in prompts[-1]
 
 
 def test_recall_runs_at_most_five_times_a_turn(plugin, provider):

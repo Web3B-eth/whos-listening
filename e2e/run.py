@@ -394,6 +394,28 @@ def main() -> int:
                                          for m in memories_in(data, tiers=("private",))),
                   str([display_ref(m) for m in approved]))
 
+        # 8c. The bounded user-message window can carry a fact through an ordinary status
+        #     question to an explicit sharing instruction, without repeating the fact.
+        followup_fact = "I collect blue postcards"
+        sid, reqs = run.chat('Remember that I collect blue postcards. [[call whos-listening_remember '
+                             '{"text": "I collect blue postcards", "tier": "shared"}]]',
+                             provider="shared-sim", model="shared-model")
+        run.check("shared follow-up: first turn falls back to Private",
+                  any(m.text == followup_fact for m in memories_in(data, tiers=("private",), statuses=("active",)))
+                  and not any(m.text == followup_fact for m in memories_in(data, tiers=("shared",))),
+                  str([display_ref(m) for m in memories_in(data, tiers=("private",), statuses=("active",))
+                       if m.text == followup_fact]))
+        sid, _ = run.chat("Did you save that fact?", resume=sid)
+        _, reqs = run.chat('That fact may be shared with any model. [[call whos-listening_remember '
+                           '{"text": "I collect blue postcards", "tier": "shared"}]]', resume=sid)
+        run.check("shared follow-up: second turn promotes the stated fact",
+                  any(m.text == followup_fact and m.status == "active"
+                      for m in memories_in(data, tiers=("shared",)))
+                  and not any(m.text == followup_fact and m.status == "active"
+                              for m in memories_in(data, tiers=("private",))),
+                  str([display_ref(m) for m in memories_in(data, tiers=("shared",))
+                       if m.text == followup_fact]))
+
         # 9. Sync between gateways: a second gateway (B) and a fake GitHub. Only Shared memories
         #    and forgets travel; an arrival passes the rule screen; a Shared change pushes by itself.
         gh_port = free_port()
