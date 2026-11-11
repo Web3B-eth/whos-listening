@@ -101,11 +101,11 @@ def test_the_tool_uses_the_judge_when_words_dont_match(store):
         return a
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": "Allergic to peanuts"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), judge=j))
-    assert out["duplicate"]["id"] == a.id and calls == [("Allergic to peanuts", (PRIVATE, SHARED))]
+    assert out["duplicate"]["id"] == "P1" and calls == [("Allergic to peanuts", (PRIVATE, SHARED))]
     # the word check catches it first: no judge call
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": "I have a peanut allergy"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), judge=j))
-    assert out["duplicate"]["id"] == a.id and len(calls) == 1
+    assert out["duplicate"]["id"] == "P1" and len(calls) == 1
     # a judge that fails saves normally
     def broken(text, tiers):
         raise RuntimeError("x")

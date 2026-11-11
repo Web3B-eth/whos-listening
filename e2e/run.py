@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from whos_listening.store import Provenance, SQLiteStore, fingerprint  # noqa: E402
+from whos_listening.store import Provenance, SQLiteStore, fingerprint, display_ref  # noqa: E402
 
 PRIVATE_TEXT = "Keeps a vegetarian diet on weekdays"
 SHARED_TEXT = "Likes spicy food"
@@ -111,10 +111,10 @@ class Run:
             requests = [json.loads(line) for line in f if line.strip()]
         return session, requests
 
-    def command(self, line: str) -> str:
-        """A slash command in a one-off chat; returns what Hermes printed."""
-        out = subprocess.run([self.hermes, "chat", "-Q", "-q", line, "--provider", "private-sim",
-                              "-m", "private-model"], env=self.env(), cwd=self.home,
+    def command(self, line: str, *, resume: str = "") -> str:
+        """A slash command in a one-off chat (or in chat ``resume``); returns what Hermes printed."""
+        route = ["--resume", resume] if resume else ["--provider", "private-sim", "-m", "private-model"]
+        out = subprocess.run([self.hermes, "chat", "-Q", "-q", line, *route], env=self.env(), cwd=self.home,
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
         return out.stdout + out.stderr
 
@@ -260,7 +260,7 @@ def main() -> int:
     store = SQLiteStore(data / "memories.sqlite")
     seed = Provenance(written_by="user", via="e2e seed")
     store.add(PRIVATE_TEXT, "private", seed)
-    shared_id = store.add(SHARED_TEXT, "shared", seed).id
+    shared_ref = display_ref(store.add(SHARED_TEXT, "shared", seed))
     store.close()
 
     log = home / "requests.jsonl"
@@ -293,6 +293,19 @@ def main() -> int:
         run.check("private route: carries the Private memory", has(main, PRIVATE_WORD))
         run.check("private route: carries the Shared memory", has(main, SHARED_WORD))
 
+        # 1b. A /memories reply is shown to the user and never kept in the chat's history, so it
+        #     carries no Private tag (Desktop would show the tag as text). If a Hermes version starts
+        #     replaying slash replies to the model, the second check fails.
+        sid_list, _ = run.chat(QUESTION, provider="private-sim", model="private-model")
+        listed = run.command("/memories", resume=sid_list)
+        run.check("slash reply: the owner sees the Private memory, untagged",
+                  f"[private] {PRIVATE_TEXT}" in listed and "<wl-private" not in listed, listed[-200:])
+        run.chat("/model shared-model --provider shared-sim", resume=sid_list)
+        _, reqs = run.chat("What did that list say?", resume=sid_list)
+        run.check("slash reply: never reaches a later request",
+                  bool(main_requests(reqs)) and not has(reqs, "[private]") and not has(reqs, PRIVATE_WORD),
+                  f"{len(reqs)} requests")
+
         # 2. Same chat, switched to a Shared route. Turn 1's memory block is replayed from
         #    history; the guard must take the Private memory out of every request.
         run.chat("/model shared-model --provider shared-sim", resume=sid)
@@ -310,17 +323,20 @@ def main() -> int:
         run.check("shared route: no Private memory in any request", not has(reqs, PRIVATE_WORD))
         run.check("shared route: carries the Shared memory", has(main_requests(reqs), SHARED_WORD))
 
-        # 4. Forget through the tool, then try to save it again: the tombstone blocks it.
-        _, reqs = run.chat(f'Please forget that. [[call whos-listening_forget {{"id": {shared_id}}}]]',
+        # 4. Forget through the tool. A later assistant Shared suggestion is screened before the
+        #    Private-capable gateway checks duplicates or tombstones; it cannot revive the fact.
+        _, reqs = run.chat(f'Please forget that. [[call whos-listening_forget {{"id": "{shared_ref}"}}]]',
                            provider="private-sim", model="private-model")
         run.check("forget: tool ran", has(reqs, "won't be saved again"))
         _, reqs = run.chat(f'Remember this. [[call whos-listening_remember {{"text": "{SHARED_TEXT.lower()}", "tier": "shared"}}]]',
                            provider="private-sim", model="private-model")
-        run.check("forget: re-save blocked by the tombstone", has(reqs, "forgotten at the user"))
+        run.check("forget: Shared re-save is blocked by its tombstone", has(reqs, "forgotten"))
         store = SQLiteStore(data / "memories.sqlite")
         active = [m.text for m in store.list()]
+        tombstone_still_here = store.is_forgotten_text(SHARED_TEXT)
         store.close()
-        run.check("forget: store has only the Private memory", active == [PRIVATE_TEXT], repr(active))
+        run.check("forget: store has only the Private memory",
+                  active == [PRIVATE_TEXT] and tombstone_still_here, repr(active))
 
         # 5. A planted "remember" line in a file: once the chat has read the file, the save waits.
         notes = home / "notes.txt"
@@ -345,7 +361,7 @@ def main() -> int:
         # 7. /memories in the chat, then the CLI approves the planted memory.
         out = run.command("/memories pending")
         run.check("/memories pending lists it", PLANTED_TEXT in out and "read_file" in out, out[-200:])
-        out = run.cli(["approve", str(pending[0].id)])
+        out = run.cli(["approve", display_ref(pending[0])])
         run.check("cli: approve", "Saved" in out, out.strip())
         _, reqs = run.chat("Where should I sit on the plane?", provider="private-sim", model="private-model")
         run.check("approved: now recalled", has(main_requests(reqs), "window seats"))
@@ -370,12 +386,13 @@ def main() -> int:
         run.check("auto-review: the check ran on the chat's own model",
                   bool(check_reqs) and all(r["model"] == "private-model" for r in check_reqs))
 
-        # 8b. A Shared save that says what a Private memory says waits for the user, who keeps the
-        #     Private one by naming its number in plain language (the review tool).
+        # 8b. Explicit permission in the user's own words allows a checked Shared save.
+        #     A near Private original stays in place for the ordinary duplicate review.
         store = SQLiteStore(data / "memories.sqlite")
         private_id = next(m.id for m in store.list() if m.text == PRIVATE_TEXT)
+        private_ref = display_ref(store.get(private_id))
         store.close()
-        _, reqs = run.chat('Remember this, any model may see it. [[call whos-listening_remember '
+        _, reqs = run.chat('Keeps a vegetarian diet on all weekdays. Any model may see this. [[call whos-listening_remember '
                            '{"text": "Keeps a vegetarian diet on all weekdays", "tier": "shared"}]]',
                            provider="private-sim", model="private-model")
         offered = [sorted(t.get("function", {}).get("name", "") for t in json.loads(r["text"]).get("tools") or [])
@@ -384,34 +401,54 @@ def main() -> int:
                   bool(offered) and all({f"whos-listening_{x}" for x in ("remember", "recall", "forget", "review")}
                                         <= set(names) for names in offered),
                   str([n for n in (offered[0] if offered else []) if n.startswith(("whos", "tool_"))]))
-        run.check("tier duplicate: the shared save is flagged for the user",
-                  has(reqs, f"it may say what private memory #{private_id} says"))
-        _, reqs = run.chat(f'Let us keep {private_id}. [[call whos-listening_review {{"action": "keep", "id": {private_id}}}]]',
-                           provider="private-sim", model="private-model")
-        flagged = [m for m in memories_in(data) if m.text == "Keeps a vegetarian diet on all weekdays"]
-        run.check("tier duplicate: keeping the private one by number forgets the shared one",
-                  bool(flagged) and flagged[0].status == "forgotten" and has(reqs, "kept"),
-                  flagged[0].status if flagged else "no memory")
+        approved = [m for m in memories_in(data, tiers=("shared",), statuses=("active",))
+                    if m.text == "Keeps a vegetarian diet on all weekdays"]
+        run.check("shared audience: checked permission saves Shared and preserves near Private original",
+                  bool(approved) and any(m.id == private_id and m.status == "active"
+                                         for m in memories_in(data, tiers=("private",))),
+                  str([display_ref(m) for m in approved]))
+
+        # 8c. The bounded user-message window can carry a fact through an ordinary status
+        #     question to an explicit sharing instruction, without repeating the fact.
+        followup_fact = "I collect blue postcards"
+        sid, reqs = run.chat('Remember that I collect blue postcards. [[call whos-listening_remember '
+                             '{"text": "I collect blue postcards", "tier": "shared"}]]',
+                             provider="shared-sim", model="shared-model")
+        run.check("shared follow-up: first turn falls back to Private",
+                  any(m.text == followup_fact for m in memories_in(data, tiers=("private",), statuses=("active",)))
+                  and not any(m.text == followup_fact for m in memories_in(data, tiers=("shared",))),
+                  str([display_ref(m) for m in memories_in(data, tiers=("private",), statuses=("active",))
+                       if m.text == followup_fact]))
+        sid, _ = run.chat("Did you save that fact?", resume=sid)
+        _, reqs = run.chat('That fact may be shared with any model. [[call whos-listening_remember '
+                           '{"text": "I collect blue postcards", "tier": "shared"}]]', resume=sid)
+        run.check("shared follow-up: second turn promotes the stated fact",
+                  any(m.text == followup_fact and m.status == "active"
+                      for m in memories_in(data, tiers=("shared",)))
+                  and not any(m.text == followup_fact and m.status == "active"
+                              for m in memories_in(data, tiers=("private",))),
+                  str([display_ref(m) for m in memories_in(data, tiers=("shared",))
+                       if m.text == followup_fact]))
 
         # 8c. A choice in plain words, without the memory's number (the scripted call reads its
         #     arguments from a file, so the user's message names no number). In a chat that read no
         #     outside content it applies on the user's word; after outside content Auto-review checks
         #     it first, and only a "yes" from the user lets it through.
         def pair(text: str) -> int:
-            run.chat(f'Remember this, any model may see it. [[call whos-listening_remember '
+            run.chat(f'{text}. Remember this, any model may see it. [[call whos-listening_remember '
                      f'{{"text": "{text}", "tier": "shared"}}]]', provider="private-sim", model="private-model")
             return next(m.id for m in memories_in(data) if m.text == text)
 
         choice_file = home / "choice.json"
         sid = pair("Keeps a strict vegetarian diet on weekdays")
-        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_ref}))
         run.chat("Keep my private one, please. [[call whos-listening_review file:" + str(choice_file) + "]]",
                  provider="private-sim", model="private-model")
         gone = [m for m in memories_in(data) if m.id == sid]
         run.check("plain words: with no outside content, a choice applies without a number",
                   bool(gone) and gone[0].status == "forgotten", gone[0].status if gone else "no memory")
         sid = pair("Keeps a vegetarian diet during weekdays")
-        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_ref}))
         script = f'[[call read_file {{"path": "{notes}"}}]] [[call whos-listening_review file:{choice_file}]]'
         _, reqs = run.chat(f"Read my notes, then keep my private one. {script}", provider="private-sim",
                            model="private-model")
@@ -476,7 +513,7 @@ def main() -> int:
         _, reqs = run_b.chat(QUESTION, provider="private-sim", model="private-model")
         run.check("sync: B's chat recalls the synced memory", has(main_requests(reqs), SYNC_WORD))
 
-        run_b.command(f"/memories forget {b_active[SYNC_TEXT].id}")
+        run_b.command(f"/memories forget {display_ref(b_active[SYNC_TEXT])}")
         run_b.command("/memories sync")
         run.check("sync: a forget travels without its text", SYNC_TEXT not in written_files(gh_log)[-1])
         run.command("/memories sync")

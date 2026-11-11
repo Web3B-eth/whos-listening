@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import types
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -26,7 +27,7 @@ from .routes import (
     Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
     private_storage_refusal, shared_only_gateway, side_call_routes_private,
 )
-from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
+from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore, display_ref
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,84 @@ def _process_wide(name: str, factory: Any) -> Any:
 ROUTES = _process_wide("routes", RouteBook)
 # Chats that have read outside content (tool names only). Saves and forgets in them wait.
 OUTSIDE = _process_wide("outside", review.OutsideBook)
+
+
+class _SharedRequestWords:
+    """Original user text from the host hook, confirmed against a guarded Shared request."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sources: OrderedDict[tuple[str, str], tuple[str, list[str]]] = OrderedDict()
+        self._sessions: OrderedDict[str, tuple[str, list[str]]] = OrderedDict()
+
+    @staticmethod
+    def _text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(str(part.get("text") or "") for part in content
+                            if isinstance(part, dict) and part.get("type") in (None, "text", "input_text", "output_text"))
+        return ""
+
+    def source(self, session_id: str, turn_id: str, user_message: Any,
+               history: Any, platform: str) -> None:
+        if not session_id or not turn_id:
+            return
+        earlier = [self._text(m.get("content")).strip() for m in (history if isinstance(history, list) else [])
+                   if isinstance(m, dict) and m.get("role") == "user"]
+        current = self._text(user_message).strip()
+        if not current:
+            return
+        while earlier and earlier[-1] == current:
+            earlier.pop()  # Hermes may already have staged this user turn in history
+        words = [w[:autoreview.USER_MESSAGE_MAX_CHARS] for w in (earlier + [current]) if w]
+        with self._lock:
+            key = (session_id, turn_id)
+            self._sources[key] = (platform, words[-autoreview.USER_MESSAGE_COUNT:])
+            self._sources.move_to_end(key)
+            while len(self._sources) > 512:
+                self._sources.popitem(last=False)
+
+    def record(self, session_id: str, turn_id: str, request: Any, tier: Optional[str]) -> None:
+        if not session_id:
+            return
+        messages = request.get("messages", request.get("input")) if isinstance(request, dict) else None
+        wire = [self._text(m.get("content")) for m in messages
+                if isinstance(m, dict) and m.get("role") == "user"] if isinstance(messages, list) else []
+        with self._lock:
+            source = self._sources.get((session_id, turn_id)) if turn_id else None
+            if tier != SHARED or source is None:
+                self._sessions.pop(session_id, None)
+                return
+            platform, originals = source
+            confirmed, pos = [], 0
+            for original in originals:
+                for i in range(pos, len(wire)):
+                    if wire[i].startswith(original):
+                        own = _QUOTE_RE.sub("", original).strip()
+                        if own:
+                            confirmed.append(own)
+                        pos = i + 1
+                        break
+            if confirmed and confirmed[-1] == _QUOTE_RE.sub("", originals[-1]).strip():
+                self._sessions[session_id] = (platform, confirmed)
+                self._sessions.move_to_end(session_id)
+                while len(self._sessions) > 512:
+                    self._sessions.popitem(last=False)
+            else:
+                self._sessions.pop(session_id, None)
+
+    def get(self, session_id: str, platform: str) -> list[str]:
+        with self._lock:
+            found = self._sessions.get(session_id)
+            return list(found[1]) if found and (not found[0] or found[0] == platform) else []
+
+    def clear(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+
+SHARED_REQUEST_WORDS = _process_wide("shared_request_words", _SharedRequestWords)
 
 
 def _config() -> Any:
@@ -220,6 +299,7 @@ class WhosListeningProvider(MemoryProvider):
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
         self._turn_message = ""        # the user's own words this turn: a review choice must name its number
+        SHARED_REQUEST_WORDS.clear(self._session_id)
         if self._dir is not None:
             maybe_sync(self._dir.parent)
         if kwargs.get("author_is_bot") or not isinstance(message, str):
@@ -300,6 +380,7 @@ class WhosListeningProvider(MemoryProvider):
                            private_refused=_private_refused(self._home()), shared_only=self._shared_only(),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
                            on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
+                           check_sharing=self._check_sharing if tool_name == tools.REMEMBER else None,
                            judge=self._duplicate_judge(route, verdict) if tool_name == tools.REMEMBER else None,
                            tier_duplicates=self._tier_duplicates(),
                            user_message=self._turn_message, choice_check=self._choice_check,
@@ -365,6 +446,37 @@ class WhosListeningProvider(MemoryProvider):
             return f"it checks at most {autoreview.CHECKS_PER_TURN} saves a turn", route
         return "", route
 
+    def _check_sharing(self, text: str) -> autoreview.Verdict:
+        """Check the candidate against the user's own words before any Shared write.
+
+        On local one-person platforms, the host hook supplies original user text and the
+        guarded Shared request confirms it was sent. The request's appended plugin context
+        and stored Private memories never enter the side call.
+        """
+        route, verdict = self._route()
+        if route is None or not route.model or self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            return autoreview.Verdict(False, "The check could not run.", answered=False)
+        if verdict.tier == PRIVATE:
+            side = side_call_routes_private(_config(), _settings_or_none(self._dir))
+            if side.tier != PRIVATE:
+                return autoreview.Verdict(False, "The check could not run.", answered=False)
+            words = self._own_words()
+        elif self._platform in ("cli", "local", "tui", "desktop"):
+            words = SHARED_REQUEST_WORDS.get(self._session_id, self._platform)
+            if not words or words[-1] != self._turn_message[:autoreview.USER_MESSAGE_MAX_CHARS]:
+                words = []  # no original-owner context confirmed on this Shared request
+        else:
+            confirmed = SHARED_REQUEST_WORDS.get(self._session_id, self._platform)
+            words = confirmed[-1:] if confirmed and confirmed[-1] == self._turn_message[:autoreview.USER_MESSAGE_MAX_CHARS] else []
+            # Historical group messages have no per-turn author id in the host hook.
+        if not words:
+            return autoreview.Verdict(False, "The check found none of your words.", answered=False)
+        self._checks_this_turn += 1
+        return autoreview.check(text, words,
+                                lambda prompt: _ask_chat_model(prompt, route.model,
+                                                                purpose="whos-listening sharing check"),
+                                target_tier=SHARED)
+
     def _choice_check(self, change: str) -> tuple[bool, str]:
         """Auto-review for a review choice made without a memory number in a chat that read outside
         content: one request on the chat's own model, which sees the change, the assistant's last
@@ -398,7 +510,7 @@ class WhosListeningProvider(MemoryProvider):
     def _start_auto_review(self, memory: Memory) -> bool:
         """Check a held save in the background, on the chat's own model. Returns True if started;
         otherwise, in Auto-review mode, the memory's reason says why it didn't run."""
-        if self._review_mode() != "auto" or self._store is None:
+        if memory.audience_consent_required or self._review_mode() != "auto" or self._store is None:
             return False
         blocker, route = self._auto_review_blocker(memory)
         if blocker:
@@ -411,11 +523,11 @@ class WhosListeningProvider(MemoryProvider):
         except Exception:
             return False
         self._checks_this_turn += 1
-        logger.info("whos-listening: Auto-review is checking held save #%d (on %s)", memory.id,
+        logger.info("whos-listening: Auto-review is checking held save %s (on %s)", display_ref(memory),
                     route.model if route else "?")
         since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
-                             args=(self._dir / DB_FILE, memory.id, memory.text, self._own_words(), since,
+                             args=(self._dir / DB_FILE, memory.id, memory.text, self._own_words(), since, memory.order_key,
                                    route.model if route else "")).start()
         return True
 
@@ -449,6 +561,9 @@ class WhosListeningProvider(MemoryProvider):
 
 def _on_pre_llm_call(**kwargs: Any) -> None:
     ROUTES.saw_turn_model(str(kwargs.get("session_id") or ""), str(kwargs.get("model") or ""))
+    SHARED_REQUEST_WORDS.source(str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""),
+                                kwargs.get("user_message"), kwargs.get("conversation_history"),
+                                str(kwargs.get("platform") or ""))
 
 
 AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keeps waiting
@@ -475,7 +590,8 @@ def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 
 
 
 def _auto_review(store: Any, memory_id: int, text: str, user_messages: list[str],
-                 since_event: int, expected_model: str = "", ask: Any = None) -> None:
+                 since_event: int, expected_order_key: str, expected_model: str = "",
+                 ask: Any = None) -> None:
     """Run in a background thread. The verdict applies only if nothing happened to the memory
     since the check started (the user's decision always wins). ``store`` is the database's path
     (the thread opens its own connection: the chat that started the check may end, and close its
@@ -486,9 +602,11 @@ def _auto_review(store: Any, memory_id: int, text: str, user_messages: list[str]
     try:
         if own:
             store = SQLiteStore(Path(store))
-        applied = store.apply_review(memory_id, since_event, verdict.save, verdict.reason)
+        applied = store.apply_review(memory_id, since_event, expected_order_key, verdict.save, verdict.reason)
+        shown = store.get(memory_id)
         # Fixed words only: the model's reason can quote the memory.
-        logger.info("whos-listening: Auto-review for held save #%d: %s", memory_id,
+        logger.info("whos-listening: Auto-review for held save %s: %s",
+                    display_ref(shown) if shown else f"#{memory_id}",
                     ("saved" if verdict.save else "kept waiting for the user") if applied
                     else "not applied (the memory changed meanwhile)")
     except Exception as exc:
@@ -532,20 +650,28 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if words and words[0].lower() == "settings":
         return _with_setup_notes(_settings_command(home))
     if len(words) >= 2 and words[0].lower() == "review" and words[1].lower() == "scan":
+        settings, _ = _load_settings(home)
+        if settings is None or not commands.shows_private(platform, settings):
+            return "Review scans are available on a Private-capable platform."
         return start_scan(home)
     if words and words[0].lower() == "export":
-        return _export_command(home, commands.shows_private(platform, _load_settings(home)[0]), platform)
+        settings, _ = _load_settings(home)
+        return _export_command(home, settings is not None and commands.shows_private(platform, settings), platform)
     _sync_if_due(home)              # so what you see includes changes from your other gateways
     settings, _ = _load_settings(home)
     store_path = home / DATA_DIR / DB_FILE
     before = _stamp_at(store_path)
+    show_private = settings is not None and commands.shows_private(platform, settings)
     out = commands.open_and_run(lambda: SQLiteStore(store_path), raw_args,
-                                show_private=commands.shows_private(platform, settings),
-                                private_refused=_private_refused(home), shared_only=_shared_only(home))
+                                show_private=show_private,
+                                private_refused=_private_refused(home), shared_only=_shared_only(home),
+                                tier_duplicates=settings.tier_duplicates if settings is not None else "ask")
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)
     if not words or words[0].lower() in ("list", "pending"):
         out = _with_setup_notes(out)
+    # No Private tag: Hermes shows a slash reply to the user and keeps it out of the chat's history
+    # (e2e/run.py checks a later request never carries it), and Desktop shows tags as text.
     return out
 
 
@@ -765,7 +891,9 @@ def _sync_token() -> str:
 
 def _shared_stamp(store: SQLiteStore) -> tuple:
     rows = store.shared_for_sync()
-    return (len(rows), sum(1 for m in rows if m.status == "active"), max((m.updated_at for m in rows), default=""))
+    withdrawals = store.withdrawals_for_sync()
+    return (tuple((m.uid, m.status, m.order_key) for m in rows),
+            tuple((w.uid, w.order_key) for w in withdrawals))
 
 
 def _stamp_at(path: Path) -> tuple:
@@ -1000,6 +1128,13 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
         logger.warning("whos-listening guard: could not classify the route, treating it as Shared: %s",
                        type(exc).__name__)
     cleaned = guard.guard_request(request, tier)
+    session_id = str(kwargs.get("session_id") or "")
+    try:
+        SHARED_REQUEST_WORDS.record(session_id, str(kwargs.get("turn_id") or ""),
+                                    cleaned if cleaned is not None else request, tier)
+    except Exception as exc:
+        SHARED_REQUEST_WORDS.clear(session_id)
+        logger.debug("whos-listening: could not capture Shared user context: %s", type(exc).__name__)
     if cleaned is None:
         return None
     return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}
@@ -1022,4 +1157,4 @@ def register_hooks(ctx) -> None:
     ctx.register_middleware("llm_request", _on_llm_request)
     ctx.register_command("memories", _memories_command,
                          description="Review what Who's Listening remembers: pending, approve, undo, forget, show",
-                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT|sync|settings]")
+                         args_hint="[pending|approve Pn/Sn|reject Pn/Sn|undo|forget Pn/Sn|restore Pn/Sn|show Pn/Sn|add TEXT|sync|settings]")

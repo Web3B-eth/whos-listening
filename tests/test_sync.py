@@ -9,7 +9,7 @@ import pytest
 
 from whos_listening import commands, sync
 from whos_listening.store import (
-    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Provenance, SQLiteStore, fingerprint,
+    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Provenance, SQLiteStore, fingerprint, display_ref,
 )
 
 USER = Provenance(written_by="user", via="test")
@@ -266,7 +266,7 @@ def test_a_forget_reaches_a_held_arrival(a, b, file):
     go(a, file, "laptop")
     go(b, file, "cloud")
     assert b.by_uid(link.uid).status == FORGOTTEN
-    assert "isn't waiting" in commands.run(b, f"approve {b.by_uid(link.uid).id}", show_private=True)
+    assert "isn't waiting" in commands.run(b, f"approve {display_ref(b.by_uid(link.uid))}", show_private=True)
     go(b, file, "cloud")
     go(a, file, "laptop")
     assert a.get(link.id).status == FORGOTTEN
@@ -276,7 +276,7 @@ def test_turning_down_a_held_save_stays_here(a, b, file):
     lake = a.add("Lives near the lake", SHARED, USER)
     go(a, file, "laptop")
     held = b.add("Lives near the lake", SHARED, USER, status=PENDING, pending_reason="waits")
-    commands.run(b, f"reject {held.id}", show_private=True)
+    commands.run(b, f"reject {display_ref(held)}", show_private=True)
     result = go(b, file, "cloud")
     assert result.kept_out == 1 and file.doc()["memories"][lake.uid]["status"] == ACTIVE
     go(a, file, "laptop")
@@ -287,7 +287,7 @@ def test_turning_down_a_held_arrival_stays_here(a, b, file):
     link = a.add("Meet at example.com on Fridays", SHARED, USER)
     go(a, file, "laptop")
     go(b, file, "cloud")
-    commands.run(b, f"reject {b.by_uid(link.uid).id}", show_private=True)
+    commands.run(b, f"reject {display_ref(b.by_uid(link.uid))}", show_private=True)
     go(b, file, "cloud")
     go(a, file, "laptop")
     go(b, file, "cloud")
@@ -312,7 +312,7 @@ def test_a_restored_memory_does_not_get_its_tombstone_back(a, b, file):
 
 def test_undo_never_replays_your_change_over_a_sync_change(a, b, file):
     held = a.add("Likes jazz", SHARED, USER, status=PENDING, pending_reason="waits")
-    commands.run(a, f"approve {held.id}", show_private=True)
+    commands.run(a, f"approve {display_ref(held)}", show_private=True)
     go(a, file, "laptop")
     go(b, file, "cloud")
     b.forget(b.by_uid(held.uid).id, at="2099-01-01T00:00:00+00:00")
@@ -329,7 +329,7 @@ def test_undo_is_never_stuck_after_a_sync_restore(a, b, file):
     a.log_event(tea.id, "saved", "user")
     go(a, file, "laptop")
     go(b, file, "cloud")
-    commands.run(a, f"forget {jazz.id}", show_private=True)
+    commands.run(a, f"forget {display_ref(jazz)}", show_private=True)
     go(a, file, "laptop")
     go(b, file, "cloud")
     b.restore(b.by_uid(jazz.uid).id, at="2099-01-01T00:00:00+00:00")

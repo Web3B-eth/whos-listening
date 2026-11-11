@@ -9,12 +9,15 @@ What travels, and what never does:
 
 - **Shared memories only.** Private memories are never read for sync, and a Private memory is
   never changed by it. Pending memories wait until the user approves them.
+- **Undo of an approved Shared save** travels as a text-free UID withdrawal, which does not
+  install a fingerprint tombstone or affect another UID with the same words.
 - **A decision made only here stays here.** Forgetting a Private memory, or turning down a held
   save (including one that arrived by sync), is never sent; and an arrival whose words were
   forgotten that way here is kept out here without being forgotten anywhere else.
 - **Forgets travel without their text**: a forgotten memory goes out as its id and the hash of
   its words (the same hash a tombstone keeps), so a forget on one gateway forgets it everywhere.
-- **Last change wins**, by each memory's change time; at the same time a forget wins.
+- **Last change wins**, by a bounded numeric order separate from display time; at a tie a
+  genuine forget wins over a UID withdrawal, which wins over active.
 - **An arrival is checked.** A memory that comes in passes the rule screen (review.py); one it
   flags waits for the user, like a held save. With ``NearRepeats``, one that rewords a Shared
   memory already here is left out here (remembered, so it isn't checked again), and one that says
@@ -41,13 +44,15 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from . import review
+from . import order as sync_order
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, Store, StoreError, clean_text, fingerprint, now_iso,
-    stamp_after,
 )
 
+WITHDRAWN = "withdrawn"          # UID-only reversal of one approval, not a fingerprint-wide forget
+
 FORMAT = "whos-listening-sync"
-VERSION = 1
+VERSION = 2
 TOKEN_ENV = "WHOS_LISTENING_SYNC_TOKEN"        # read through Hermes' secrets, never from a file
 DEFAULT_PATH = "whos-listening/shared.json"
 DEFAULT_API = "https://api.github.com"
@@ -154,6 +159,7 @@ class Record:
     created_at: str = ""
     text: Optional[str] = None          # only for an active memory
     origin: str = ""                    # the gateway that first saved it
+    order_key: str = ""                  # numeric LWW order, separate from the display date
 
 
 def _ts(stamp: str) -> datetime:
@@ -165,8 +171,7 @@ def _ts(stamp: str) -> datetime:
 
 
 def parse(raw: Optional[bytes]) -> dict[str, Record]:
-    """The records in a sync file. Entries that aren't well formed are dropped (and so are gone
-    from the file after our next write). A file from a newer format raises."""
+    """Read v1 permissively for compatibility; reject any malformed v2 record as a whole file."""
     if not raw:
         return {}
     try:
@@ -175,36 +180,71 @@ def parse(raw: Optional[bytes]) -> dict[str, Record]:
         raise SyncError("The sync file is not valid JSON.") from exc
     if not isinstance(doc, Mapping) or doc.get("format") != FORMAT:
         raise SyncError("The sync file is not a Who's Listening sync file.")
-    if not isinstance(doc.get("version"), int) or doc["version"] > VERSION:
+    if type(doc.get("version")) is not int or doc["version"] not in (1, VERSION):
         raise SyncError("The sync file was written by a newer Who's Listening; update this one first.")
     out: dict[str, Record] = {}
     memories = doc.get("memories")
+    if doc["version"] == VERSION and not isinstance(memories, Mapping):
+        raise SyncError("The version-2 sync file has no valid memories map; no changes were applied.")
     for uid, entry in (memories.items() if isinstance(memories, Mapping) else ()):
-        rec = _record(str(uid), entry)
+        rec = _record(uid, entry, doc["version"])
         if rec is not None:
             out[rec.uid] = rec
     return out
 
 
-def _record(uid: str, entry: Any) -> Optional[Record]:
+def _record(uid: str, entry: Any, version: int = 1) -> Optional[Record]:
+    strict = version == VERSION
+    if strict and (not isinstance(uid, str) or not _UID.fullmatch(uid) or not isinstance(entry, Mapping)):
+        raise SyncError("The version-2 sync file has a malformed record; no changes were applied.")
+    if version == 2:
+        try:
+            order_key = sync_order.key(sync_order.parse(entry.get("order"))) if isinstance(entry, Mapping) else ""
+        except sync_order.OrderError as exc:
+            raise SyncError("The sync file has an invalid order value; no changes were applied.") from exc
+        if not order_key:
+            raise SyncError("The sync file has an invalid order value; no changes were applied.")
+    else:
+        order_key = ""
     if not _UID.match(uid) or not isinstance(entry, Mapping):
         return None
-    status, updated = entry.get("status"), str(entry.get("updated_at") or "")
-    if status not in (ACTIVE, FORGOTTEN) or _ts(updated).year < 2000:
+    status, raw_updated = entry.get("status"), entry.get("updated_at")
+    if strict and not isinstance(raw_updated, str):
+        raise SyncError("The version-2 sync file has a malformed timestamp; no changes were applied.")
+    updated = str(raw_updated or "")
+    allowed = (ACTIVE, FORGOTTEN, WITHDRAWN) if version == 2 else (ACTIVE, FORGOTTEN)
+    if status not in allowed or _ts(updated).year < 2000:
+        if strict:
+            raise SyncError("The version-2 sync file has an invalid status or timestamp; no changes were applied.")
         return None
+    if version == 1:
+        try:
+            order_key = sync_order.from_iso(updated)
+        except sync_order.OrderError:
+            return None
     origin = _NAME.sub("", str(entry.get("origin") or "")).strip()[:40]
     created = str(entry.get("created_at") or "")
     if status == ACTIVE:
+        if strict and not isinstance(entry.get("text"), str):
+            raise SyncError("The version-2 sync file has invalid active text; no changes were applied.")
         try:
             text = clean_text(entry.get("text"))
-        except StoreError:
+        except StoreError as exc:
+            if strict:
+                raise SyncError("The version-2 sync file has invalid active text; no changes were applied.") from exc
             return None
+        if strict and (text != entry["text"] or entry.get("fingerprint") != fingerprint(text)):
+            raise SyncError("The version-2 sync file has invalid active text or hash; no changes were applied.")
         # The hash always comes from the words themselves, never from the file.
-        return Record(uid, ACTIVE, fingerprint(text), updated, created, text, origin)
+        return Record(uid, ACTIVE, fingerprint(text), updated, created, text, origin, order_key)
+    if strict and not isinstance(entry.get("fingerprint"), str):
+        raise SyncError("The version-2 sync file has an invalid forget or withdrawal; no changes were applied.")
     fp = str(entry.get("fingerprint") or "")
-    if not _HASH.match(fp):
+    if not _HASH.fullmatch(fp) or (strict and "text" in entry):
+        if strict:
+            raise SyncError("The version-2 sync file has an invalid forget or withdrawal; no changes were applied.")
         return None
-    return Record(uid, FORGOTTEN, fp, updated, created, None, origin)   # a forget carries no text
+    return Record(uid, status, fp, updated, created, None, origin, order_key)   # no text on forget/withdraw
 
 
 def render(records: Mapping[str, Record]) -> bytes:
@@ -212,7 +252,7 @@ def render(records: Mapping[str, Record]) -> bytes:
     for uid in sorted(records):
         r = records[uid]
         entry = {"status": r.status, "fingerprint": r.fingerprint, "updated_at": r.updated_at,
-                 "created_at": r.created_at, "origin": r.origin}
+                 "created_at": r.created_at, "origin": r.origin, "order": r.order_key}
         if r.status == ACTIVE:
             entry["text"] = r.text
         memories[uid] = entry
@@ -221,11 +261,12 @@ def render(records: Mapping[str, Record]) -> bytes:
 
 
 def newer(a: Record, b: Optional[Record]) -> bool:
-    """Whether ``a`` wins over ``b``: the later change, and at the same time a forget."""
+    """Whether ``a`` wins over ``b``: later order, then genuine forget, withdrawal, active."""
     if b is None:
         return True
-    ka = (_ts(a.updated_at), a.status == FORGOTTEN)
-    kb = (_ts(b.updated_at), b.status == FORGOTTEN)
+    rank = {ACTIVE: 0, PENDING: 0, WITHDRAWN: 1, FORGOTTEN: 2}
+    ka = (sync_order.parse(a.order_key), rank[a.status])
+    kb = (sync_order.parse(b.order_key), rank[b.status])
     return ka > kb
 
 
@@ -317,6 +358,7 @@ class SyncResult:
     held: int = 0             # of those, waiting for the user (the rule screen flagged them)
     forgotten: int = 0        # memories forgotten here because they were forgotten elsewhere
     restored: int = 0         # memories restored here because they were restored elsewhere
+    withdrawn: int = 0        # approved Shared UIDs withdrawn here without a global tombstone
     sent: int = 0             # changes from here that the file didn't have
     duplicates: int = 0       # arrivals skipped because the same words are already here
     kept_out: int = 0         # arrivals skipped because their words were forgotten here
@@ -336,6 +378,8 @@ class SyncResult:
             parts.append(f"{self.forgotten} forgotten here")
         if self.restored:
             parts.append(f"{self.restored} restored here")
+        if self.withdrawn:
+            parts.append(f"{self.withdrawn} withdrawn here")
         if self.kept_out:
             parts.append(f"{self.kept_out} kept out (forgotten here)")
         if self.near_repeats:
@@ -353,7 +397,12 @@ class SyncResult:
 
 def local_record(m, origin: str) -> Record:
     return Record(m.uid, m.status, fingerprint(m.text), m.updated_at, m.created_at,
-                  m.text if m.status == ACTIVE else None, origin)
+                  m.text if m.status == ACTIVE else None, origin, m.order_key)
+
+
+def withdrawal_record(w, origin: str) -> Record:
+    return Record(w.uid, WITHDRAWN, w.fingerprint, w.updated_at, w.created_at,
+                  None, w.origin or origin, w.order_key)
 
 
 def _log(store: Store, memory_id: int, action: str) -> None:
@@ -377,6 +426,11 @@ def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = no
     for _ in range(ATTEMPTS):
         raw, sha = transport.read()
         remote = parse(raw)
+        for r in remote.values():
+            if r.status == WITHDRAWN:
+                local = store.by_uid(r.uid)
+                if local is not None and local.tier == SHARED and fingerprint(local.text) != r.fingerprint:
+                    raise SyncError("The sync file has a withdrawal for different words; no changes were applied.")
         result = _merge_and_apply(store, remote, name, near)
         _add_up(total, result.result)       # changes applied here in an earlier attempt still count
         result = _Pass(result.merged, total)
@@ -397,7 +451,7 @@ def sync_once(store: Store, transport, name: str, *, now: Callable[[], str] = no
 
 
 def _add_up(total: SyncResult, part: SyncResult) -> None:
-    for name in ("arrived", "held", "forgotten", "restored", "duplicates", "kept_out", "near_repeats",
+    for name in ("arrived", "held", "forgotten", "restored", "withdrawn", "duplicates", "kept_out", "near_repeats",
                  "flagged", "replaced"):
         setattr(total, name, getattr(total, name) + getattr(part, name))
     total.sent = part.sent              # what this attempt sends is what the file gets
@@ -430,12 +484,31 @@ def _forget_travels(store: Store, m) -> bool:
     """Whether a forgotten memory's tombstone says other gateways should forget it too (a Shared
     arrival the user chose against while it waited: resolve.py)."""
     tomb = store.tombstone(fingerprint(m.text))
-    return bool(tomb and tomb[1] == SHARED and tomb[2])
+    tomb_order = store.tombstone_order(fingerprint(m.text))
+    return bool(tomb and tomb[1] == SHARED and tomb[2] and tomb_order is not None
+                and sync_order.parse(tomb_order) >= sync_order.parse(m.order_key))
 
 
 def _still_here(store: Store, memory_id: int) -> bool:
     m = store.get(memory_id)
     return m is not None and m.status in (ACTIVE, PENDING)
+
+
+def _apply_global_forget(store: Store, r: Record, result: SyncResult) -> None:
+    """A genuine forget applies by fingerprint, even when this UID was already withdrawn."""
+    for same in store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
+        if sync_order.parse(same.order_key) <= sync_order.parse(r.order_key):
+            store.forget(same.id, at=r.updated_at, order_key=r.order_key, travels=True)
+            _log(store, same.id, "synced_forget")
+            result.forgotten += 1
+    if not store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
+        existing_tomb = store.tombstone(r.fingerprint)
+        existing_order = store.tombstone_order(r.fingerprint)
+        if existing_tomb is None or (
+                existing_tomb[1] == SHARED and existing_tomb[2]
+                and existing_order is not None
+                and sync_order.parse(r.order_key) > sync_order.parse(existing_order)):
+            store.add_tombstone(r.fingerprint, SHARED, r.updated_at, r.order_key)
 
 
 @dataclass
@@ -449,55 +522,81 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
     result = SyncResult()
     merged = dict(remote)
 
+    # Keep every observed UID head even if a local pending or rejected row does not apply it.
+    for r in remote.values():
+        store.observe_order(r.uid, r.order_key)
+
     # 1. What this gateway has (Shared only; a pending memory is not shared yet).
     for m in store.shared_for_sync():
         if not m.uid or m.tier != SHARED:
             continue
         if m.status == FORGOTTEN and m.forgotten_from == PENDING and not _forget_travels(store, m):
             continue            # never active here: a turn-down is local, a synced forget is already out
+        withdrawal = store.withdrawal(m.uid)
+        if (withdrawal and sync_order.parse(withdrawal.order_key) >= sync_order.parse(m.order_key)
+                and not (m.status == FORGOTTEN and _forget_travels(store, m))):
+            continue            # a withdrawn row must never become a global fingerprint forget
         theirs = remote.get(m.uid)
         ours = local_record(m, theirs.origin if theirs and theirs.origin else name)
         if newer(ours, theirs) and ours != theirs:
             merged[m.uid] = ours
             result.sent += 1
+    for w in store.withdrawals_for_sync():
+        theirs = merged.get(w.uid)
+        ours = withdrawal_record(w, theirs.origin if theirs and theirs.origin else name)
+        if newer(ours, theirs) and ours != theirs:
+            merged[w.uid] = ours
+            result.sent += 1
 
     # 2. What is newer elsewhere, applied here.
     for uid, r in list(merged.items()):
         m = store.by_uid(uid)
+        if r.status == WITHDRAWN:
+            before = store.withdrawal(uid)
+            if (before is None or newer(r, withdrawal_record(before, name))) and (
+                    m is None or m.tier == SHARED):
+                store.apply_withdrawal(uid, r.fingerprint, r.updated_at, r.created_at, r.origin, r.order_key)
+                result.withdrawn += 1 if m is not None and m.status == ACTIVE else 0
+            continue
         if m is not None:
-            if m.tier != SHARED or m.status == r.status or not newer(r, local_record(m, name)):
+            if m.tier != SHARED:
+                continue
+            local_head = local_record(m, name)
+            withdrawal = store.withdrawal(uid)
+            if (withdrawal and sync_order.parse(withdrawal.order_key) >= sync_order.parse(m.order_key)
+                    and not (m.status == FORGOTTEN and _forget_travels(store, m))):
+                local_head = withdrawal_record(withdrawal, name)
+            if not newer(r, local_head):
                 continue        # never touch a Private memory
             if r.status == FORGOTTEN:
-                store.forget(m.id, at=r.updated_at, travels=True)   # a held one too: forgotten elsewhere
+                was_global = _forget_travels(store, m)
+                store.forget(m.id, at=r.updated_at, order_key=r.order_key, travels=True)   # a held one too
                 _log(store, m.id, "synced_forget")
-                result.forgotten += 1
+                result.forgotten += 1 if m.status != FORGOTTEN or (not was_global and _forget_travels(store, m)) else 0
+                _apply_global_forget(store, r, result)
             elif m.status == FORGOTTEN and not _turned_down_here(store, m):
-                store.restore(m.id, at=r.updated_at)   # one that was held comes back waiting for the user
+                store.restore(m.id, at=r.updated_at, order_key=r.order_key)   # one that was held comes back waiting
                 _log(store, m.id, "synced_restore")
                 result.restored += 1
+            if r.status == ACTIVE:
+                store.clear_withdrawal_if_older(uid, r.order_key)
             # A held memory keeps waiting for the user; one turned down here stays turned down.
             continue
 
         if r.status == FORGOTTEN:
             # Forgotten elsewhere: the same words here (saved separately) go too, unless they
             # changed here after that forget. And they can't come back from chat.
-            for same in store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
-                if _ts(same.updated_at) <= _ts(r.updated_at):
-                    store.forget(same.id, at=r.updated_at, travels=True)
-                    _log(store, same.id, "synced_forget")
-                    result.forgotten += 1
-            if not store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)) and \
-                    store.tombstone(r.fingerprint) is None:
-                store.add_tombstone(r.fingerprint, SHARED, r.updated_at)
+            _apply_global_forget(store, r, result)
             continue
 
         # An active memory this gateway hasn't seen.
         tomb = store.tombstone(r.fingerprint)
         if tomb:
             at, tier, travels = tomb
-            if tier == SHARED and travels and _ts(at) >= _ts(r.updated_at):
+            tomb_key = store.tombstone_order(r.fingerprint)
+            if tier == SHARED and travels and tomb_key is not None and sync_order.parse(tomb_key) >= sync_order.parse(r.order_key):
                 # These words were forgotten here after that save: the forget wins everywhere.
-                merged[uid] = replace(r, status=FORGOTTEN, text=None, updated_at=at)
+                merged[uid] = replace(r, status=FORGOTTEN, text=None, updated_at=at, order_key=tomb_key)
                 result.sent += 1
                 continue
             if tier != SHARED or not travels:
@@ -522,7 +621,14 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
                 continue
             if match is not None and near.tier_duplicates == PRIVATE:
                 # The user keeps the Private one: the Shared copy is forgotten on every gateway.
-                merged[uid] = replace(r, status=FORGOTTEN, text=None, updated_at=stamp_after(r.updated_at))
+                try:
+                    next_order = sync_order.next_key(r.order_key, now_iso())
+                except sync_order.OrderError:
+                    if sync_order.parse(r.order_key) != sync_order.MAX_VALUE:
+                        raise
+                    next_order = r.order_key  # a genuine forget wins an active tie at the ceiling
+                merged[uid] = replace(r, status=FORGOTTEN, text=None,
+                                      updated_at=sync_order.display(next_order, now_iso()), order_key=next_order)
                 result.sent += 1
                 result.removed += 1
                 continue
@@ -533,9 +639,10 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
         m = store.import_synced(
             uid, r.text or "",
             Provenance(written_by="sync", via="sync", route=f"sync from {origin}", route_tier=SHARED),
-            created_at=r.created_at or r.updated_at, updated_at=r.updated_at,
+            created_at=r.created_at or r.updated_at, updated_at=r.updated_at, order_key=r.order_key,
             status=PENDING if concern else ACTIVE, pending_reason=reason,
             duplicate_of=match.id if flag else 0)
+        store.clear_withdrawal_if_older(uid, r.order_key)
         _log(store, m.id, "synced_in")
         result.arrived += 1
         result.held += 1 if concern else 0

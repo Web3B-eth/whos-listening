@@ -4,8 +4,8 @@
 
 Run it from the plugin's folder (``$HERMES_HOME/plugins/whos-listening``). It takes the same
 commands as ``/memories`` and shows Private text, since it runs on this computer. It also has
-``purge N``, which deletes a forgotten memory's text from the file for good; that is only here,
-not in chat. Nothing here imports Hermes, so for whos-listening's settings in Hermes (Desktop's
+``purge N``, which removes a forgotten memory's record from SQLite. Old bytes can remain in the
+database, WAL or backups. Nothing here imports Hermes, so for whos-listening's settings in Hermes (Desktop's
 plugin form) it uses the copy the gateway keeps (settings.py).
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from . import commands
 from . import settings as wl_settings
 from .routes import RouteSettings, private_storage_refusal, shared_only_gateway
-from .store import SQLiteStore, StoreError
+from .store import SQLiteStore, StoreError, display_ref
 
 DATA_DIR, DB_FILE, SETTINGS_FILE = "whos-listening", "memories.sqlite", "settings.json"
 
@@ -68,20 +68,21 @@ def _why(exc: Exception) -> str:
 
 
 def purge(store: SQLiteStore, arg: str) -> str:
+    memory = store.resolve_reference(arg)
+    if memory is None:
+        return f"No memory {arg}."
     try:
-        memory_id = int(str(arg).lstrip("#"))
-    except ValueError:
-        return "Give a memory number, like 3 or #3."
-    try:
-        store.purge(memory_id)
+        store.purge(memory.id)
     except StoreError as exc:
         return str(exc)
-    return f"Purged #{memory_id}: its text is gone from the file. Its tombstone stays, so it can't be saved again from chat."
+    return (f"Purged {display_ref(memory)}: its record was removed from SQLite. Old bytes may remain in the "
+            "database, WAL or backups. If this memory had a tombstone, it stays. "
+            "An old declined sharing row may have no tombstone.")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m whos_listening.cli", description=__doc__.splitlines()[0],
-                                 epilog=commands.HELP.replace("/memories", "cli") + "\ncli purge N           delete a forgotten memory's text for good",
+                                 epilog=commands.HELP.replace("/memories", "cli") + "\ncli purge N           remove a forgotten memory's SQLite record",
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--home", type=Path, default=None, help="the Hermes home (default: $HERMES_HOME or ~/.hermes)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="a /memories command, or purge N")
@@ -104,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             route_settings = route_settings_or_none(home)
             print(commands.run(store, " ".join(args.command), show_private=True, via="cli",
                                private_refused=private_storage_refusal(route_settings),
-                               shared_only=shared_only_gateway(route_settings)))
+                               shared_only=shared_only_gateway(route_settings),
+                               tier_duplicates=route_settings.tier_duplicates if route_settings else "ask"))
     finally:
         store.close()
     return 0

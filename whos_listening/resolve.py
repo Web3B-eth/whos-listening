@@ -26,8 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import duplicates as dupes
-from .store import ACTIVE, PENDING, PRIVATE, SHARED, TIERS, Memory, Store, StoreError
+from . import duplicates as dupes, review
+from .store import ACTIVE, PENDING, PRIVATE, SHARED, TIERS, Memory, Store, StoreError, display_ref
 
 KEPT_BOTH_KEY = "review.kept_both"     # pairs of uids the user kept both of: a scan skips them
 SCAN_KEY = "review.scan"               # how the last scan went (JSON)
@@ -44,7 +44,7 @@ class Item:
 # -- pairs -----------------------------------------------------------------------------------
 
 def _live(m: Optional[Memory]) -> bool:
-    return m is not None and m.status in (ACTIVE, PENDING)
+    return m is not None and not m.audience_consent_required and m.status in (ACTIVE, PENDING)
 
 
 def partners(store: Store, m: Memory) -> list[Memory]:
@@ -64,16 +64,21 @@ def items(store: Store) -> list[Item]:
     for m in store.flagged():
         other = store.get(m.duplicate_of)
         if _live(other):
-            groups.setdefault(other.id, []).append(m)
+            if not m.forget_reason and not other.forget_reason:
+                groups.setdefault(other.id, []).append(m)
         else:
             store.set_duplicate_of(m.id, 0)
     out = [Item("duplicate", store.get(old), tuple(news)) for old, news in sorted(groups.items())]
-    flagged = {m.id for news in groups.values() for m in news}
+    flagged = {m.id for m in store.flagged()}
     for m in sorted(store.list(statuses=(PENDING,), limit=500), key=lambda x: x.id):
-        if m.id not in flagged:
+        if m.sharing_approval_needed or m.id not in flagged or m.forget_reason:
             out.append(Item("save", m))
+    for m in sorted(store.list(statuses=(ACTIVE,), tiers=(PRIVATE,), limit=500), key=lambda x: x.id):
+        if m.sharing_approval_needed:
+            out.append(Item("share", m))
     for m in store.forget_requests():
-        out.append(Item("forget", m))
+        if m.status != PENDING:
+            out.append(Item("forget", m))
     return out
 
 
@@ -81,6 +86,11 @@ def _check_visible(ms: list[Memory], show_private: bool) -> None:
     if not show_private and any(m.tier == PRIVATE for m in ms):
         raise StoreError("That pair has a private memory, so it isn't shown here. Choose in the terminal or "
                          "the local app, where you can read it first.")
+
+
+def _check_no_forget_request(ms: list[Memory]) -> None:
+    if any(m.forget_reason for m in ms):
+        raise StoreError("Decide the forget request first, then choose which memories to keep.")
 
 
 def _drop(store: Store, m: Memory, actor: str) -> None:
@@ -109,14 +119,22 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
     """Keep ``memory_id`` and forget what it may repeat: for an older memory, every newer one
     flagged against it; for a newer one, the older one (the other newer ones are then flagged
     against the one kept). Returns (kept, forgotten)."""
+    with store.atomic_choice():
+        return _keep(store, memory_id, show_private=show_private, actor=actor)
+
+
+def _keep(store: Store, memory_id: int, *, show_private: bool, actor: str) -> tuple[Memory, list[Memory]]:
     m = store.get(int(memory_id))
     if not _live(m):
         raise StoreError(f"No memory #{memory_id} to keep.")
     others = partners(store, m)
     if not others:
-        raise StoreError(not_flagged(m.id) + (f" To approve it: /memories approve {m.id}." if m.status == PENDING else ""))
+        raise StoreError(not_flagged(m.id) + (f" To approve it: /memories approve {display_ref(m)}." if m.status == PENDING else ""))
     siblings = [x for x in store.flagged() if m.duplicate_of and x.duplicate_of == m.duplicate_of and x.id != m.id]
+    _check_no_forget_request([m, *others, *siblings])
     _check_visible([m, *others, *siblings], show_private)
+    if m.status == PENDING:
+        store.ensure_change_possible(m.id)
     for other in others:
         _drop(store, other, actor)
     _activate(store, m, actor)
@@ -127,13 +145,22 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
 
 def keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str = "user") -> list[Memory]:
     """Keep ``memory_id`` and the memories flagged with it; a scan won't flag the pair again."""
+    with store.atomic_choice():
+        return _keep_both(store, memory_id, show_private=show_private, actor=actor)
+
+
+def _keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str) -> list[Memory]:
     m = store.get(int(memory_id))
     if not _live(m):
         raise StoreError(f"No memory #{memory_id}.")
     others = partners(store, m)
     if not others:
         raise StoreError(not_flagged(m.id))
+    _check_no_forget_request([m, *others])
     _check_visible([m, *others], show_private)
+    for one in (m, *others):
+        if one.status == PENDING:
+            store.ensure_change_possible(one.id)
     kept = _kept_both(store)
     for other in others:
         kept.add(_pair_key(m, other))
@@ -223,17 +250,16 @@ def export_markdown(store: Store, data_dir: Path, *, show_private: bool, now: Op
     for tier in tiers:
         ms = sorted(store.list(tiers=(tier,), limit=5000), key=lambda m: m.id)
         lines += [f"## {tier.capitalize()} ({len(ms)})", ""]
-        lines += [f"- #{m.id} {m.text}  _(saved {m.created_at[:10]})_" for m in ms] or ["Nothing yet."]
+        lines += [f"- {display_ref(m)} {m.text}  _(saved {m.created_at[:10]})_" for m in ms] or ["Nothing yet."]
         lines.append("")
     waiting = [m for m in store.list(statuses=(PENDING,), tiers=tiers, limit=5000)]
     if waiting:
         lines += [f"## Waiting for you ({len(waiting)})", ""]
-        lines += [f"- #{m.id} [{m.tier}] {m.text}: {m.pending_reason or 'needs your OK'}" for m in waiting]
+        lines += [f"- {display_ref(m)} [{m.tier}] {m.text}: {review.shown_reason(m, m.pending_reason, show_private)}"
+                  for m in waiting]
         lines.append("")
     if not show_private:
-        hidden = store.count(tiers=(PRIVATE,))
-        if hidden:
-            lines += [f"{hidden} private memories are left out: export them in the terminal or the local app.", ""]
+        lines += ["Private memories are not included on this platform. Export on a Private-capable platform or in the terminal to include them.", ""]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
