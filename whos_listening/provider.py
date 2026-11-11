@@ -59,42 +59,74 @@ OUTSIDE = _process_wide("outside", review.OutsideBook)
 
 
 class _SharedRequestWords:
-    """Recent user text from the actual guarded Shared request, without memory injection."""
+    """Original user text from the host hook, confirmed against a guarded Shared request."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._sessions: OrderedDict[str, list[str]] = OrderedDict()
+        self._sources: OrderedDict[tuple[str, str], tuple[str, list[str]]] = OrderedDict()
+        self._sessions: OrderedDict[str, tuple[str, list[str]]] = OrderedDict()
 
-    def record(self, session_id: str, request: Any, tier: Optional[str]) -> None:
+    @staticmethod
+    def _text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(str(part.get("text") or "") for part in content
+                            if isinstance(part, dict) and part.get("type") in (None, "text", "input_text", "output_text"))
+        return ""
+
+    def source(self, session_id: str, turn_id: str, user_message: Any,
+               history: Any, platform: str) -> None:
+        if not session_id or not turn_id:
+            return
+        earlier = [self._text(m.get("content")).strip() for m in (history if isinstance(history, list) else [])
+                   if isinstance(m, dict) and m.get("role") == "user"]
+        current = self._text(user_message).strip()
+        if not current:
+            return
+        while earlier and earlier[-1] == current:
+            earlier.pop()  # Hermes may already have staged this user turn in history
+        words = [w[:autoreview.USER_MESSAGE_MAX_CHARS] for w in (earlier + [current]) if w]
+        with self._lock:
+            key = (session_id, turn_id)
+            self._sources[key] = (platform, words[-autoreview.USER_MESSAGE_COUNT:])
+            self._sources.move_to_end(key)
+            while len(self._sources) > 512:
+                self._sources.popitem(last=False)
+
+    def record(self, session_id: str, turn_id: str, request: Any, tier: Optional[str]) -> None:
         if not session_id:
             return
-        words = []
-        if tier == SHARED and isinstance(request, dict) and isinstance(request.get("messages"), list):
-            for message in reversed(request["messages"]):
-                if not isinstance(message, dict) or message.get("role") != "user":
-                    continue
-                content = message.get("content")
-                if isinstance(content, list):
-                    content = " ".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
-                if isinstance(content, str):
-                    own = _QUOTE_RE.sub("", content.split("\n\n<memory-context>", 1)[0]).strip()
-                    if own:
-                        words.append(own[:autoreview.USER_MESSAGE_MAX_CHARS])
-                        if len(words) == autoreview.USER_MESSAGE_COUNT:
-                            break
-            words.reverse()
+        messages = request.get("messages", request.get("input")) if isinstance(request, dict) else None
+        wire = [self._text(m.get("content")) for m in messages
+                if isinstance(m, dict) and m.get("role") == "user"] if isinstance(messages, list) else []
         with self._lock:
-            if words:
-                self._sessions[session_id] = words
+            source = self._sources.get((session_id, turn_id)) if turn_id else None
+            if tier != SHARED or source is None:
+                self._sessions.pop(session_id, None)
+                return
+            platform, originals = source
+            confirmed, pos = [], 0
+            for original in originals:
+                for i in range(pos, len(wire)):
+                    if wire[i].startswith(original):
+                        own = _QUOTE_RE.sub("", original).strip()
+                        if own:
+                            confirmed.append(own)
+                        pos = i + 1
+                        break
+            if confirmed and confirmed[-1] == _QUOTE_RE.sub("", originals[-1]).strip():
+                self._sessions[session_id] = (platform, confirmed)
                 self._sessions.move_to_end(session_id)
                 while len(self._sessions) > 512:
                     self._sessions.popitem(last=False)
             else:
                 self._sessions.pop(session_id, None)
 
-    def get(self, session_id: str) -> list[str]:
+    def get(self, session_id: str, platform: str) -> list[str]:
         with self._lock:
-            return list(self._sessions.get(session_id, []))
+            found = self._sessions.get(session_id)
+            return list(found[1]) if found and (not found[0] or found[0] == platform) else []
 
     def clear(self, session_id: str) -> None:
         with self._lock:
@@ -265,6 +297,7 @@ class WhosListeningProvider(MemoryProvider):
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
         self._turn_message = ""        # the user's own words this turn: a review choice must name its number
+        SHARED_REQUEST_WORDS.clear(self._session_id)
         if self._dir is not None:
             maybe_sync(self._dir.parent)
         if kwargs.get("author_is_bot") or not isinstance(message, str):
@@ -414,9 +447,9 @@ class WhosListeningProvider(MemoryProvider):
     def _check_sharing(self, text: str) -> autoreview.Verdict:
         """Check the candidate against the user's own words before any Shared write.
 
-        On a Shared route, the guarded main request supplies recent user text on local,
-        single-user platforms, including resumed CLI turns. Stored Private memories and
-        injected memory context never enter the side call.
+        On local one-person platforms, the host hook supplies original user text and the
+        guarded Shared request confirms it was sent. The request's appended plugin context
+        and stored Private memories never enter the side call.
         """
         route, verdict = self._route()
         if route is None or not route.model or self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
@@ -427,11 +460,13 @@ class WhosListeningProvider(MemoryProvider):
                 return autoreview.Verdict(False, "The check could not run.", answered=False)
             words = self._own_words()
         elif self._platform in ("cli", "local", "tui", "desktop"):
-            words = SHARED_REQUEST_WORDS.get(self._session_id)
+            words = SHARED_REQUEST_WORDS.get(self._session_id, self._platform)
             if not words or words[-1] != self._turn_message[:autoreview.USER_MESSAGE_MAX_CHARS]:
-                words = [self._turn_message] if self._turn_message else []
+                words = []  # no original-owner context confirmed on this Shared request
         else:
-            words = self._own_words()  # author ids matter on messaging/group platforms
+            confirmed = SHARED_REQUEST_WORDS.get(self._session_id, self._platform)
+            words = confirmed[-1:] if confirmed and confirmed[-1] == self._turn_message[:autoreview.USER_MESSAGE_MAX_CHARS] else []
+            # Historical group messages have no per-turn author id in the host hook.
         if not words:
             return autoreview.Verdict(False, "The check found none of your words.", answered=False)
         self._checks_this_turn += 1
@@ -489,6 +524,9 @@ class WhosListeningProvider(MemoryProvider):
 
 def _on_pre_llm_call(**kwargs: Any) -> None:
     ROUTES.saw_turn_model(str(kwargs.get("session_id") or ""), str(kwargs.get("model") or ""))
+    SHARED_REQUEST_WORDS.source(str(kwargs.get("session_id") or ""), str(kwargs.get("turn_id") or ""),
+                                kwargs.get("user_message"), kwargs.get("conversation_history"),
+                                str(kwargs.get("platform") or ""))
 
 
 AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keeps waiting
@@ -1037,7 +1075,8 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
     cleaned = guard.guard_request(request, tier)
     session_id = str(kwargs.get("session_id") or "")
     try:
-        SHARED_REQUEST_WORDS.record(session_id, cleaned if cleaned is not None else request, tier)
+        SHARED_REQUEST_WORDS.record(session_id, str(kwargs.get("turn_id") or ""),
+                                    cleaned if cleaned is not None else request, tier)
     except Exception as exc:
         SHARED_REQUEST_WORDS.clear(session_id)
         logger.debug("whos-listening: could not capture Shared user context: %s", type(exc).__name__)

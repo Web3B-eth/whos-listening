@@ -143,13 +143,16 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
                                                     it.memory.pending_reason if it.kind in ("save", "share")
                                                     else it.memory.forget_reason,
                                                     show_private, replayable=True)}
-                if it.kind == "save" and it.memory.forget_reason:
+                if it.kind in ("save", "share") and it.memory.forget_reason:
                     entry["forget_requested"] = True
+                if it.kind == "save" and it.memory.sharing_approval_needed:
+                    entry["approval"] = "saves the fact and shares it with any model"
+                    entry["rejection"] = "declines sharing; the fact still waits as Private"
             out.append(entry)
         return _ok(waiting=out,
                    note="A duplicate group lists memories that may say the same thing: the user keeps one (keep: the "
                         "others are forgotten) or all (keep_both). A waiting save, sharing choice or forget they approve or reject. "
-                        "Show the memories with their numbers and let them choose. A waiting save with "
+                        "Show the memories with their numbers and let them choose. A waiting save or sharing choice with "
                         "forget_requested may be approved or rejected as a save; /memories forget Pn/Sn forgets it."
                         + ("" if show_private else " On a shared route, anything involving private memories isn't "
                                                    "shown: the user sees everything with /memories review in the local app."))
@@ -313,6 +316,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             memory_id = store.claim_memory_id()    # every permitted attempt claims before Private-state checks
             shared_number = store.claim_display_number(SHARED) if tier == SHARED else None
             sharing_check = None
+            private_matches = (store.private_match_snapshot(screened)
+                               if tier == SHARED and not shared_only else None)
             if tier == SHARED and not shared_only:
                 sharing_check = (check_sharing(screened) if check_sharing else
                                  autoreview.Verdict(False, "The check could not run.", answered=False))
@@ -327,6 +332,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             else:
                 sharing_reason = ""
             same = repeat_of(store, screened, tier, judge) if duplicates != "keep" else None
+            private_match_ids = (same.id,) if same is not None and same.tier == PRIVATE else ()
             if sharing_waits and same is not None and same.tier == PRIVATE:
                 if same.sharing_approval_needed and same.text == screened:
                     if route_tier != PRIVATE:
@@ -335,16 +341,26 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                     return _ok(**{key: _public(same)}, note=f"Already in /memories review as {display_ref(same)}. "
                                "Approve it there to share with any model.")
                 if same.status == ACTIVE and same.text == screened and not outside_hold:
-                    marked = store.request_sharing_review(same.id, same.order_key)
+                    marked = store.request_sharing_review(same.id, same.order_key,
+                                                          expected_private_matches=private_matches,
+                                                          private_match_ids=private_match_ids)
                     if route_tier != PRIVATE:
                         return _shared_route_saved(PRIVATE, None)
                     return _ok(saved=_public(marked), note=f"Saved as Private; sharing approval is waiting in "
                                f"/memories review as {display_ref(marked)}.")
                 same = None   # retain an ordinary numbered choice even when Private already has these words
             cross = same if same is not None and tier == SHARED and same.tier == PRIVATE else None
+            if cross is not None and cross.text == screened and cross.forget_reason:
+                # A side check cannot decide an owner's separate forget request.
+                if route_tier != PRIVATE:
+                    return _shared_route_saved(PRIVATE, None)
+                return _ok(duplicate=_public(cross),
+                           note=f"A forget request is waiting for {display_ref(cross)} in /memories review.")
             if (cross is not None and not outside_hold and sharing_check is not None and sharing_check.share
                     and tier_duplicates != "private" and cross.text == screened and cross.status in ("active", PENDING)):
-                m = store.promote_shared(cross.id, cross.order_key, display_number=shared_number)
+                m = store.promote_shared(cross.id, cross.order_key, display_number=shared_number,
+                                         expected_private_matches=private_matches,
+                                         private_match_ids=private_match_ids)
                 if route_tier != PRIVATE:
                     return _shared_route_saved(SHARED, None)
                 return _ok(saved=_public(m), note="Shared with any model after the check.")
@@ -370,7 +386,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                               pending_reason=((hold + " ") if hold and sharing_reason else (hold or "")) + sharing_reason,
                               duplicate_of=cross.id if flag else 0,
                               memory_id=memory_id, display_number=shared_number if tier == SHARED else None,
-                              sharing_approval_needed=sharing_waits)
+                              sharing_approval_needed=sharing_waits,
+                              expected_private_matches=private_matches if tier == SHARED or sharing_waits else None,
+                              private_match_ids=private_match_ids)
             except ForgottenError as exc:
                 if route_tier == PRIVATE or exc.tier == SHARED:
                     raise

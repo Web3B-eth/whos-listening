@@ -187,7 +187,9 @@ class Store(ABC):
     def add(self, text: str, tier: str, provenance: Provenance, *,
             status: str = ACTIVE, pending_reason: str = "", allow_forgotten: bool = False,
             duplicate_of: int = 0, memory_id: Optional[int] = None,
-            display_number: Optional[int] = None, sharing_approval_needed: bool = False) -> Memory:
+            display_number: Optional[int] = None, sharing_approval_needed: bool = False,
+            expected_private_matches: Optional[tuple] = None,
+            private_match_ids: tuple[int, ...] = ()) -> Memory:
         """Save a memory. Raises ``ForgottenError`` if a tombstone matches the text, unless
         ``allow_forgotten`` (only for the user's own commands), which also lifts the tombstone.
         ``duplicate_of`` flags it as possibly saying what that memory says (see resolve.py)."""
@@ -224,8 +226,14 @@ class Store(ABC):
         """Reserve a per-tier display number before a Shared attempt checks Private state."""
 
     @abstractmethod
+    def private_match_snapshot(self, text: str, extra_ids: tuple[int, ...] = ()) -> tuple:
+        """Read candidate matches and row versions before a Shared side check."""
+
+    @abstractmethod
     def promote_shared(self, memory_id: int, expected_order_key: str, *,
-                       display_number: Optional[int] = None, actor: str = "assistant") -> Memory:
+                       display_number: Optional[int] = None, actor: str = "assistant",
+                       expected_private_matches: Optional[tuple] = None,
+                       private_match_ids: tuple[int, ...] = ()) -> Memory:
         """Promote the exact Private row after a checked or numbered sharing choice."""
 
     @abstractmethod
@@ -233,7 +241,9 @@ class Store(ABC):
         """Resolve a sharing review as Private when duplicate policy forbids sharing."""
 
     @abstractmethod
-    def request_sharing_review(self, memory_id: int, expected_order_key: str) -> Memory:
+    def request_sharing_review(self, memory_id: int, expected_order_key: str, *,
+                               expected_private_matches: Optional[tuple] = None,
+                               private_match_ids: tuple[int, ...] = ()) -> Memory:
         """Mark an exact existing Private row for numbered sharing review."""
 
     @abstractmethod
@@ -753,7 +763,35 @@ class SQLiteStore(Store):
             finally:
                 self._db.isolation_level = old_isolation
 
-    def promote_shared(self, memory_id, expected_order_key, *, display_number=None, actor="assistant"):
+    def private_match_snapshot(self, text, extra_ids=()):
+        with self._lock:
+            return self._private_match_snapshot(text, extra_ids)
+
+    def _private_match_snapshot(self, text, extra_ids=()):
+        from . import duplicates
+
+        extra = set(extra_ids)
+        rows = self._db.execute("SELECT id, text, order_key, status, sharing_approval_needed FROM memories "
+                                "WHERE tier = 'private' ORDER BY id").fetchall()
+        versions = tuple((int(r["id"]), r["order_key"], r["status"], int(r["sharing_approval_needed"]))
+                         for r in rows)
+        matches = tuple(version for version, row in zip(versions, rows)
+                        if row["id"] in extra or duplicates.repeats(text, row["text"]))
+        return matches, versions
+
+    def _check_private_matches(self, text, expected, extra_ids=()):
+        if expected is None:
+            return
+        matched_before, versions_before = expected
+        by_id = {row[0]: row for row in versions_before}
+        ids = {row[0] for row in matched_before} | set(extra_ids)
+        relevant_before = tuple(by_id[i] for i in sorted(ids) if i in by_id)
+        relevant_now, _ = self._private_match_snapshot(text, extra_ids)
+        if relevant_now != relevant_before:
+            raise StoreError("The memory changed while sharing was checked. Try again.")
+
+    def promote_shared(self, memory_id, expected_order_key, *, display_number=None, actor="assistant",
+                       expected_private_matches=None, private_match_ids=()):
         display_number = self.claim_display_number(SHARED) if display_number is None else int(display_number)
         with self._lock:
             old_isolation = self._db.isolation_level
@@ -762,9 +800,13 @@ class SQLiteStore(Store):
                 self._db.execute("BEGIN IMMEDIATE")
                 try:
                     m = self.get(memory_id)
+                    self._check_private_matches(m.text if m is not None else "", expected_private_matches,
+                                                private_match_ids)
                     if (m is None or m.tier != PRIVATE or m.status not in (ACTIVE, PENDING)
                             or m.order_key != expected_order_key):
                         raise StoreError("That Private memory changed; review it again before sharing.")
+                    if m.forget_reason and actor != "user":
+                        raise StoreError("A forget request is waiting; review it before sharing.")
                     if self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?",
                                         (fingerprint(m.text),)).fetchone():
                         raise ForgottenError("These words were forgotten at the user's request.", PRIVATE)
@@ -797,8 +839,14 @@ class SQLiteStore(Store):
                              (stamp, key, m.id))
             return self.get(m.id)
 
-    def request_sharing_review(self, memory_id, expected_order_key):
+    def request_sharing_review(self, memory_id, expected_order_key, *,
+                               expected_private_matches=None, private_match_ids=()):
         with self._lock, self._db:
+            if expected_private_matches is not None:
+                self._db.execute("BEGIN IMMEDIATE")
+                current = self.get(memory_id)
+                self._check_private_matches(current.text if current is not None else "",
+                                            expected_private_matches, private_match_ids)
             m = self.get(memory_id)
             if (m is None or m.tier != PRIVATE or m.status != ACTIVE or m.order_key != expected_order_key):
                 raise StoreError("That Private memory changed; review it again before sharing.")
@@ -829,7 +877,8 @@ class SQLiteStore(Store):
             return self.get(m.id)
 
     def add(self, text, tier, provenance, *, status=ACTIVE, pending_reason="", allow_forgotten=False,
-            duplicate_of=0, memory_id=None, display_number=None, sharing_approval_needed=False):
+            duplicate_of=0, memory_id=None, display_number=None, sharing_approval_needed=False,
+            expected_private_matches=None, private_match_ids=()):
         text = clean_text(text)
         tier = check_tier(tier)
         if status not in (ACTIVE, PENDING):
@@ -841,6 +890,9 @@ class SQLiteStore(Store):
         p = provenance
         fp = fingerprint(text)
         with self._lock, self._db:
+            if expected_private_matches is not None:
+                self._db.execute("BEGIN IMMEDIATE")
+                self._check_private_matches(text, expected_private_matches, private_match_ids)
             tomb = self._db.execute("SELECT tier, travels, order_key FROM tombstones WHERE fingerprint = ?", (fp,)).fetchone()
             if tomb:
                 if not allow_forgotten:

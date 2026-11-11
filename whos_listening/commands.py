@@ -106,15 +106,22 @@ def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
                 both = f"/memories keep both {display_ref(news[0])}" if len(news) == 1 else f"/memories keep both {display_ref(m)}"
                 lines.append(f"   keep one: {keeps}  ·  keep all: {both}")
             elif it.kind == "save":
-                lines += [f"\n{n}. A save waiting for your OK:", f"   {_line(m, show_private)}{_from(m)}",
-                          f"   why: {review.shown_reason(m, m.pending_reason, show_private)}",
-                          f"   /memories approve {display_ref(m)}  ·  /memories reject {display_ref(m)}"]
+                heading = "A save and share waiting for your OK" if m.sharing_approval_needed else "A save waiting for your OK"
+                choice = (f"/memories approve {display_ref(m)} saves and shares it with any model  ·  "
+                          f"/memories reject {display_ref(m)} declines sharing; the fact still waits as Private"
+                          if m.sharing_approval_needed else
+                          f"/memories approve {display_ref(m)}  ·  /memories reject {display_ref(m)}")
+                lines += [f"\n{n}. {heading}:", f"   {_line(m, show_private)}{_from(m)}",
+                          f"   why: {review.shown_reason(m, m.pending_reason, show_private)}", f"   {choice}"]
                 if m.forget_reason:
                     lines += [f"   Forget was also requested: {review.shown_reason(m, m.forget_reason, show_private)}",
                               f"   /memories forget {display_ref(m)} forgets it instead."]
             elif it.kind == "share":
                 lines += [f"\n{n}. Private; sharing approval needed:", f"   {_line(m, show_private)}{_from(m)}",
                           f"   /memories approve {display_ref(m)} shares it  ·  /memories reject {display_ref(m)} keeps it Private"]
+                if m.forget_reason:
+                    lines += [f"   Forget was also requested: {review.shown_reason(m, m.forget_reason, show_private)}",
+                              f"   /memories forget {display_ref(m)} forgets it instead."]
             else:
                 lines += [f"\n{n}. A forget waiting for your OK:", f"   {_line(m, show_private)}",
                           f"   why: {review.shown_reason(m, m.forget_reason, show_private)}",
@@ -151,7 +158,8 @@ def cmd_pending(store: Store, show_private: bool) -> str:
             continue
         why = m.pending_reason or (f"it may say what another memory says: /memories review" if m.duplicate_of
                                    else "needs your OK")
-        line = f"save {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}"
+        label = "save and share" if m.sharing_approval_needed else "save"
+        line = f"{label} {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}"
         if m.forget_reason:
             line += (f"\n    Forget was also requested: {review.shown_reason(m, m.forget_reason, show_private)}"
                      f"\n    /memories forget {display_ref(m)} forgets it instead.")
@@ -201,6 +209,8 @@ def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") 
     m = _get(store, arg, show_private)
     if m.sharing_approval_needed:
         private = store.decline_sharing(m.id, m.order_key)
+        if private.status == PENDING:
+            return f"Sharing was declined for {display_ref(private)}. The fact is still waiting as Private in /memories review."
         return f"Kept {display_ref(private)} Private; sharing was declined."
     if m.status == PENDING:
         store.forget(m.id)
