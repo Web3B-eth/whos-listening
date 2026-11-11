@@ -1,11 +1,11 @@
 # Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml, ready for the owner's OK.
 # Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
-# Pinned to main at 76fa6d3 (2026-11-11), where the checks in docs/catalog-pr.md passed. Re-pin
-# `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
+# Pinned to main at 9b0fb0a (2026-11-11, after #37), where the checks in docs/catalog-pr.md passed.
+# Re-pin `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
 name: whos-listening
 title: Who's Listening
 repo: https://github.com/Web3B-eth/whos-listening
-sha: 76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8
+sha: 9b0fb0a2101ed469cba16af39dda3c72821215df
 subdir: ""
 version: "0.1.0"
 description: >-
@@ -19,7 +19,8 @@ description: >-
   user's call in Desktop's plugin settings or settings.json. An llm_request guard removes tagged
   Private memories from every main chat request that isn't Private, and fails closed. Saves
   after the chat read outside content are held; Auto-review (on by default) checks each on the
-  chat's own model, and anything else waits for the user. Near-duplicate saves are skipped by
+  chat's own model, and anything else waits for the user. Review choices (keep, approve, reject)
+  go through on the user's OK; after outside content they need the memory's number or Auto-review. Near-duplicate saves are skipped by
   a local word check, then a duplicate judge. A Private and a Shared memory saying the same
   thing are flagged for the user. Four tools (remember, recall, forget, review) and a /memories
   command: review, keep, approve, undo, forget, export, and optional sync of Shared memories
@@ -32,16 +33,21 @@ description: >-
   with that key, sending the new memory and up to 20 others, Private ones included, for each save
   the word check lets through, each sync arrival and each memory in a review scan;
   duplicate_judge off keeps it local. (3) Side calls through Hermes' PluginLlm on the chat's
-  model: Auto-review (the held memory and the user's three newest messages; at most 3 a turn,
-  only when Hermes' fallbacks are as trusted as the route) and the optional "model" judge. (4)
+  model: Auto-review, for a held save (the memory and the user's three newest messages) and, after
+  outside content, for a review choice made without the memory's number (the exact change, the
+  assistant's last reply and the user's three newest messages; 20 s limit); never the outside
+  content, at most 3 checks a turn in all, and only when Hermes' fallbacks are as trusted as the
+  route (Shared memories only on a Shared route); and the optional "model" judge. (4)
   Sync, only if set up: the GitHub API, sending Shared memory text (forgotten ones as a hash),
   the gateway's name and times. Reads model, providers' base_url and fallback_providers from
   config through load_config_readonly (never keys). Reads two secrets through get_secret only:
   its declared WHOS_LISTENING_SYNC_TOKEN, and the Venice key Hermes holds for its Venice
   provider (VENICE_API_KEY, or the custom-endpoint key for api.venice.ai), sent only to Venice.
   Short-lived background threads started by chat activity (sync, the Venice list refresh,
-  Auto-review checks, a review scan); no long-running process. Logs duplicate checks by memory
-  number and odds (never text) and sync counts to agent.log. plugin.yaml says kind: standalone,
+  Auto-review of held saves, a review scan), each with its own SQLite connection to the same
+  file; no long-running process. INFO lines in agent.log for each duplicate check, each
+  Auto-review run and each sync: memory numbers, odds and fixed words only, never memory text
+  or a model's reason. plugin.yaml says kind: standalone,
   so Hermes loads it twice (general discovery at startup, which registers /memories, and the
   memory loader for the provider); the two copies share their in-memory state through one entry
   the plugin adds to sys.modules under its own key ("_whos_listening_state", via setdefault). It
@@ -50,7 +56,7 @@ description: >-
 maintainer: Web3B-eth
 tier: community
 category: memory
-docs_url: https://github.com/Web3B-eth/whos-listening/blob/76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8/README.md
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/9b0fb0a2101ed469cba16af39dda3c72821215df/README.md
 readme: true
 capabilities:
   provides_tools: []

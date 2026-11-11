@@ -5,7 +5,7 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 | Step | Who | Status |
 | --- | --- | --- |
 | Public repo with README, Install, Limits and license | done in this repo | ready |
-| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry refreshed and checked at `76fa6d3`; re-pin to the final commit first (below). Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
+| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry refreshed and checked at `9b0fb0a`; re-pin to the final commit first (below). Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
 | Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
 
@@ -15,7 +15,7 @@ The catalog is the `plugin-catalog/` folder of `NousResearch/hermes-agent`: one 
 
 ## Before opening the catalog PR
 
-Done on 2026-11-11 for `76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8` (main after #36):
+Done on 2026-11-11 for `9b0fb0a2101ed469cba16af39dda3c72821215df` (main after #37):
 
 1. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared tools, hooks and middleware match, no warnings) and `hermes plugins doctor --ci` passed.
 2. ✓ The catalog's own checks: `scripts/validate_plugin_catalog.py` on the entry with `removed.yaml` (OK, no warnings; the script is the same on `main` and in 0.23.0) and `scripts/scan_plugin_payloads.py` from `main` (exit 0).
@@ -29,9 +29,7 @@ Done on 2026-11-11 for `76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8` (main after #3
    - Rule 13: every network call, side call, file, secret and background thread is in the entry, the PR text and the README section "What it sends, stores and runs".
    - Rule 14: `requires_hermes: ">=0.23.0"` in both the entry and `plugin.yaml`.
 
-**Re-pin before submitting.** `76fa6d3` doesn't have the README section "What it sends, stores and runs" (added in the docs PR after it), and the catalog page shows the README at the pinned commit. So once the last code PR has merged, pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to main's final commit, and re-run steps 1 to 4 on it.
-
-**If the review-choices PR (`feat/review-choices-without-numbers`) merges first,** add its side call to the disclosure before re-pinning. In the entry's item (3) and the PR text's side-call bullet, add: "a review choice the user OKs in plain language after the chat read outside content, without naming the memory's number: one Auto-review call on the chat's model (the change, the assistant's last reply and the user's newest messages), at most 3 checks a turn". Check the README section the same way.
+**Re-pin before submitting.** `9b0fb0a` doesn't have the README section "What it sends, stores and runs" (added by the docs PR, #38, after it), and the catalog page shows the README at the pinned commit. So once #38 and any later code PR have merged, pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to main's final commit, and re-run steps 1 to 4 on it. A later code PR that sends, stores or runs anything new also adds it to the disclosure in all three places.
 
 **Ask the owner.** Only then open the PR, from the owner's account or fork, with the text in [`catalog-pr.md`](catalog-pr.md).
 
