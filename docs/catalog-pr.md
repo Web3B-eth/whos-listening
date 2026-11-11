@@ -1,6 +1,6 @@
 # Draft: catalog PR to NousResearch/hermes-agent
 
-**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `a498dd7…` below with the final commit if main has moved, and re-run the checks under How to Test.
+**Opened 2026-11-11 with the owner's OK** as [NousResearch/hermes-agent#153867](https://github.com/NousResearch/hermes-agent/pull/153867), from `Web3B-eth/hermes-agent` branch `add-whos-listening`. Its text is the body below, except one live-test line, which says the sync test ran at `b9a52cb` (the same code as the pin; later commits changed only comments, docs and `plugin.yaml`'s description). How it was opened: the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `a498dd7…` below with the final commit if main has moved, and re-run the checks under How to Test.
 
 **Title:** `feat(plugin-catalog): add whos-listening plugin`
 
