@@ -48,7 +48,8 @@ REMEMBER_SCHEMA = _schema(
     REMEMBER,
     _REMEMBER_WHAT + "Private is the default: use 'shared' only when the user said it is fine for any "
     "model to see it. On a Private-capable gateway, sharing is checked against the user's own words. "
-    + _REMEMBER_NOT,
+    "To share a memory already saved as private, call this again with its same text and tier 'shared': "
+    "don't forget it first, because a forgotten fact can't be saved again from chat. " + _REMEMBER_NOT,
     {"text": _TEXT,
      "tier": {"type": "string", "enum": [PRIVATE, SHARED],
               "description": "private (default): only private routes see it. shared: any route."}},
@@ -79,7 +80,8 @@ SCHEMAS = (
     ),
     _schema(
         FORGET,
-        "Forget one memory by its Pn or Sn number, when the user asks you to.",
+        "Forget one memory by its Pn or Sn number, when the user asks you to forget it. Not for sharing "
+        "a private memory: use whos-listening_remember for that.",
         {"id": {"type": "string", "description": "The full Pn or Sn memory number."}},
         ("id",),
     ),
@@ -187,7 +189,8 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         part = everything[(page - 1) * ALL_PAGE: page * ALL_PAGE]
         hint = ({"note": f"Show the numbers, and tell the user they can say which memory to forget or change in "
                          f"their own words or by number (for example \"forget {display_ref(part[0])}\"). Memories can't be "
-                         "edited: to change one, forget it and save the new version."} if part else {})
+                         "edited: to change one, forget it and save the new version (to share a private one, "
+                         "save it again with tier 'shared' instead)."} if part else {})
         return _ok(memories=[_public(m) for m in part], page=page,
                    pages=max(1, -(-len(everything) // ALL_PAGE)), total=len(everything),
                    private_omitted=not show_private, **hint)
