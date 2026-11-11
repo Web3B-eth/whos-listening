@@ -109,12 +109,13 @@ def test_add_forget_restore(store):
     assert "Saved" in run(store, "add shared likes jazz")
 
 
-def test_direct_user_command_cannot_guess_private_from_shared_view(store):
+def test_direct_owner_forget_private_from_shared_view_is_nonrevealing(store):
     m = store.add("Keeps a blue notebook", "private", assistant())
     out = run(store, f"forget {m.id}", show_private=False)
-    assert "No memory" in out and "blue notebook" not in out
-    assert store.get(m.id).status == "active"
-    assert "Forgot" in run(store, f"forget {m.id}", show_private=True)
+    assert out == run(store, "forget 99999", show_private=False)
+    assert "blue notebook" not in out and str(m.id) not in out
+    assert store.get(m.id).status == "forgotten"
+    assert "Restored" in run(store, f"restore {m.id}", show_private=True)
 
 
 def test_undo_walks_back(store):
@@ -211,7 +212,7 @@ def test_shared_platform_views_do_not_reveal_private_hold_or_duplicate(store):
     for cmd in ("show", "approve", "reject", "forget", "restore"):
         assert run(store, f"{cmd} {private.id}", show_private=False) == run(store, f"{cmd} 99999", show_private=False).replace("99999", str(private.id))
     assert "No memory" in run(store, f"show {private.id}", show_private=False)
-    assert store.get(private.id).status == PENDING
+    assert store.get(private.id).status == FORGOTTEN
     assert "Likes jazz" in run(store, f"show {visible.id}", show_private=False)
 
 

@@ -230,6 +230,16 @@ def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") 
 
 
 def cmd_forget(store: Store, arg: str, show_private: bool = True) -> str:
+    if not show_private:
+        memory_id = _id(arg)
+        target = store.get(memory_id)
+        if target is None or target.tier == PRIVATE or target.audience_consent_required:
+            # A direct owner command may forget a Private memory from any platform. Give the
+            # same answer for a missing number, so the reply does not confirm Private state.
+            if target is not None and target.tier == PRIVATE and not target.audience_consent_required and target.status != FORGOTTEN:
+                store.forget(memory_id)
+                store.log_event(memory_id, "forgot", "user")
+            return "Forget command processed. Check it on a Private-capable platform."
     m = _get(store, arg, show_private)
     if m.status == FORGOTTEN:
         raise StoreError(f"#{m.id} is already forgotten.")
