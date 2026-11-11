@@ -543,7 +543,7 @@ def test_messaging_platform_makes_every_route_shared(plugin, tmp_path, monkeypat
     block = chat.prefetch("plans", session_id="sess-1")
     assert "canoe" not in block and "jazz" in block
     found = tool(chat, "whos-listening_recall", {"query": ""})
-    assert [m["tier"] for m in found["memories"]] == ["shared"] and found["private_withheld"] is True
+    assert [m["tier"] for m in found["memories"]] == ["shared"] and found["private_omitted"] is True
     saved = tool(chat, "whos-listening_remember", {"text": "Keeps bees"})
     assert "Keeps bees" not in json.dumps(saved)                   # a Private save isn't echoed back
     chat.shutdown()

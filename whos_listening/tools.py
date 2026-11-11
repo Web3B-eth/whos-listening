@@ -159,7 +159,7 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         part = everything[(page - 1) * ALL_PAGE: page * ALL_PAGE]
         return _ok(memories=[_public(m) for m in part], page=page,
                    pages=max(1, -(-len(everything) // ALL_PAGE)), total=len(everything),
-                   private_withheld=not show_private and store.count(tiers=(PRIVATE,)) > 0)
+                   private_omitted=not show_private)
     if action == "export":
         if export is None:
             return _err("Export isn't available here.")
@@ -355,10 +355,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             tiers = allowed_tiers(route_tier)
             query = str(args.get("query") or "").strip()
             found = store.search(query, tiers=tiers, limit=10) if query else store.list(tiers=tiers, limit=10)
-            hidden = 0 if route_tier == PRIVATE else store.count(tiers=(PRIVATE,))
             return _ok(memories=[_public(m) for m in found],
-                       private_withheld=hidden > 0,
-                       note="Private memories are not shown on a shared route." if hidden else "")
+                       private_omitted=route_tier != PRIVATE,
+                       note="Private memories are not included on a Shared route." if route_tier != PRIVATE else "")
 
         if name == FORGET:
             try:

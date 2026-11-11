@@ -31,9 +31,27 @@ def test_recall_withholds_private_on_shared_route(store):
     call(store, tools.REMEMBER, {"text": "Likes nut butter cookies", "tier": "shared"}, PRIVATE)
     shared = call(store, tools.RECALL, {"query": "nut"}, SHARED)
     assert [m["tier"] for m in shared["memories"]] == [SHARED]
-    assert shared["private_withheld"] is True
+    assert shared["private_omitted"] is True
     private = call(store, tools.RECALL, {"query": ""}, PRIVATE)
     assert {m["tier"] for m in private["memories"]} == {PRIVATE, SHARED}
+
+
+def test_shared_recall_and_all_have_no_private_presence_signal(tmp_path):
+    results = []
+    for name in ("none", "active", "forgotten", "pending"):
+        s = SQLiteStore(tmp_path / f"{name}.sqlite")
+        s.add("Likes jazz", SHARED, Provenance(written_by="user"))
+        if name != "none":
+            m = s.add("Owns a blue bicycle", PRIVATE, Provenance(written_by="user"),
+                      status="pending" if name == "pending" else "active")
+            if name == "forgotten":
+                s.forget(m.id)
+        recall = call(s, tools.RECALL, {"query": ""}, SHARED)
+        all_view = call(s, tools.REVIEW, {"action": "all"}, SHARED)
+        results.append((recall, all_view))
+        s.close()
+    assert all(result == results[0] for result in results)
+    assert results[0][0]["private_omitted"] is True
 
 
 def test_private_review_reason_is_removed_from_shared_replay(store):

@@ -241,9 +241,7 @@ def export_markdown(store: Store, data_dir: Path, *, show_private: bool, now: Op
                   for m in waiting]
         lines.append("")
     if not show_private:
-        hidden = store.count(tiers=(PRIVATE,))
-        if hidden:
-            lines += [f"{hidden} private memories are left out: export them in the terminal or the local app.", ""]
+        lines += ["Private memories are not included on this platform. Export on a Private-capable platform or in the terminal to include them.", ""]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

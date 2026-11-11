@@ -224,7 +224,7 @@ def test_the_tool_lists_and_hides_private_pairs_on_a_shared_route(store):
     assert [w["kind"] for w in out["waiting"]] == ["duplicate", "save"]
     assert out["waiting"][0]["memories"][0]["line"].startswith(f"- #{private.id} <wl-private")   # tagged
     shared_view = review(store, "list", route=SHARED)
-    assert [w["kind"] for w in shared_view["waiting"]] == ["save"] and "private_withheld" not in shared_view
+    assert [w["kind"] for w in shared_view["waiting"]] == ["save"] and "private_omitted" not in shared_view
 
 
 def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
@@ -234,7 +234,7 @@ def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
         out = save(s, BIKE2, tier=SHARED, route=SHARED)
         new_id = s.list(tiers=(SHARED,), limit=5)[0].id
         said = f"keep {new_id}"
-        got = (out, review(s, "list", route=SHARED), review(s, "all", route=SHARED)["private_withheld"],
+        got = (out, review(s, "list", route=SHARED), review(s, "all", route=SHARED)["private_omitted"],
                review(s, "keep", id=new_id, said=said, route=SHARED), review(s, "keep_both", id=new_id, said=said,
                                                                           route=SHARED),
                [m.text for m in s.search("Hightower", tiers=(SHARED,))])
@@ -262,7 +262,23 @@ def test_the_tool_shows_everything_a_page_at_a_time(store):
     assert first["total"] == 61 and first["pages"] == 2 and len(first["memories"]) == 50
     assert len(review(store, "all", page=2)["memories"]) == 11
     shared_only = review(store, "all", route=SHARED)
-    assert shared_only["total"] == 60 and shared_only["private_withheld"] == 1
+    assert shared_only["total"] == 60 and shared_only["private_omitted"] is True
+
+
+def test_shared_export_note_does_not_count_private_rows(tmp_path):
+    notes = []
+    for name in ("none", "active", "pending", "forgotten"):
+        s = SQLiteStore(tmp_path / f"{name}.sqlite")
+        if name != "none":
+            m = s.add("Owns a blue bicycle", PRIVATE, USER,
+                      status=PENDING if name == "pending" else ACTIVE)
+            if name == "forgotten":
+                s.forget(m.id)
+        body = resolve.export_markdown(s, tmp_path / name, show_private=False).read_text()
+        notes.append(body.split("Private memories are not included", 1)[1])
+        assert "blue bicycle" not in body
+        s.close()
+    assert notes[0] == notes[1] == notes[2] == notes[3]
 
 
 def test_the_tool_exports_and_scans(store):
@@ -312,7 +328,7 @@ def test_export_writes_a_readable_private_file(store, tmp_path):
     assert "## Private (1)" in text and "Has a peanut allergy" in text and "## Shared (1)" in text
     assert "## Waiting for you (1)" in text and (path.stat().st_mode & 0o777) == 0o600
     text = resolve.export_markdown(store, tmp_path / "b", show_private=False).read_text()
-    assert "peanut" not in text and "1 private memories are left out" in text and "Likes tea" not in text
+    assert "peanut" not in text and "Private memories are not included" in text and "Likes tea" not in text
 
 
 # -- sync arrivals -------------------------------------------------------------------------------
