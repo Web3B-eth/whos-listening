@@ -1,6 +1,6 @@
 # Draft: catalog PR to NousResearch/hermes-agent
 
-**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below.
+**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `76fa6d3…` below with the final commit, and re-run the checks under How to Test.
 
 **Title:** `feat(plugin-catalog): add whos-listening plugin`
 
@@ -10,38 +10,74 @@
 
 ## What does this PR do?
 
-Adds whos-listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `976b90f836dd6d4e455ee04def2bd686b2b76a51`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
+Adds Who's Listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
 
-whos-listening is a memory provider that knows who is listening. Every memory is Private or Shared. A request carries Private memories only if all three layers that see it are Private:
-- the gateway (the machine running Hermes, which stores the memories);
-- the platform (by default the terminal, TUI, Desktop and `hermes chat`);
-- the model route (by default Venice and models on your own machine or network).
+Who's Listening is a memory provider that knows who is listening. Every memory is Private or Shared. A request carries Private memories only if all three layers that see it are Private:
+- **the gateway**, the machine running Hermes, which stores the memories. A hosted Hermes (a Fly.io machine or remote config, as on Hermes Cloud) is Shared by default and keeps Shared memories only;
+- **the platform**: by default the terminal, TUI, Desktop and `hermes chat`;
+- **the model route**: by default Venice's private models and models on your own machine or network. Venice's anonymized models are Shared, going by Venice's public model list.
 
-Each layer is the user's call, in Desktop's plugin settings or `settings.json`; a hosted Hermes (on a Fly.io machine or with remote config, as on Hermes Cloud) counts as a Shared gateway by default. An `llm_request` guard removes tagged Private memories from every main chat request that isn't Private, and fails closed. Saves made after a chat read outside content wait for the user (`/memories pending`, `approve`, `undo`), with an optional Auto-review on the chat's own model.
+Each layer is the user's call, in Desktop's plugin settings or `settings.json`. An `llm_request` guard removes tagged Private memories from every main chat request that isn't Private, and fails closed.
+
+It also:
+- holds saves made after a chat read outside content, with Auto-review on the chat's own model;
+- skips near-duplicate saves, with a local word check and then a duplicate judge;
+- flags a Private and a Shared memory that say the same thing, for the user to choose;
+- offers a review workflow that works in plain language or through `/memories`;
+- optionally syncs Shared memories between gateways through the user's own private GitHub repository.
 
 ## Disclosure (rule 13)
 
-- **Storage:** SQLite in the active Hermes home only (`$HERMES_HOME/whos-listening/`), including forgotten text until the user purges it. No credentials stored.
-- **Network:** none of its own, except the optional Auto-review (off by default). That is one request per held save, at most 3 a turn, through Hermes' `PluginLlm` on the chat's current model, in a short-lived background thread. It sends the memory and the user's three newest messages, and runs only when Hermes' fallback providers are as trusted as the chat's route.
+The README has the same list under [What it sends, stores and runs](https://github.com/Web3B-eth/whos-listening/blob/76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8/README.md#what-it-sends-stores-and-runs).
+
+- **Storage:** SQLite in the active Hermes home only (`$HERMES_HOME/whos-listening/`), including forgotten text until the user purges it. Also a cached copy of Venice's model list, a copy of the Desktop settings for the command line, and files from `/memories export`, which are plain text with mode 600. It stores no credentials.
+- **Network, third party:**
+  - **Venice's public model list** (`GET api.venice.ai/api/v1/models?type=all`): no key, nothing about the user, at most once a day. It decides which Venice models count as Private.
+  - **The duplicate judge**, on by default (Clef) whenever Hermes has a Venice key: `POST api.venice.ai/api/v1/decisions` with that key. It sends the new memory and up to 20 existing ones, Private ones included, for each save the local word check lets through, each sync arrival, and each memory in a `/memories review scan`. Clef runs privately on Venice. Jev (anonymized) runs only if the user trusts anonymized Venice models. `duplicate_judge: off` keeps the check local.
+  - **Sync**, only if the user sets it up: the GitHub API, on the user's own private repository with their token. It sends the text of Shared memories (forgotten ones only as a hash), the gateway's name and times. Never Private memories.
+- **Side calls through Hermes** (`PluginLlm`, on the chat's current model):
+  - **Auto-review** (on by default): one call per save held after outside content, at most 3 a turn. It sends the memory and the user's three newest messages, and runs only when Hermes' fallback providers are as trusted as the chat's route.
+  - **The optional `model` duplicate judge:** only in chats on a Private route whose fallbacks are all Private.
 - **Rewrites requests:** the `llm_request` middleware removes Private memories from outgoing main chat requests that aren't Private.
-- **Reads:** `model`, providers' `base_url` and `fallback_providers` from config through `hermes_cli.config.load_config_readonly()`, route fields only, never keys. No `.env`, auth stores or other credential files.
-- **Loads twice (rule 9 note):** `plugin.yaml` says `kind: standalone`, so Hermes loads it through general discovery at startup (which registers `/memories` before the first chat) and again through the memory loader for the provider, Hermes' dual-kind path. The two copies share their in-memory route and outside-content books through one entry the plugin adds to `sys.modules` under its own key (`sys.modules.setdefault("_whos_listening_state", ...)`). It replaces or rebinds nothing in Hermes core, and `hermes plugins validate`'s no-core-override check passes. Happy to switch to another seam if you'd prefer one.
-- **Registers:** the `/memories` slash command, the `pre_llm_call` and `post_tool_call` hooks, and the `llm_request` middleware. The three memory tools come from the provider's `get_tool_schemas()`.
-- No shell commands, telemetry, self-updater or long-running background process. No Python dependencies.
+- **Reads (rule 11):**
+  - `model`, providers' `base_url` and `fallback_providers` from config through `hermes_cli.config.load_config_readonly()`: route fields only, never keys.
+  - Secrets only through `agent.secret_scope.get_secret`, never from files:
+    - its declared `WHOS_LISTENING_SYNC_TOKEN`;
+    - the Venice key Hermes already holds for its own Venice provider (`VENICE_API_KEY`, or `HERMES_CUSTOM_<HOST>_API_KEY` for a custom endpoint on `api.venice.ai`). That one is used only for the judge's request to Venice. It isn't declared in `requires_env` because the plugin works without it: the judge just stays off. Happy to declare it differently if you'd prefer.
+- **Background threads:** short-lived ones, started by chat activity (a sync, the Venice list refresh, an Auto-review check, a review scan the user starts), through `spawn_context_thread`. No long-running process.
+- **Logs:** INFO lines in `agent.log` for each duplicate check (memory numbers and odds, never text) and each sync's counts.
+- **Loads twice (rule 9 note):** `plugin.yaml` says `kind: standalone`, so Hermes loads it through general discovery at startup (which registers `/memories` before the first chat) and again through the memory loader for the provider, Hermes' dual-kind path. The two copies share their in-memory state through one entry the plugin adds to `sys.modules` under its own key (`sys.modules.setdefault("_whos_listening_state", ...)`). It replaces or rebinds nothing in Hermes core, and `hermes plugins validate`'s no-core-override check passes. Happy to switch to another seam if you'd prefer one.
+- **Registers:**
+  - the `/memories` slash command;
+  - the `pre_llm_call` and `post_tool_call` hooks;
+  - the `llm_request` middleware;
+  - the four memory tools (`whos-listening_remember`, `_recall`, `_forget`, `_review`), which come from the provider's `get_tool_schemas()`.
+- No telemetry, self-updater, shell commands or Python dependencies.
 
 ## How to Test
 
-Tested with Hermes v0.23.0 in a throwaway `HERMES_HOME`, plugin at `976b90f836dd6d4e455ee04def2bd686b2b76a51`:
-- `python scripts/validate_plugin_catalog.py` on the entry (with `removed.yaml`): OK, no warnings.
-- `hermes plugins validate --install-deps <clean checkout>`: passed (security scan: safe; no core override; declared hooks and middleware match).
+Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8`:
+- `python scripts/validate_plugin_catalog.py` on the entry with `removed.yaml`: OK, 2 files valid, no warnings.
+- `python scripts/scan_plugin_payloads.py <clean checkout>` (from hermes-agent `main`): exit 0.
+- `hermes plugins validate --install-deps <clean checkout>`: passed (security scan safe; no core override; declared tools, hooks and middleware match; no warnings).
 - `hermes plugins doctor --ci <clean checkout>`: OK.
-- `python scripts/scan_plugin_payloads.py <clean checkout>`: exit 0.
-- Install as documented in the README, on a fresh home: `hermes plugins install Web3B-eth/whos-listening --enable`, then `hermes plugins enable whos-listening`, with built-in memory turned off. `hermes memory status` shows `whos-listening ← active`, and `/memories` as the first message to a fresh gateway answers "Nothing remembered yet."
-- The repo's own checks: 205 unit tests, and 29 end-to-end checks that run real Hermes 0.23.0 against a fake local model server. They cover recall on Private and Shared routes, a mid-chat switch from Private to Shared (the guard strips the replayed Private memory), forget plus a blocked re-save, a planted instruction in a file (the save waits), Auto-review, and `/memories`. A control run with the guard's clean-up switched off shows the leak those checks catch.
-- Live on a real 0.23.0 install with made-up memories, at `35689c0`, which differs from the pin only in README and CHANGELOG:
-  - Venice `grok-4-5` recalled the Private memory; Nous `openai/gpt-6.1-terra` got only the Shared one.
-  - Marking Nous Private in settings let Terra use it.
-  - `"gateway": "shared"` stopped all Private recall and refused a Private save.
+- On a fresh home, `hermes plugins install Web3B-eth/whos-listening --ref <sha> --enable`, then `hermes plugins enable whos-listening`: `hermes memory status` shows `whos-listening ← active`.
+- The repo's own checks: 377 unit tests, and 52 end-to-end checks that run real Hermes 0.23.0 against a fake local model server. The e2e checks cover:
+  - recall on Private and Shared routes;
+  - a mid-chat switch from Private to Shared (the guard strips the replayed Private memory);
+  - forget plus a blocked re-save;
+  - a planted instruction in a file (the save waits);
+  - Auto-review;
+  - a Shared save over a Private memory, resolved through the review tool;
+  - sync between two gateways against a fake GitHub (only Shared memories travel);
+  - a Shared gateway saving Shared only;
+  - Desktop's settings form;
+  - `/memories`.
+
+  A control run with the guard's clean-up switched off shows the leak those checks catch.
+- Live, with made-up memories:
+  - on a 0.23.0 install with Venice `grok-4-5` (Private) and Nous `openai/gpt-6.1-terra` (Shared);
+  - on Hermes Cloud, which counts as a Shared gateway: there an unprompted fact saved Shared without a question, and "keep that private" was refused with an explanation.
 
 ## Checklist
 

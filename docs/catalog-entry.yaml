@@ -1,44 +1,56 @@
 # Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml, ready for the owner's OK.
 # Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
-# Pinned to main at 976b90f (2026-11-09): `hermes plugins validate --install-deps` and
-# `hermes plugins doctor --ci` passed on a clean copy of that commit. If main moves before
-# submission, re-pin `sha` and `docs_url` and re-run both.
+# Pinned to main at 76fa6d3 (2026-11-11), where the checks in docs/catalog-pr.md passed. Re-pin
+# `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
 name: whos-listening
-title: whos-listening
+title: Who's Listening
 repo: https://github.com/Web3B-eth/whos-listening
-sha: 976b90f836dd6d4e455ee04def2bd686b2b76a51
+sha: 76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8
 subdir: ""
 version: "0.1.0"
 description: >-
   Memory that knows who's listening. Each memory is Private or Shared. A request carries
   Private memories only if all three layers that see it are Private: the gateway (the machine
-  running Hermes, which stores the memories), the platform (the terminal, TUI, Desktop and
-  hermes chat by default; chat apps such as Telegram, the API server, web chat, cron and
-  subagents are Shared) and the model route (Venice and models on your own machine or network
-  by default). Each layer is the user's call in settings.json (gateway, private_platforms,
-  shared_platforms, routes, private_hosts, shared_hosts). An llm_request guard removes tagged
-  Private memories from every request that isn't Private, and fails closed. A Shared gateway
-  keeps no Private memories. Saves after the chat read outside content wait for your OK
-  (/memories pending, approve, undo), with an optional Auto-review on the chat's own model;
-  forgotten facts can't be saved again from chat; whos-listening_recall runs at most 5 times a turn.
-  Disclosure — stores memories in SQLite in the active Hermes home only
-  ($HERMES_HOME/whos-listening/), including forgotten text until purged. No network calls of
-  its own except the optional Auto-review (off by default): one request per held save, at most
-  3 a turn, through Hermes' PluginLlm on the chat's current model, in a short-lived background
-  thread; it sends the memory and the user's three newest messages, and runs only when Hermes'
-  fallback providers are as trusted as the chat's route. Rewrites outgoing main chat requests
-  that aren't Private (removing Private memories). Reads model, providers' base_url and
-  fallback_providers from config.yaml (never keys). Registers a /memories slash command.
-  plugin.yaml says kind: standalone, so Hermes loads it twice (general discovery at startup,
-  which registers /memories, and the memory loader for the provider; Hermes' dual-kind path).
-  The two copies share their in-memory route and outside-content books through one entry the
-  plugin adds to sys.modules under its own key ("_whos_listening_state", via setdefault); it
-  replaces or rebinds nothing in Hermes core, and validate's no-core-override check passes.
-  No credentials, telemetry, self-updater or long-running background process.
+  running Hermes, which stores the memories; a hosted Hermes such as Hermes Cloud is Shared by
+  default and keeps Shared memories only), the platform (the terminal, TUI, Desktop and hermes
+  chat by default; chat apps, the API server, web chat, cron and subagents are Shared) and the
+  model route (Venice's private models and models on your own machine or network by default;
+  Venice's anonymized models are Shared, from Venice's public model list). Each layer is the
+  user's call in Desktop's plugin settings or settings.json. An llm_request guard removes tagged
+  Private memories from every main chat request that isn't Private, and fails closed. Saves
+  after the chat read outside content are held; Auto-review (on by default) checks each on the
+  chat's own model, and anything else waits for the user. Near-duplicate saves are skipped by
+  a local word check, then a duplicate judge. A Private and a Shared memory saying the same
+  thing are flagged for the user. Four tools (remember, recall, forget, review) and a /memories
+  command: review, keep, approve, undo, forget, export, and optional sync of Shared memories
+  between gateways through the user's private GitHub repository.
+  Disclosure — Stores memories in SQLite in the active Hermes home only
+  ($HERMES_HOME/whos-listening/), including forgotten text until purged; /memories export writes
+  a plain-text file there (mode 600). Network calls: (1) Venice's public model list
+  (api.venice.ai/api/v1/models, no key, nothing about the user), at most daily. (2) The duplicate
+  judge, on by default (Clef) whenever Hermes has a Venice key: POST api.venice.ai/api/v1/decisions
+  with that key, sending the new memory and up to 20 others, Private ones included, for each save
+  the word check lets through, each sync arrival and each memory in a review scan;
+  duplicate_judge off keeps it local. (3) Side calls through Hermes' PluginLlm on the chat's
+  model: Auto-review (the held memory and the user's three newest messages; at most 3 a turn,
+  only when Hermes' fallbacks are as trusted as the route) and the optional "model" judge. (4)
+  Sync, only if set up: the GitHub API, sending Shared memory text (forgotten ones as a hash),
+  the gateway's name and times. Reads model, providers' base_url and fallback_providers from
+  config through load_config_readonly (never keys). Reads two secrets through get_secret only:
+  its declared WHOS_LISTENING_SYNC_TOKEN, and the Venice key Hermes holds for its Venice
+  provider (VENICE_API_KEY, or the custom-endpoint key for api.venice.ai), sent only to Venice.
+  Short-lived background threads started by chat activity (sync, the Venice list refresh,
+  Auto-review checks, a review scan); no long-running process. Logs duplicate checks by memory
+  number and odds (never text) and sync counts to agent.log. plugin.yaml says kind: standalone,
+  so Hermes loads it twice (general discovery at startup, which registers /memories, and the
+  memory loader for the provider); the two copies share their in-memory state through one entry
+  the plugin adds to sys.modules under its own key ("_whos_listening_state", via setdefault). It
+  replaces or rebinds nothing in Hermes core. No telemetry, self-updater, shell commands or
+  Python dependencies.
 maintainer: Web3B-eth
 tier: community
 category: memory
-docs_url: https://github.com/Web3B-eth/whos-listening/blob/976b90f836dd6d4e455ee04def2bd686b2b76a51/README.md
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/76fa6d386b4ef4f5cc9c30bbe9bf7c13b86e92a8/README.md
 readme: true
 capabilities:
   provides_tools: []
@@ -50,8 +62,9 @@ capabilities:
   requires_env: []
 known_issues:
   - Hermes runs plugin middleware only on main chat requests. Compression, the tool-limit summary, mixture-of-agents and side calls skip the guard; see README Limits.
-  - Auto-review needs the default in-process plugin mode.
-  - The first turn after a gateway starts carries Shared memories only.
+  - The first turn after a gateway starts carries Shared memories only, and Venice models count as Shared until Venice's model list has loaded on a new gateway.
   - Subagents and scheduled jobs count as Shared, so they never see Private memories.
+  - Auto-review needs the default in-process plugin mode; under plugins.isolation host, held saves wait for the user.
   - For /memories to work from the first message, also run `hermes plugins enable whos-listening` (for a memory provider, install --enable only sets memory.provider).
+  - If a model calls a memory tool through tool_call, Hermes answers that it's not a known tool name; the plugin tells models to call its tools directly.
 requires_hermes: ">=0.23.0"
