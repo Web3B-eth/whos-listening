@@ -85,9 +85,9 @@ def test_errors_save_normally(store):
 
 
 def test_a_person_mix_up_is_never_a_duplicate(store):
-    """In tests both models took "Brother Sam lives in Denver" for "Lives in Denver" with confidence."""
-    me = store.add("Lives in Denver", PRIVATE, Provenance())
-    assert judge.find(store, "Brother Sam lives in Denver", (PRIVATE,), "jev-latest", "k",
+    """In tests both models took "Brother Sam lives in Seattle" for "Lives in Seattle" with confidence."""
+    me = store.add("Lives in Seattle", PRIVATE, Provenance())
+    assert judge.find(store, "Brother Sam lives in Seattle", (PRIVATE,), "jev-latest", "k",
                       opener=opener_answering(f"m{me.id}", 0.92)) is None
     assert not d.repeats("Mom lives in Seattle", "Lives in Seattle") and not d.repeats("Lives in Seattle", "Mom lives in Seattle")
     assert d.repeats("My sister Dana is vegetarian", "Sister Dana is vegetarian")    # same person: fine
@@ -140,14 +140,14 @@ def test_the_model_prompt_keeps_memories_inside_their_markers(store):
 
 def test_the_model_answer_counts_only_for_a_listed_memory_about_the_same_person(store):
     a = store.add("Has a peanut allergy", PRIVATE, Provenance())
-    b = store.add("Lives in Denver", PRIVATE, Provenance())
+    b = store.add("Lives in Seattle", PRIVATE, Provenance())
     cands = [a, b]
     assert judge.parse_model_answer(f'{{"repeats": {a.id}}}', "Allergic to peanuts", cands).id == a.id
     assert judge.parse_model_answer(f'Sure.\n```json\n{{"repeats": "#{a.id}"}}\n```', "Allergic to peanuts",
                                     cands).id == a.id
     for reply in ('{"repeats": null}', '{"repeats": 999}', "no idea", '{"repeats": "maybe"}', "", None, "{broken"):
         assert judge.parse_model_answer(reply, "Allergic to peanuts", cands) is None
-    assert judge.parse_model_answer(f'{{"repeats": {b.id}}}', "Brother Sam lives in Denver", cands) is None
+    assert judge.parse_model_answer(f'{{"repeats": {b.id}}}', "Brother Sam lives in Seattle", cands) is None
 
 
 def test_find_with_model_asks_once_and_saves_normally_on_errors(store):

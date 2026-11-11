@@ -46,8 +46,8 @@ when can if this that these those there here some any one try tries tried trying
 
 
 # Words that make a memory about someone other than the user. Two memories where one names such a
-# person and the other doesn't (or names another) are never repeats: "Brother Sam lives in Denver"
-# isn't "Lives in Denver".
+# person and the other doesn't (or names another) are never repeats: "Brother Sam lives in Seattle"
+# isn't "Lives in Seattle".
 # Words for the same kind of person map to one name, so "daughter" and "kid" match.
 _PEOPLE_GROUPS = {
     "child": "son sons daughter daughters kid kids child children baby",
