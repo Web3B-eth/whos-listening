@@ -1,0 +1,150 @@
+[
+  {
+    "name": "hello",
+    "call": "hello",
+    "request": {
+      "protocol": 1,
+      "plugin": {"name": "whos-listening", "version": "0.2.0"},
+      "hermes": {"version": "0.23.0", "isolation": "in_process"},
+      "gateway": {"name": "laptop", "hosted": false, "hosted_why": "", "setting": "private"},
+      "routes": [
+        {"role": "main", "provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+        {"role": "fallback", "provider": "nous", "model": "openai/gpt-6.1-terra", "base_url": "https://inference-api.nousresearch.com/v1"},
+        {"role": "compression", "provider": "auto", "model": "", "base_url": ""},
+        {"role": "auxiliary", "name": "title", "provider": "auto", "model": "", "base_url": ""}
+      ]
+    },
+    "response": {
+      "protocol": 1, "ok": true,
+      "hub": {"name": "Example hub"},
+      "tools": [
+        {"name": "memory_search", "memory_only": true, "redact_args": ["query"]},
+        {"name": "memory_save", "memory_only": true, "redact_args": ["text"]},
+        {"name": "memory_forget", "memory_only": true, "redact_args": []}
+      ],
+      "verdict_ttl_seconds": 300,
+      "hello_interval_seconds": 3600,
+      "wants_user_messages": false
+    }
+  },
+  {
+    "name": "hello from a hosted gateway",
+    "call": "hello",
+    "request": {
+      "protocol": 1,
+      "plugin": {"name": "whos-listening", "version": "0.2.0"},
+      "hermes": {"version": "0.23.0", "isolation": "in_process"},
+      "gateway": {"name": "cloud", "hosted": true, "hosted_why": "Fly.io machine", "setting": null},
+      "routes": [
+        {"role": "main", "provider": "nous", "model": "openai/gpt-6.1-terra", "base_url": "https://inference-api.nousresearch.com/v1"}
+      ]
+    },
+    "response": {
+      "protocol": 1, "ok": true,
+      "hub": {"name": "Example hub"},
+      "tools": []
+    }
+  },
+  {
+    "name": "turn-start with a believed route",
+    "call": "turn-start",
+    "request": {
+      "protocol": 1,
+      "session": {"id": "20261111_101500_a1b2c3", "platform": "desktop", "agent_context": "primary", "outside_tool": ""},
+      "turn": {"number": "3", "id": ""},
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "route_source": "last_request"
+    },
+    "response": {"protocol": 1, "ok": true, "turn_token": "tt_9QmV2c", "token_ttl_seconds": 3600}
+  },
+  {
+    "name": "turn-start on a first turn with an unknown route and the user's message",
+    "call": "turn-start",
+    "request": {
+      "protocol": 1,
+      "session": {"id": "20261111_120000_d4e5f6", "platform": "telegram", "agent_context": "primary", "outside_tool": ""},
+      "turn": {"number": "1", "id": ""},
+      "route": null,
+      "route_source": "unknown",
+      "message": {"text": "Remember that I'm allergic to penicillin", "author_id": "u_1001", "author_is_bot": false}
+    },
+    "response": {"protocol": 1, "ok": true}
+  },
+  {
+    "name": "context",
+    "call": "context",
+    "request": {
+      "protocol": 1,
+      "session": {"id": "20261111_101500_a1b2c3", "platform": "desktop", "agent_context": "primary", "outside_tool": ""},
+      "turn": {"number": "3", "id": ""},
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "route_source": "last_request",
+      "query": "What should I cook for my sister this weekend?",
+      "max_chars": 4000
+    },
+    "response": {
+      "protocol": 1, "ok": true,
+      "memories": [
+        {"ref": "P2", "id": "m_2", "tier": "private", "text": "Sister Dana is vegetarian"},
+        {"ref": "S1", "id": "m_9", "tier": "shared", "text": "Likes spicy food"}
+      ],
+      "held_back": ""
+    }
+  },
+  {
+    "name": "context with Private memories held back",
+    "call": "context",
+    "request": {
+      "protocol": 1,
+      "session": {"id": "20261111_120000_d4e5f6", "platform": "telegram", "agent_context": "primary", "outside_tool": ""},
+      "turn": {"number": "2", "id": ""},
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "route_source": "last_request",
+      "query": "Any ideas for dinner?",
+      "max_chars": 4000
+    },
+    "response": {
+      "protocol": 1, "ok": true,
+      "memories": [{"ref": "S1", "id": "m_9", "tier": "shared", "text": "Likes spicy food"}],
+      "held_back": "this chat is on Telegram"
+    }
+  },
+  {
+    "name": "verdict",
+    "call": "verdict",
+    "request": {
+      "protocol": 1,
+      "session": {"id": "20261111_101500_a1b2c3", "platform": "desktop", "agent_context": "primary", "outside_tool": ""},
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
+    },
+    "response": {"protocol": 1, "ok": true, "tier": "private", "reason": "Venice private model, local app"}
+  },
+  {
+    "name": "turn-report when an outside tool is about to run",
+    "call": "turn-report",
+    "request": {
+      "protocol": 1,
+      "event": "outside",
+      "session": {"id": "20261111_101500_a1b2c3", "platform": "desktop", "agent_context": "primary", "outside_tool": "web_extract"},
+      "turn": {"number": "3", "id": "turn_7f3a"},
+      "outside_tools": ["web_extract"]
+    },
+    "response": {"protocol": 1, "ok": true}
+  },
+  {
+    "name": "turn-report at the end of a turn",
+    "call": "turn-report",
+    "request": {
+      "protocol": 1,
+      "event": "turn_end",
+      "session": {"id": "20261111_101500_a1b2c3", "platform": "desktop", "agent_context": "primary", "outside_tool": "web_extract"},
+      "turn": {"number": "3", "id": "turn_7f3a"},
+      "outside_tools": ["web_extract"],
+      "requests": [
+        {"route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "tier": "private", "tier_source": "hub"},
+        {"route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "tier": "private", "tier_source": "kept"}
+      ]
+    },
+    "response": {"protocol": 1, "ok": true}
+  }
+]

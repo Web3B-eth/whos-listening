@@ -1,0 +1,122 @@
+{
+  "about": "A request on its real tier, and what must leave instead. sent null means the request leaves unchanged. Tool-call arguments given as JSON text are compared as parsed JSON, not as text. tools is the tools list from hello, and mcp_server the hub's MCP server name in Hermes. All data is made up.",
+  "mcp_server": "hub",
+  "tools": [
+    {"name": "memory_search", "memory_only": true, "redact_args": ["query"]},
+    {"name": "memory_save", "memory_only": true, "redact_args": ["text"]},
+    {"name": "memory_forget", "memory_only": true, "redact_args": []}
+  ],
+  "cases": [
+    {
+      "name": "a Private route leaves the request alone",
+      "tier": "private",
+      "request": {"model": "grok-4-5", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": "{\"text\": \"Allergic to penicillin\", \"wl_turn\": \"tt_9QmV2c\"}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Saved as <wl-private id=\"m_4\">Allergic to penicillin</wl-private> (P4)."}
+      ]},
+      "sent": null
+    },
+    {
+      "name": "a replayed save: its text is blanked and the token removed",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "user", "content": "What did I tell you earlier?"},
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": "{\"text\": \"Allergic to penicillin\", \"tier\": \"private\", \"wl_turn\": \"tt_9QmV2c\"}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Saved (P4)."}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "user", "content": "What did I tell you earlier?"},
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": "{\"text\": \"[private memory withheld]\", \"tier\": \"private\"}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Saved (P4)."}
+      ]}
+    },
+    {
+      "name": "a tagged span in a hub tool result is removed",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "mcp__hub__memory_search", "arguments": "{\"query\": \"health\"}"}}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "- P2 <wl-private id=\"m_2\">Sees a physio on Fridays</wl-private>\n- S1 Likes spicy food"}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "mcp__hub__memory_search", "arguments": "{\"query\": \"[private memory withheld]\"}"}}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "- P2 [private memory withheld]\n- S1 Likes spicy food"}
+      ]}
+    },
+    {
+      "name": "a forget keeps its arguments but loses the token",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\", \"wl_turn\": \"tt_9QmV2c\"}"}}]},
+        {"role": "tool", "tool_call_id": "c3", "content": "Forgot S1."}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\"}"}}]},
+        {"role": "tool", "tool_call_id": "c3", "content": "Forgot S1."}
+      ]}
+    },
+    {
+      "name": "a hub tool not listed in hello gets every string argument blanked",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "mcp__hub__people_notes", "arguments": "{\"person\": \"Dana\", \"limit\": 3, \"wl_turn\": \"tt_9QmV2c\"}"}}]},
+        {"role": "tool", "tool_call_id": "c4", "content": "No notes."}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "mcp__hub__people_notes", "arguments": "{\"person\": \"[private memory withheld]\", \"limit\": 3}"}}]},
+        {"role": "tool", "tool_call_id": "c4", "content": "No notes."}
+      ]}
+    },
+    {
+      "name": "a tool on another MCP server with the same name is left alone",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c5", "type": "function", "function": {"name": "mcp__notes__memory_save", "arguments": "{\"text\": \"Buy milk\"}"}}]},
+        {"role": "tool", "tool_call_id": "c5", "content": "ok"}
+      ]},
+      "sent": null
+    },
+    {
+      "name": "an ordinary tool is left alone",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c6", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"vegetarian recipes\"}"}}]},
+        {"role": "tool", "tool_call_id": "c6", "content": "Three results."}
+      ]},
+      "sent": null
+    },
+    {
+      "name": "Anthropic shape: tool_use input",
+      "tier": "shared",
+      "request": {"model": "claude-opus-5-5", "system": "You are helpful.", "messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__hub__memory_search", "input": {"query": "sister", "wl_turn": "tt_9QmV2c"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "- P2 <wl-private id=\"m_2\">Sister Dana is vegetarian</wl-private>"}]}
+      ]},
+      "sent": {"model": "claude-opus-5-5", "system": "You are helpful.", "messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__hub__memory_search", "input": {"query": "[private memory withheld]"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "- P2 [private memory withheld]"}]}
+      ]}
+    },
+    {
+      "name": "Responses shape: function_call arguments",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "input": [
+        {"type": "function_call", "call_id": "r1", "name": "mcp__hub__memory_save", "arguments": "{\"text\": \"Sister Dana is vegetarian\", \"wl_turn\": \"tt_9QmV2c\"}"},
+        {"type": "function_call_output", "call_id": "r1", "output": "Saved (P2)."}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "input": [
+        {"type": "function_call", "call_id": "r1", "name": "mcp__hub__memory_save", "arguments": "{\"text\": \"[private memory withheld]\"}"},
+        {"type": "function_call_output", "call_id": "r1", "output": "Saved (P2)."}
+      ]}
+    },
+    {
+      "name": "a replayed memory block from context",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "user", "content": "Dinner ideas?\n\n<whos-listening-memory>\nThings the user has asked you to remember (Who's Listening). Use them when they help; do not repeat them back unprompted.\n- P2 <wl-private id=\"m_2\">Sister Dana is vegetarian</wl-private>\n- S1 Likes spicy food\n</whos-listening-memory>"}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "user", "content": "Dinner ideas?\n\n<whos-listening-memory>\nThings the user has asked you to remember (Who's Listening). Use them when they help; do not repeat them back unprompted.\n- P2 [private memory withheld]\n- S1 Likes spicy food\n</whos-listening-memory>"}
+      ]}
+    }
+  ]
+}
