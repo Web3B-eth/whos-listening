@@ -6,7 +6,8 @@ from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance, SQLiteS
 
 def call(store, name, args, route_tier):
     return json.loads(tools.handle(store, name, args, route_tier=route_tier,
-                                   provenance=lambda: Provenance(written_by="assistant", via=name)))
+                                   provenance=lambda: Provenance(written_by="assistant", via=name),
+                                   shared_only=name == tools.REMEMBER and args.get("tier") == SHARED))
 
 
 def test_schemas_are_named():
@@ -159,8 +160,8 @@ def test_a_shared_gateway_refuses_private_saves(store):
     def save(args):
         return json.loads(tools.handle(store, "whos-listening_remember", args, route_tier=PRIVATE,
                                        provenance=lambda: Provenance(written_by="assistant", via="whos-listening_remember"),
-                                       private_refused="No private memory was saved: shared gateway."))
-    out = save({"text": "Keeps bees"})
+                                       private_refused="No private memory was saved: shared gateway.", shared_only=True))
+    out = save({"text": "Keeps bees", "tier": "private"})
     assert out["ok"] is False and "shared gateway" in out["error"] and store.count() == 0
     assert save({"text": "Likes jazz", "tier": "shared"})["ok"] is True
 
@@ -173,12 +174,16 @@ def test_a_refused_private_save_tells_the_model_what_to_do(store):
 
 
 def test_while_auto_review_checks_the_user_is_not_asked_to_approve(store):
-    for route in (PRIVATE, SHARED):
-        out = json.loads(tools.handle(store, "whos-listening_remember", {"text": f"Prefers aisle seats {route}"},
-                                      route_tier=route, provenance=lambda: Provenance(), outside_tool="read_file",
-                                      on_outside_hold=lambda m: True))
-        assert "Auto-review is checking it" in out["note"] and "doesn't need to do anything" in out["note"]
-        assert "/memories approve" not in out["note"] and "/memories pending" not in out["note"]
+    out = json.loads(tools.handle(store, "whos-listening_remember", {"text": "Prefers aisle seats"},
+                                  route_tier=PRIVATE, provenance=lambda: Provenance(), outside_tool="read_file",
+                                  on_outside_hold=lambda m: True))
+    assert "Auto-review is checking it" in out["note"] and "doesn't need to do anything" in out["note"]
+    assert "/memories approve" not in out["note"] and "/memories pending" not in out["note"]
+    # A Shared route's held Private reply stays the same whether a duplicate suppressed it.
+    out = json.loads(tools.handle(store, "whos-listening_remember", {"text": "Prefers aisle seats shared"},
+                                  route_tier=SHARED, provenance=lambda: Provenance(), outside_tool="read_file",
+                                  on_outside_hold=lambda m: True))
+    assert "Auto-review is checking" not in out["note"] and "/memories pending" in out["note"]
     # Without Auto-review the note still says how to approve.
     out = json.loads(tools.handle(store, "whos-listening_remember", {"text": "Prefers tea"}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), outside_tool="read_file",

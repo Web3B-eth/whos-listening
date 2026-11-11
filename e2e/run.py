@@ -310,17 +310,21 @@ def main() -> int:
         run.check("shared route: no Private memory in any request", not has(reqs, PRIVATE_WORD))
         run.check("shared route: carries the Shared memory", has(main_requests(reqs), SHARED_WORD))
 
-        # 4. Forget through the tool, then try to save it again: the tombstone blocks it.
+        # 4. Forget through the tool. A later assistant Shared suggestion is held before the
+        #    Private-capable gateway checks duplicates or tombstones; it cannot revive the fact.
         _, reqs = run.chat(f'Please forget that. [[call whos-listening_forget {{"id": {shared_id}}}]]',
                            provider="private-sim", model="private-model")
         run.check("forget: tool ran", has(reqs, "won't be saved again"))
         _, reqs = run.chat(f'Remember this. [[call whos-listening_remember {{"text": "{SHARED_TEXT.lower()}", "tier": "shared"}}]]',
                            provider="private-sim", model="private-model")
-        run.check("forget: re-save blocked by the tombstone", has(reqs, "forgotten at the user"))
+        run.check("forget: Shared re-save waits without revealing the tombstone",
+                  has(reqs, "Sharing waits for your direct choice") and not has(reqs, "forgotten at the user"))
         store = SQLiteStore(data / "memories.sqlite")
         active = [m.text for m in store.list()]
+        tombstone_still_here = store.is_forgotten_text(SHARED_TEXT)
         store.close()
-        run.check("forget: store has only the Private memory", active == [PRIVATE_TEXT], repr(active))
+        run.check("forget: store has only the Private memory",
+                  active == [PRIVATE_TEXT] and tombstone_still_here, repr(active))
 
         # 5. A planted "remember" line in a file: once the chat has read the file, the save waits.
         notes = home / "notes.txt"
@@ -370,8 +374,8 @@ def main() -> int:
         run.check("auto-review: the check ran on the chat's own model",
                   bool(check_reqs) and all(r["model"] == "private-model" for r in check_reqs))
 
-        # 8b. A Shared save that says what a Private memory says waits for the user, who keeps the
-        #     Private one by naming its number in plain language (the review tool).
+        # 8b. An assistant's Shared suggestion stays hidden until the user chooses its audience
+        #     in the local slash command. A possible Private original stays in place.
         store = SQLiteStore(data / "memories.sqlite")
         private_id = next(m.id for m in store.list() if m.text == PRIVATE_TEXT)
         store.close()
@@ -384,14 +388,27 @@ def main() -> int:
                   bool(offered) and all({f"whos-listening_{x}" for x in ("remember", "recall", "forget", "review")}
                                         <= set(names) for names in offered),
                   str([n for n in (offered[0] if offered else []) if n.startswith(("whos", "tool_"))]))
-        run.check("tier duplicate: the shared save is flagged for the user",
-                  has(reqs, f"it may say what private memory #{private_id} says"))
-        _, reqs = run.chat(f'Let us keep {private_id}. [[call whos-listening_review {{"action": "keep", "id": {private_id}}}]]',
-                           provider="private-sim", model="private-model")
-        flagged = [m for m in memories_in(data) if m.text == "Keeps a vegetarian diet on all weekdays"]
-        run.check("tier duplicate: keeping the private one by number forgets the shared one",
-                  bool(flagged) and flagged[0].status == "forgotten" and has(reqs, "kept"),
-                  flagged[0].status if flagged else "no memory")
+        proposal_store = SQLiteStore(data / "memories.sqlite")
+        try:
+            proposals = proposal_store.consent_proposals()
+            proposal = next((m for m in proposals if m.text == "Keeps a vegetarian diet on all weekdays"), None)
+            token = f"P{proposal.id}@{proposal.updated_at}" if proposal else ""
+        finally:
+            proposal_store.close()
+        run.check("shared audience: proposal is held without a Private-match reply",
+                  bool(proposal) and has(reqs, "Sharing waits for your direct choice")
+                  and not has(reqs, f"private memory #{private_id}"))
+        preview = run.command("/memories share")
+        run.check("shared audience: local preview shows both facts and audience",
+                  bool(token) and token in preview and "Shared: any model may see it" in preview
+                  and PRIVATE_TEXT in preview)
+        decision = run.command(f"/memories share keep-both {token}") if token else ""
+        approved = [m for m in memories_in(data, tiers=("shared",), statuses=("active",))
+                    if m.text == "Keeps a vegetarian diet on all weekdays"]
+        run.check("shared audience: explicit keep-both preserves Private original",
+                  "Approved Shared" in decision and bool(approved)
+                  and any(m.id == private_id and m.status == "active" for m in memories_in(data, tiers=("private",))),
+                  decision.strip()[-160:])
 
         # 9. Sync between gateways: a second gateway (B) and a fake GitHub. Only Shared memories
         #    and forgets travel; an arrival passes the rule screen; a Shared change pushes by itself.

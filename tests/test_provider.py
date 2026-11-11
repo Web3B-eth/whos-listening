@@ -54,6 +54,11 @@ def tool(p, name, args):
     return json.loads(p.handle_tool_call(name, args))
 
 
+def owner_shared(plugin, provider, text, *, duplicate_of=0):
+    return provider._store.add(text, "shared", plugin.Provenance(written_by="user", via="/memories add"),
+                               duplicate_of=duplicate_of)
+
+
 def test_register_wires_provider_and_hooks(entry):
     calls = []
 
@@ -82,7 +87,7 @@ def test_store_lives_in_profile_home(provider, tmp_path):
 def test_prefetch_follows_route(plugin, provider):
     see(plugin, "http://127.0.0.1:9/v1")
     tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
-    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    owner_shared(plugin, provider, "Likes jazz")
     block = provider.prefetch("weekend plans", session_id="sess-1")
     assert "canoe" in block and "jazz" in block and "<wl-private" in block
 
@@ -168,7 +173,7 @@ def test_guard_strips_private_on_shared_route(plugin, provider, monkeypatch, tmp
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     see(plugin, "http://127.0.0.1:9/v1")
     tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
-    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    owner_shared(plugin, provider, "Likes jazz")
     block = provider.prefetch("weekend plans", session_id="sess-1")
     req = _request("sys", block, "What should I do this weekend?")
 
@@ -423,7 +428,8 @@ def test_auto_review_on_a_shared_route_only_for_shared_memories(plugin, provider
     assert "memory is private" in held.pending_reason
     out = json.loads(provider.handle_tool_call("whos-listening_remember", {"text": "likes jazz", "tier": "shared"}))
     assert out["pending"]
-    assert _wait_for(lambda: provider._store.search("jazz") != [])
+    assert len(provider._store.consent_proposals()) == 1
+    assert provider._store.search("jazz") == []
 
 
 def test_auto_review_is_capped_per_turn(plugin, provider, auto_mode, monkeypatch):
@@ -518,7 +524,7 @@ def test_messaging_platform_makes_every_route_shared(plugin, tmp_path, monkeypat
     local.initialize("sess-1", hermes_home=str(tmp_path), platform="cli")
     see(plugin, "http://127.0.0.1:9/v1")                         # a Private route
     tool(local, "whos-listening_remember", {"text": "Is saving up for a canoe"})
-    tool(local, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    owner_shared(plugin, local, "Likes jazz")
     assert "canoe" in local.prefetch("plans", session_id="sess-1")
     local.shutdown()
 
@@ -548,7 +554,7 @@ def test_shared_gateway_means_no_private_memories_anywhere(plugin, provider, mon
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     see(plugin, "http://127.0.0.1:9/v1")                          # Private route, platform cli
     tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
-    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    owner_shared(plugin, provider, "Likes jazz")
     (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
 
     block = provider.prefetch("plans", session_id="sess-1")
@@ -644,7 +650,43 @@ def test_only_a_shared_change_forces_a_sync(plugin, provider, monkeypatch):
     tool(provider, "whos-listening_recall", {"query": ""})
     assert calls == []
     tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    assert calls == []                              # a proposal is not published
+    monkeypatch.setattr(plugin, "_active_home", lambda: Path(provider._store.path).parent.parent)
+    proposal = provider._store.consent_proposals()[0]
+    token = f"P{proposal.id}@{proposal.updated_at}"
+    assert "Likes jazz" in plugin._memories_command("share", platform="desktop")
+    assert "Approved Shared" in plugin._memories_command(f"share approve {token}", platform="desktop")
     assert calls == [True]
+
+
+def test_sharing_proposal_uses_local_slash_and_is_scrubbed_on_shared_replay(plugin, provider, monkeypatch):
+    home = Path(provider._store.path).parent.parent
+    monkeypatch.setattr(plugin, "_active_home", lambda: home)
+    see(plugin, "http://127.0.0.1:9/v1")
+    result = tool(provider, "whos-listening_remember", {"text": "Likes <blue> puzzles", "tier": "shared"})
+    assert result == {"ok": True, "pending": {"tier": "shared"},
+                      "note": "Sharing waits for your direct choice in the local app: /memories share."}
+    proposal = provider._store.consent_proposals()[0]
+    token = f"P{proposal.id}@{proposal.updated_at}"
+    assert "Private-capable local app" in plugin._memories_command("share", platform="telegram")
+    preview = plugin._memories_command("share", platform="desktop")
+    assert "Likes ‹blue› puzzles" in preview and token in preview
+    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": preview}]}, "shared")
+    assert cleaned is not None and "puzzles" not in cleaned["messages"][0]["content"]
+    assert "Approved Shared" in plugin._memories_command(f"share approve {token}", platform="desktop")
+    assert provider._store.search("puzzles", tiers=("shared",))
+
+
+def test_sharing_approval_rechecks_gateway_settings(plugin, provider, monkeypatch):
+    home = Path(provider._store.path).parent.parent
+    monkeypatch.setattr(plugin, "_active_home", lambda: home)
+    see(plugin, "http://127.0.0.1:9/v1")
+    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    p = provider._store.consent_proposals()[0]
+    token = f"P{p.id}@{p.updated_at}"
+    (home / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
+    assert "Private-capable local app" in plugin._memories_command(f"share approve {token}", platform="desktop")
+    assert provider._store.get(p.id).audience_consent_required
 
 
 # -- settings from Hermes (Desktop's plugin form) and the hosted default -----------------------
@@ -869,7 +911,7 @@ def test_an_anonymized_venice_model_gets_shared_memories_only(plugin, provider, 
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     see(plugin, "https://api.venice.ai/api/v1", model="grok-4-5")              # Venice private: Private
     tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
-    tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
+    owner_shared(plugin, provider, "Likes jazz")
     assert "canoe" in provider.prefetch("plans", session_id="sess-1")
     see(plugin, "https://api.venice.ai/api/v1", model="claude-opus-5-5")       # anonymized: Shared
     block = provider.prefetch("plans", session_id="sess-1")
@@ -969,9 +1011,8 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
 def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin, provider, monkeypatch):
     see(plugin, "http://127.0.0.1:9/v1")
     private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
-    out = tool(provider, "whos-listening_remember",
-               {"text": "Bought a Santa Cruz Hightower mountain bike", "tier": "shared"})
-    new_id = out["saved"]["id"]
+    new_id = owner_shared(plugin, provider, "Bought a Santa Cruz Hightower mountain bike",
+                          duplicate_of=private.id).id
     provider.on_turn_start(1, "let's review your memories")
     assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
     assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False

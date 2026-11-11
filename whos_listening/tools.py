@@ -45,7 +45,8 @@ _TEXT = {"type": "string", "description": "The fact, in one short sentence."}
 REMEMBER_SCHEMA = _schema(
     REMEMBER,
     _REMEMBER_WHAT + "Private is the default: use 'shared' only when the user said it is fine for any "
-    "model to see it. " + _REMEMBER_NOT,
+    "model to see it. A Shared proposal on this gateway waits for the user's direct local approval. "
+    + _REMEMBER_NOT,
     {"text": _TEXT,
      "tier": {"type": "string", "enum": [PRIVATE, SHARED],
               "description": "private (default): only private routes see it. shared: any route."}},
@@ -179,6 +180,8 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         return _err(f"Nothing was changed: the user's own message doesn't name #{memory_id}. Ask them to "
                     f"say which memory, with its number (such as \"keep {memory_id}\").")
     target = store.get(memory_id)
+    if target is not None and target.audience_consent_required:
+        target = None       # let each ordinary action answer exactly as it does for a missing number
     if not show_private and target is not None and (
             target.tier == PRIVATE or any(p.tier == PRIVATE for p in resolve.partners(store, target))):
         # On a Shared route, a Private memory, or a pair with one, answers like a memory with no choice
@@ -277,6 +280,12 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 screened = clean_text(text)        # screen exactly what would be saved
             except StoreError as exc:
                 return _err(str(exc))
+            if tier == SHARED and not shared_only:
+                if private_refused:
+                    return _err("Settings can't be read; no Shared memory was proposed.")
+                store.propose_shared(screened, provenance())
+                return _ok(pending={"tier": SHARED}, note="Sharing waits for your direct choice in the local app: /memories share.")
+            outside_hold = review.save_hold_reason(screened, outside_tool)
             same = repeat_of(store, screened, tier, judge) if duplicates != "keep" else None
             cross = same if same is not None and tier == SHARED and same.tier == PRIVATE else None
             if cross is not None and tier_duplicates != "private":
@@ -285,10 +294,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                 if route_tier != PRIVATE and same.tier == PRIVATE:
                     # Don't tell a Shared route that a Private memory says this: answer exactly
                     # like a save, as for a forgotten Private fact.
-                    return _shared_route_saved(tier, None)
+                    return _shared_route_saved(tier, outside_hold)
                 return _ok(duplicate=_public(same),
                            note=f"Already remembered as #{same.id}, so nothing new was saved.")
-            outside_hold = review.save_hold_reason(screened, outside_tool)
             hold = outside_hold
             # A Shared save over a Private memory is saved and flagged for the user to choose ("ask"),
             # and so is one that would replace it ("shared") while the chat holds saves anyway. It
@@ -318,7 +326,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
                     reviewing = False
             if route_tier != PRIVATE:
                 # Never mention the Private memory it repeats: it looks like any save (or hold).
-                return _shared_route_saved(m.tier, outside_hold, reviewing)
+                return _shared_route_saved(m.tier, outside_hold)
             if flag:
                 how = (f"Tell the user it may say what private memory #{cross.id} says, and ask which to keep; when "
                        f"they answer with a number (such as \"keep {m.id}\"), use whos-listening_review.")
@@ -351,7 +359,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             except (TypeError, ValueError):
                 return _err("Give the memory number to forget.")
             m = store.get(memory_id)
-            if m is None or m.status == FORGOTTEN or (m.tier == PRIVATE and route_tier != PRIVATE):
+            if (m is None or m.status == FORGOTTEN or m.audience_consent_required
+                    or (m.tier == PRIVATE and route_tier != PRIVATE)):
                 return _err(f"No memory #{memory_id}.")
             hold = review.forget_hold_reason(outside_tool)
             if hold:

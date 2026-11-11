@@ -16,7 +16,7 @@ USER = Provenance(written_by="user", via="test")
 def save(store, text, *, tier=PRIVATE, route=PRIVATE, setting="ask", judge=None, outside=""):
     return json.loads(tools.handle(store, tools.REMEMBER, {"text": text, "tier": tier}, route_tier=route,
                                    provenance=lambda: Provenance(), tier_duplicates=setting, judge=judge,
-                                   outside_tool=outside))
+                                   outside_tool=outside, shared_only=tier == SHARED))
 
 
 def review(store, action, *, id=None, said="", route=PRIVATE, **kw):
@@ -111,7 +111,7 @@ def test_a_flagged_save_held_for_outside_content_keeps_its_own_reason(store):
     started = []
     out = json.loads(tools.handle(store, tools.REMEMBER, {"text": BIKE2, "tier": SHARED}, route_tier=PRIVATE,
                                   provenance=lambda: Provenance(), outside_tool="web_extract",
-                                  on_outside_hold=lambda m: started.append(m) or True))
+                                      on_outside_hold=lambda m: started.append(m) or True, shared_only=True))
     new = store.get(out["pending"]["id"])
     assert new.duplicate_of == private.id and "web_extract" in new.pending_reason and len(started) == 1
     assert "#" + str(private.id) not in new.pending_reason

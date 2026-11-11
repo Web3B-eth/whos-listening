@@ -44,7 +44,7 @@ class Item:
 # -- pairs -----------------------------------------------------------------------------------
 
 def _live(m: Optional[Memory]) -> bool:
-    return m is not None and m.status in (ACTIVE, PENDING)
+    return m is not None and not m.audience_consent_required and m.status in (ACTIVE, PENDING)
 
 
 def partners(store: Store, m: Memory) -> list[Memory]:

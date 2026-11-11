@@ -10,11 +10,12 @@ from __future__ import annotations
 import shlex
 from typing import Optional
 
-from . import resolve, review
+from . import duplicates, resolve, review
+from .recall import private_span
 from .routes import RouteSettings, platform_verdict
 from .store import (
     ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, SYNC_ACTIONS, Event, ForgottenError, Memory, Provenance, Store,
-    StoreError,
+    SQLiteStore, StoreError,
 )
 
 HELP = """\
@@ -63,9 +64,46 @@ def _id(arg: str) -> int:
 
 def _get(store: Store, arg: str) -> Memory:
     m = store.get(_id(arg))
-    if m is None:
+    if m is None or m.audience_consent_required:
         raise StoreError(f"No memory #{arg.lstrip('#')}.")
     return m
+
+
+def cmd_share(store: SQLiteStore, raw_args: str) -> str:
+    """Direct local slash-command path for a Shared-audience proposal (never a model tool)."""
+    parts = raw_args.split()
+    if not parts:
+        proposals = store.consent_proposals()
+        if not proposals:
+            return "No sharing proposals are waiting."
+        return private_span(0, "\n\n".join(_share_preview(store, m) for m in proposals))
+    action = parts[0].lower()
+    if action not in ("approve", "keep-both", "reject") or len(parts) != 2:
+        return "Use /memories share to review proposals, then its exact approve, keep-both or reject command."
+    token = parts[1]
+    if not token.startswith("P") or "@" not in token:
+        return "Use the full P-number and version shown by /memories share."
+    number, version = token[1:].split("@", 1)
+    if not number.isdecimal() or not version:
+        return "Use the full P-number and version shown by /memories share."
+    try:
+        m, duplicate_id = store.decide_shared_proposal(int(number), version,
+                                                       approve=action != "reject", keep_both=action == "keep-both")
+    except StoreError as exc:
+        return private_span(0, str(exc) + " Use /memories share to review it again.")
+    if action == "reject":
+        return private_span(0, "Declined sharing proposal P" + number + ". No tombstone was created.")
+    pair = f" Kept Private #{duplicate_id} too." if duplicate_id else ""
+    return private_span(0, "Approved Shared: any model may see it. " + _line(m, True) + pair)
+
+
+def _share_preview(store: SQLiteStore, m: Memory) -> str:
+    token = f"P{m.id}@{m.updated_at}"
+    match = duplicates.find(store, m.text, SHARED, tiers=(PRIVATE,))
+    note = f"\nPossible Private match: {_line(match, True)}" if match else ""
+    choice = "keep-both" if match else "approve"
+    return (f"Proposal {token}: {m.text}\nShared: any model may see it.{note}"
+            f"\n/memories share {choice} {token}  ·  /memories share reject {token}")
 
 
 def cmd_list(store: Store, show_private: bool) -> str:
@@ -260,9 +298,12 @@ def _undo(store: Store, e: Event, show_private: bool) -> str:
 
 def cmd_undo(store: Store, show_private: bool) -> str:
     for e in store.events(limit=50):
-        if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS:
+        if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS or e.action.startswith("share_"):
             continue        # a change that arrived by sync isn't yours to undo here
-        if store.get(e.memory_id) is None:          # purged: nothing left to undo
+        current = store.get(e.memory_id)
+        if current is not None and current.audience_consent_required:
+            continue        # a hidden proposal is not an ordinary undo choice
+        if current is None:          # purged: nothing left to undo
             store.mark_undone(e.id)
             continue
         if any(x.id > e.id and x.action in SYNC_ACTIONS for x in store.events(memory_id=e.memory_id, limit=50)):

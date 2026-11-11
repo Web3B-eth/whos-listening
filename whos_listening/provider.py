@@ -366,7 +366,7 @@ class WhosListeningProvider(MemoryProvider):
     def _start_auto_review(self, memory: Memory) -> bool:
         """Check a held save in the background, on the chat's own model. Returns True if started;
         otherwise, in Auto-review mode, the memory's reason says why it didn't run."""
-        if self._review_mode() != "auto" or self._store is None:
+        if memory.audience_consent_required or self._review_mode() != "auto" or self._store is None:
             return False
         blocker, route = self._auto_review_blocker(memory)
         if blocker:
@@ -477,6 +477,20 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if home is None:
         return "Who's Listening can't tell which Hermes profile this is."
     words = (raw_args or "").split()
+    if words and words[0].lower() == "share":
+        settings, _ = _load_settings(home)
+        if settings is None or _shared_only(home) or not commands.shows_private(platform, settings):
+            return "Sharing proposals are available only in a Private-capable local app."
+        path = home / DATA_DIR / DB_FILE
+        before = _stamp_at(path)
+        store = SQLiteStore(path)
+        try:
+            out = commands.cmd_share(store, " ".join(words[1:]))
+        finally:
+            store.close()
+        if _stamp_at(path) != before:
+            maybe_sync(home, force=True)
+        return out
     if words and words[0].lower() == "sync":
         return _sync_command(home, words[1].lower() if len(words) > 1 else "")
     if words and words[0].lower() == "settings":
