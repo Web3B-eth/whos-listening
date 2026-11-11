@@ -5,7 +5,7 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 | Step | Who | Status |
 | --- | --- | --- |
 | Public repo with README, Install, Limits and license | done in this repo | ready |
-| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry refreshed and checked at `9b0fb0a`; re-pin to the final commit first (below). Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
+| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry re-pinned and checked at `b9a52cb` (main after #42). Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
 | Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
 
@@ -15,12 +15,12 @@ The catalog is the `plugin-catalog/` folder of `NousResearch/hermes-agent`: one 
 
 ## Before opening the catalog PR
 
-Done on 2026-11-11 for `9b0fb0a2101ed469cba16af39dda3c72821215df` (main after #37):
+Done on 2026-11-11 for `b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d` (main after #42, the security work):
 
 1. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared tools, hooks and middleware match, no warnings) and `hermes plugins doctor --ci` passed.
-2. ✓ The catalog's own checks: `scripts/validate_plugin_catalog.py` on the entry with `removed.yaml` (OK, no warnings; the script is the same on `main` and in 0.23.0) and `scripts/scan_plugin_payloads.py` from `main` (exit 0).
+2. ✓ The catalog's own checks: `scripts/validate_plugin_catalog.py` on the entry with `removed.yaml` (OK, no warnings; the script is the same on `main` and in 0.23.0) and `scripts/scan_plugin_payloads.py` (exit 0). This run used the 0.23.0 copy of the scanner; the earlier pin used `main`'s.
 3. ✓ A fresh-home install at that commit from GitHub, as the README says, makes it the active memory provider.
-4. ✓ pytest and `e2e/run.py` pass at that commit (numbers in [`catalog-pr.md`](catalog-pr.md)).
+4. ✓ pytest and `e2e/run.py` pass at that commit (524 unit tests, 59/59 e2e; the merge commit's tree is identical to the tested PR head `ac5e821`).
 5. ✓ Read the admission rules against the code:
    - Rule 3: nothing fetches code. Venice's model list and sync fetch data only.
    - Rule 6: capabilities match (validate checks them).
@@ -29,7 +29,7 @@ Done on 2026-11-11 for `9b0fb0a2101ed469cba16af39dda3c72821215df` (main after #3
    - Rule 13: every network call, side call, file, secret and background thread is in the entry, the PR text and the README section "What it sends, stores and runs".
    - Rule 14: `requires_hermes: ">=0.23.0"` in both the entry and `plugin.yaml`.
 
-**Re-pin before submitting.** `9b0fb0a` doesn't have the README section "What it sends, stores and runs" (added by the docs PR, #38, after it), and the catalog page shows the README at the pinned commit. So once #38 and any later code PR have merged, pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to main's final commit, and re-run steps 1 to 4 on it. A later code PR that sends, stores or runs anything new also adds it to the disclosure in all three places.
+**If main moves again before submitting,** pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to the new main commit and re-run steps 1 to 4 on it. A code change that sends, stores or runs anything new also adds it to the disclosure in all three places.
 
 **Ask the owner.** Only then open the PR, from the owner's account or fork, with the text in [`catalog-pr.md`](catalog-pr.md).
 

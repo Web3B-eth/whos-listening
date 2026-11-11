@@ -1,11 +1,11 @@
 # Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml, ready for the owner's OK.
 # Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
-# Pinned to main at 9b0fb0a (2026-11-11, after #37), where the checks in docs/catalog-pr.md passed.
+# Pinned to main at b9a52cb (2026-11-11, after #42), where the checks in docs/catalog-pr.md passed.
 # Re-pin `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
 name: whos-listening
 title: Who's Listening
 repo: https://github.com/Web3B-eth/whos-listening
-sha: 9b0fb0a2101ed469cba16af39dda3c72821215df
+sha: b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d
 subdir: ""
 version: "0.1.0"
 description: >-
@@ -19,8 +19,11 @@ description: >-
   user's call in Desktop's plugin settings or settings.json. An llm_request guard removes tagged
   Private memories from every main chat request that isn't Private, and fails closed. Saves
   after the chat read outside content are held; Auto-review (on by default) checks each on the
-  chat's own model, and anything else waits for the user. Review choices (keep, approve, reject)
-  go through on the user's OK; after outside content they need the memory's number or Auto-review. Near-duplicate saves are skipped by
+  chat's own model, and anything else waits for the user. On a Private-capable gateway an
+  assistant's Shared save becomes Shared only if a check on the chat's own model finds the user
+  said any model may see it; otherwise it is saved Private. Review choices (keep, approve, reject)
+  go through on the user's OK; after outside content, or to share a Private memory, they need the
+  memory's number or Auto-review. Private and Shared memories are numbered P1, S1. Near-duplicate saves are skipped by
   a local word check, then a duplicate judge. A Private and a Shared memory saying the same
   thing are flagged for the user. Four tools (remember, recall, forget, review) and a /memories
   command: review, keep, approve, undo, forget, export, and optional sync of Shared memories
@@ -34,9 +37,11 @@ description: >-
   the word check lets through, each sync arrival and each memory in a review scan;
   duplicate_judge off keeps it local. (3) Side calls through Hermes' PluginLlm on the chat's
   model: Auto-review, for a held save (the memory and the user's three newest messages) and, after
-  outside content, for a review choice made without the memory's number (the exact change, the
-  assistant's last reply and the user's three newest messages; 20 s limit); never the outside
-  content, at most 3 checks a turn in all, and only when Hermes' fallbacks are as trusted as the
+  outside content or to share a Private memory, for a review choice made without the memory's
+  number (the exact change, the assistant's last reply and the user's three newest messages; 20 s
+  limit); the sharing check, for each assistant Shared save on a Private-capable gateway (the
+  memory and the user's three newest messages); never the outside content or other stored
+  memories, at most 3 checks a turn in all, and only when Hermes' fallbacks are as trusted as the
   route (Shared memories only on a Shared route); and the optional "model" judge. (4)
   Sync, only if set up: the GitHub API, sending Shared memory text (forgotten ones as a hash),
   the gateway's name and times. Reads model, providers' base_url and fallback_providers from
@@ -56,7 +61,7 @@ description: >-
 maintainer: Web3B-eth
 tier: community
 category: memory
-docs_url: https://github.com/Web3B-eth/whos-listening/blob/9b0fb0a2101ed469cba16af39dda3c72821215df/README.md
+docs_url: https://github.com/Web3B-eth/whos-listening/blob/b9a52cb01708cfbd0c7aabcf4a16ce807f35ef7d/README.md
 readme: true
 capabilities:
   provides_tools: []
