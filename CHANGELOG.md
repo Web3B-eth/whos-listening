@@ -4,6 +4,7 @@ What changed in whos-listening, newest first. Format follows [Keep a Changelog](
 
 ## [Unreleased]
 
+- Old review results in chat history (2026-11-10): on a Shared route the request guard now removes untagged reason fields from recognized review-tool results saved by earlier plugin versions. A cut-off result with that shape is withheld. Other chat text that repeats a Private memory remains outside the guard's reach.
 - Shared-route forget boundary (2026-11-10): the assistant's forget tool no longer changes a Private memory on a Shared route, and a Private number answers like a missing one. A direct `/memories forget N` command still works for the user.
 - Pending forgets after outside content (2026-11-10): the assistant's forget request now waits for approval even when the memory is still a pending save. It creates no tombstone before approval. Review shows the forget decision first; turning it down leaves the save pending. A pending forget also stops an in-flight Auto-review verdict from activating that save.
 - Private review reasons and unreadable settings (2026-11-10): Shared `/memories` replies and exports hide Auto-review explanations that may repeat the user's words, including old saved explanations and those attached to Shared memories. The review tool tags those explanations so a later Shared model request can strip them. If settings cannot be read, slash commands and exports hide Private memories instead of using local-platform defaults.

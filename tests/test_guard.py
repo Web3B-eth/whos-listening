@@ -114,3 +114,45 @@ def test_orphan_closing_tag():
     out = guard.guard_request(chat(text), "shared")
     sent = json.dumps(out)
     assert "peanut" not in sent and "jazz" in sent
+
+
+def test_legacy_review_result_replay_hides_untagged_reasons():
+    note = "A duplicate group lists memories that may say the same thing: the user keeps one"
+    old = json.dumps({"ok": True, "waiting": [
+        {"kind": "save", "memory": {"id": 1, "tier": "private",
+                                     "line": '- #1 <wl-private id="1">Keeps a copper notebook</wl-private>'},
+         "why": "Outside content. Auto-review: The copper notebook is private"},
+        {"kind": "save", "memory": {"id": 2, "tier": "shared", "line": "- #2 Likes tea"},
+         "why": "Outside content. Auto-review: The copper notebook is private"},
+        {"kind": "duplicate", "memories": [],
+         "also_held": {"2": "Auto-review: The copper notebook is private"}},
+    ], "note": note})
+    out = guard.guard_request(chat(old), "shared")
+    sent = out["messages"][0]["content"]
+    assert "copper notebook" not in sent and "Likes tea" in sent
+    parsed = json.loads(sent)
+    assert all("copper notebook" not in item.get("why", "") for item in parsed["waiting"])
+    assert "copper notebook" not in json.dumps(parsed["waiting"][2]["also_held"])
+    structured = guard.guard_request(chat(json.loads(old)), "shared")
+    assert structured is not None and "copper notebook" not in json.dumps(structured)
+
+
+def test_legacy_shared_memory_reason_can_echo_private_context():
+    old = json.dumps({"ok": True, "waiting": [{"kind": "save",
+        "memory": {"id": 2, "tier": "shared", "line": "- #2 Likes tea"},
+        "why": "Auto-review: The copper notebook is private"}],
+        "note": "A duplicate group lists memories that may say the same thing"})
+    out = guard.guard_request(chat(old), "shared")
+    assert out is not None and "copper notebook" not in json.dumps(out)
+    assert "Likes tea" in json.dumps(out)
+
+
+def test_partial_legacy_review_result_is_withheld_on_shared_route():
+    partial = '{"ok": true, "waiting": [{"kind": "save", "why": "The copper notebook'
+    out = guard.guard_request(chat(partial), "shared")
+    assert out is not None and "copper notebook" not in json.dumps(out)
+
+
+def test_unrelated_waiting_json_is_left_alone():
+    unrelated = json.dumps({"ok": True, "waiting": [{"why": "The copper notebook"}]})
+    assert guard.guard_request(chat(unrelated), "shared") is None

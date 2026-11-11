@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable, Optional
 
 from .recall import BLOCK_OPEN, strip_blocks, strip_private
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 PRIVATE_MARK = "wl-private"   # in both the opening and the closing tag
 WITHHELD = "[private memory withheld]"
+REVIEW_PREFIX = re.compile(r'^\{\s*"ok"\s*:\s*true\s*,\s*"waiting"')
 # Our tools whose arguments the model writes in its own words. When Hermes replays a call,
 # those words are untagged, so on a Shared route they're redacted (see _redact_call).
 REMEMBER, RECALL = "whos-listening_remember", "whos-listening_recall"
@@ -91,7 +93,61 @@ def _strip_private_fast(text: str) -> str:
     return strip_private(text) if PRIVATE_MARK in text else text
 
 
+def _legacy_review_result(d: dict) -> dict:
+    """Remove untagged reasons from review results saved by older plugin versions.
+
+    The current tool tags reasons before returning them, but an old tool result can already
+    be in Hermes history when a chat changes to a Shared route.
+    """
+    waiting = d.get("waiting")
+    if d.get("ok") is not True or not isinstance(waiting, list):
+        return d
+    note = d.get("note")
+    known = isinstance(note, str) and note.startswith("A duplicate group lists memories")
+    known = known or any(isinstance(item, dict) and item.get("kind") in ("save", "forget", "duplicate")
+                         and ("memory" in item or "memories" in item) for item in waiting)
+    if not known:
+        return d
+    cleaned = []
+    changed = False
+    for item in waiting:
+        if not isinstance(item, dict):
+            cleaned.append(item)
+            continue
+        entry = dict(item)
+        if "why" in entry:
+            entry["why"] = WITHHELD
+            changed = True
+        if isinstance(entry.get("also_held"), dict):
+            entry["also_held"] = {key: WITHHELD for key in entry["also_held"]}
+            changed = True
+        cleaned.append(entry)
+    return {**d, "waiting": cleaned} if changed else d
+
+
+def _review_json_prefix(text: str) -> bool:
+    # Tool output from _review starts with these keys. Check a bounded prefix only.
+    return REVIEW_PREFIX.match(text[:256].lstrip()) is not None
+
+
+def _strip_legacy_review_json(text: str) -> str:
+    if not _review_json_prefix(text):
+        return text
+    if len(text) > 1_000_000:
+        return WITHHELD
+    try:
+        obj = json.loads(text)
+    except (TypeError, ValueError):
+        return WITHHELD  # a cut-off old result may contain an untagged reason
+    if not isinstance(obj, dict):
+        return text
+    cleaned = _legacy_review_result(obj)
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned is not obj else text
+
+
 def _strip_blocks_fast(text: str) -> str:
+    if _review_json_prefix(text):
+        return WITHHELD
     return strip_blocks(text) if (PRIVATE_MARK in text or BLOCK_OPEN in text) else text
 
 
@@ -119,13 +175,13 @@ def guard_request(request: Any, tier: Optional[str]) -> Optional[dict]:
 
     def strip(text: str) -> str:
         nonlocal changed
-        out = _strip_private_fast(text)
+        out = _strip_legacy_review_json(_strip_private_fast(text))
         changed = changed or out != text
         return out
 
     def redact(d: dict) -> dict:
         nonlocal changed
-        out = _redact_call(d)
+        out = _legacy_review_result(_redact_call(d))
         changed = changed or out is not d
         return out
 
@@ -136,7 +192,8 @@ def guard_request(request: Any, tier: Optional[str]) -> Optional[dict]:
         logger.warning("whos-listening guard: clean-up failed, removing all memories: %s",
                        type(exc).__name__)
     try:
-        return _walk(request, _strip_blocks_fast, _redact_call)
+        return _walk(request, _strip_blocks_fast,
+                     lambda d: _legacy_review_result(_redact_call(d)))
     except Exception as exc:
         logger.warning("whos-listening guard: block removal failed, blocking the request: %s",
                        type(exc).__name__)
