@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from .store import PRIVATE, SHARED, Memory, Store
+from .store import PRIVATE, SHARED, Memory, Store, display_ref
 
 BLOCK_OPEN = "<whos-listening-memory>"
 BLOCK_CLOSE = "</whos-listening-memory>"
@@ -45,8 +45,8 @@ def private_span(memory_id: int, text: str) -> str:
 
 def format_line(m: Memory) -> str:
     if m.tier == PRIVATE:
-        return f"- #{m.id} " + private_span(m.id, m.text)
-    return f"- #{m.id} {_escape(m.text)}"
+        return f"- {display_ref(m)} " + private_span(m.id, m.text)
+    return f"- {display_ref(m)} {_escape(m.text)}"
 
 
 def format_block(memories: Iterable[Memory], *, max_chars: int = MAX_BLOCK_CHARS) -> str:

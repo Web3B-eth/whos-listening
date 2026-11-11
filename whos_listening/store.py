@@ -31,7 +31,7 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def now_iso() -> str:
@@ -88,6 +88,9 @@ class Memory:
     duplicate_of: int = 0          # flagged: it may say what this memory says, for the user to choose
     audience_consent_required: bool = False
     order_key: str = ""
+    display_number: int = 0       # per-tier number shown to people; id remains the internal key
+    sharing_approval_needed: bool = False
+    legacy_alias: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,10 @@ SYNC_ACTIONS = ("synced_in", "synced_forget", "synced_restore", "synced_withdraw
 
 class StoreError(ValueError):
     """A request the store refuses (bad tier, empty text, unknown id...)."""
+
+
+def display_ref(memory: Memory) -> str:
+    return ("P" if memory.tier == PRIVATE else "S") + str(memory.display_number)
 
 
 class ForgottenError(StoreError):
@@ -179,13 +186,18 @@ class Store(ABC):
     @abstractmethod
     def add(self, text: str, tier: str, provenance: Provenance, *,
             status: str = ACTIVE, pending_reason: str = "", allow_forgotten: bool = False,
-            duplicate_of: int = 0, memory_id: Optional[int] = None) -> Memory:
+            duplicate_of: int = 0, memory_id: Optional[int] = None,
+            display_number: Optional[int] = None, sharing_approval_needed: bool = False) -> Memory:
         """Save a memory. Raises ``ForgottenError`` if a tombstone matches the text, unless
         ``allow_forgotten`` (only for the user's own commands), which also lifts the tombstone.
         ``duplicate_of`` flags it as possibly saying what that memory says (see resolve.py)."""
 
     @abstractmethod
     def get(self, memory_id: int) -> Optional[Memory]: ...
+
+    @abstractmethod
+    def resolve_reference(self, token: str, *, allow_legacy: bool = True) -> Optional[Memory]:
+        """Resolve a whole Pn/Sn token, or an owner-only legacy internal number."""
 
     @abstractmethod
     def list(self, *, statuses: Iterable[str] = (ACTIVE,), tiers: Iterable[str] = TIERS,
@@ -204,19 +216,29 @@ class Store(ABC):
     def atomic_choice(self): ...
 
     @abstractmethod
-    def propose_shared(self, text: str, provenance: Provenance, *, memory_id: Optional[int] = None) -> Memory:
-        """Hold a Shared suggestion before any Private-dependent lookup."""
-
-    @abstractmethod
     def claim_memory_id(self) -> int:
         """Commit one ID claim independently of a later memory insert or suppression."""
 
     @abstractmethod
-    def consent_proposals(self) -> list[Memory]: ...
+    def claim_display_number(self, tier: str) -> int:
+        """Reserve a per-tier display number before a Shared attempt checks Private state."""
 
     @abstractmethod
-    def decide_shared_proposal(self, memory_id: int, expected_order_key: str, *, approve: bool = False,
-                               keep_both: bool = False) -> tuple[Memory, int]: ...
+    def promote_shared(self, memory_id: int, expected_order_key: str, *,
+                       display_number: Optional[int] = None, actor: str = "assistant") -> Memory:
+        """Promote the exact Private row after a checked or numbered sharing choice."""
+
+    @abstractmethod
+    def approve_private_only(self, memory_id: int, expected_order_key: str) -> Memory:
+        """Resolve a sharing review as Private when duplicate policy forbids sharing."""
+
+    @abstractmethod
+    def request_sharing_review(self, memory_id: int, expected_order_key: str) -> Memory:
+        """Mark an exact existing Private row for numbered sharing review."""
+
+    @abstractmethod
+    def decline_sharing(self, memory_id: int, expected_order_key: str) -> Memory:
+        """Drop the sharing request without forgetting the Private fact."""
 
     @abstractmethod
     def forget(self, memory_id: int, *, at: Optional[str] = None, order_key: Optional[str] = None,
@@ -469,6 +491,11 @@ class SQLiteStore(Store):
         "CREATE TABLE IF NOT EXISTS withdrawals (uid TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, "
         "updated_at TEXT NOT NULL, created_at TEXT NOT NULL, origin TEXT NOT NULL, order_key TEXT NOT NULL)",
     )
+    _V9 = (
+        "CREATE TABLE IF NOT EXISTS display_id_state (tier TEXT PRIMARY KEY CHECK (tier IN ('private','shared')), "
+        "next_number INTEGER NOT NULL)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS memories_display_number ON memories (tier, display_number)",
+    )
     # Columns added in version 3: (name, definition).
     _V3_COLUMNS = (
         ("forget_reason", "TEXT NOT NULL DEFAULT ''"),
@@ -582,6 +609,29 @@ class SQLiteStore(Store):
                     raise StoreError("A tombstone has an invalid change time; migration stopped.") from exc
                 self._db.execute("UPDATE tombstones SET order_key = ? WHERE fingerprint = ?",
                                  (value, row["fingerprint"]))
+        if version < 9:
+            self._db.execute(self._V9[0])
+            if not self._has_column("memories", "display_number"):
+                self._db.execute("ALTER TABLE memories ADD COLUMN display_number INTEGER NOT NULL DEFAULT 0")
+            if not self._has_column("memories", "sharing_approval_needed"):
+                self._db.execute("ALTER TABLE memories ADD COLUMN sharing_approval_needed INTEGER NOT NULL DEFAULT 0")
+            if not self._has_column("memories", "legacy_alias"):
+                self._db.execute("ALTER TABLE memories ADD COLUMN legacy_alias INTEGER NOT NULL DEFAULT 0")
+            if version > 0:
+                self._db.execute("UPDATE memories SET legacy_alias = 1")
+            # Old hidden proposals become ordinary Private review items. They were never fact
+            # screened, so they stay pending; the owner must make an explicit choice.
+            self._db.execute("UPDATE memories SET tier = 'private', audience_consent_required = 0, "
+                             "sharing_approval_needed = 1, pending_reason = ? "
+                             "WHERE audience_consent_required = 1 AND status = 'pending'",
+                             ("Private; sharing approval needed.",))
+            for tier in TIERS:
+                rows = self._db.execute("SELECT id FROM memories WHERE tier = ? ORDER BY id", (tier,)).fetchall()
+                for number, row in enumerate(rows, 1):
+                    self._db.execute("UPDATE memories SET display_number = ? WHERE id = ?", (number, row["id"]))
+                self._db.execute("INSERT OR REPLACE INTO display_id_state (tier, next_number) VALUES (?, ?)",
+                                 (tier, len(rows) + 1))
+            self._db.execute(self._V9[1])
         if self._fts and not self._db.execute(
                 "SELECT 1 FROM sqlite_master WHERE name = 'memories_fts'").fetchone():
             # A file made where FTS5 was missing, or damaged: build the search index now.
@@ -601,6 +651,9 @@ class SQLiteStore(Store):
             duplicate_of=int(row["duplicate_of"] or 0) if "duplicate_of" in row.keys() else 0,
             audience_consent_required=bool(row["audience_consent_required"]),
             order_key=row["order_key"],
+            display_number=int(row["display_number"]),
+            sharing_approval_needed=bool(row["sharing_approval_needed"]),
+            legacy_alias=bool(row["legacy_alias"]),
             provenance=Provenance(
                 written_by=row["written_by"], via=row["via"], route=row["route"],
                 route_tier=row["route_tier"], session_id=row["session_id"], turn=row["turn"],
@@ -676,13 +729,113 @@ class SQLiteStore(Store):
             finally:
                 self._db.isolation_level = old_isolation
 
+    def claim_display_number(self, tier):
+        tier = check_tier(tier)
+        with self._lock:
+            if self._db.in_transaction:
+                raise StoreError("A display number must be claimed before starting a database change.")
+            old_isolation = self._db.isolation_level
+            self._db.isolation_level = None
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    row = self._db.execute("SELECT next_number FROM display_id_state WHERE tier = ?", (tier,)).fetchone()
+                    if row is None or row["next_number"] >= 2**63 - 1:
+                        raise StoreError("This store has no more memory numbers available.")
+                    number = int(row["next_number"])
+                    self._db.execute("UPDATE display_id_state SET next_number = ? WHERE tier = ?",
+                                     (number + 1, tier))
+                    self._db.execute("COMMIT")
+                    return number
+                except BaseException:
+                    self._db.execute("ROLLBACK")
+                    raise
+            finally:
+                self._db.isolation_level = old_isolation
+
+    def promote_shared(self, memory_id, expected_order_key, *, display_number=None, actor="assistant"):
+        display_number = self.claim_display_number(SHARED) if display_number is None else int(display_number)
+        with self._lock:
+            old_isolation = self._db.isolation_level
+            self._db.isolation_level = None
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    m = self.get(memory_id)
+                    if (m is None or m.tier != PRIVATE or m.status not in (ACTIVE, PENDING)
+                            or m.order_key != expected_order_key):
+                        raise StoreError("That Private memory changed; review it again before sharing.")
+                    if self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?",
+                                        (fingerprint(m.text),)).fetchone():
+                        raise ForgottenError("These words were forgotten at the user's request.", PRIVATE)
+                    stamp, key = self._change(m)
+                    self._db.execute("UPDATE memories SET tier = 'shared', display_number = ?, status = 'active', "
+                                     "sharing_approval_needed = 0, pending_reason = '', forget_reason = '', duplicate_of = 0, "
+                                     "created_at = ?, updated_at = ?, order_key = ?, written_by = ?, via = 'sharing', "
+                                     "route = '', route_tier = 'shared', session_id = '', turn = '', author = '' WHERE id = ?",
+                                     (display_number, stamp, stamp, key, actor, memory_id))
+                    self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (m.uid,))
+                    self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                     (memory_id, "share_approved", actor, now_iso()))
+                    self._db.execute("COMMIT")
+                    return self.get(memory_id)
+                except BaseException:
+                    self._db.execute("ROLLBACK")
+                    raise
+            finally:
+                self._db.isolation_level = old_isolation
+
+    def approve_private_only(self, memory_id, expected_order_key):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if (m is None or m.tier != PRIVATE or m.status not in (ACTIVE, PENDING) or not m.sharing_approval_needed
+                    or m.order_key != expected_order_key):
+                raise StoreError("That Private review changed; show it again before deciding.")
+            stamp, key = self._change(m)
+            self._db.execute("UPDATE memories SET status = 'active', sharing_approval_needed = 0, "
+                             "pending_reason = '', forget_reason = '', updated_at = ?, order_key = ? WHERE id = ?",
+                             (stamp, key, m.id))
+            return self.get(m.id)
+
+    def request_sharing_review(self, memory_id, expected_order_key):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if (m is None or m.tier != PRIVATE or m.status != ACTIVE or m.order_key != expected_order_key):
+                raise StoreError("That Private memory changed; review it again before sharing.")
+            if m.sharing_approval_needed:
+                return m
+            stamp, key = self._change(m)
+            self._db.execute("UPDATE memories SET sharing_approval_needed = 1, pending_reason = ?, "
+                             "updated_at = ?, order_key = ? WHERE id = ?",
+                             ("Private; sharing approval needed.", stamp, key, m.id))
+            self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                             (m.id, "share_held", "assistant", now_iso()))
+            return self.get(m.id)
+
+    def decline_sharing(self, memory_id, expected_order_key):
+        with self._lock, self._db:
+            m = self.get(memory_id)
+            if (m is None or m.tier != PRIVATE or not m.sharing_approval_needed
+                    or m.order_key != expected_order_key):
+                raise StoreError("That sharing review changed; show it again before deciding.")
+            stamp, key = self._change(m)
+            reason = m.pending_reason.replace("Private; sharing approval needed.", "").strip()
+            if m.status == PENDING and not reason:
+                reason = "Needs your review."
+            self._db.execute("UPDATE memories SET sharing_approval_needed = 0, pending_reason = ?, "
+                             "updated_at = ?, order_key = ? WHERE id = ?", (reason, stamp, key, m.id))
+            self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                             (m.id, "share_rejected", "user", now_iso()))
+            return self.get(m.id)
+
     def add(self, text, tier, provenance, *, status=ACTIVE, pending_reason="", allow_forgotten=False,
-            duplicate_of=0, memory_id=None):
+            duplicate_of=0, memory_id=None, display_number=None, sharing_approval_needed=False):
         text = clean_text(text)
         tier = check_tier(tier)
         if status not in (ACTIVE, PENDING):
             raise StoreError("A new memory is either active or pending.")
         memory_id = self.claim_memory_id() if memory_id is None else int(memory_id)
+        display_number = self.claim_display_number(tier) if display_number is None else int(display_number)
         stamp = now_iso()
         order_key = sync_order.from_iso(stamp)
         p = provenance
@@ -703,94 +856,34 @@ class SQLiteStore(Store):
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             cur = self._db.execute(
                 """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at, order_key,
-                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of,
+                       display_number, sharing_approval_needed)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (memory_id, text, tier, status, pending_reason, stamp, stamp, order_key, p.written_by, p.via, p.route,
-                 p.route_tier, p.session_id, str(p.turn), p.author, new_uid(), int(duplicate_of or 0)),
+                 p.route_tier, p.session_id, str(p.turn), p.author, new_uid(), int(duplicate_of or 0),
+                 display_number, int(sharing_approval_needed)),
             )
             return self.get(cur.lastrowid)
-
-    def propose_shared(self, text, provenance, *, memory_id=None):
-        """Hold an assistant's Shared suggestion before any Private match or tombstone check."""
-        text = clean_text(text)
-        memory_id = self.claim_memory_id() if memory_id is None else int(memory_id)
-        p = provenance
-        stamp = now_iso()
-        order_key = sync_order.from_iso(stamp)
-        with self._lock, self._db:
-            cur = self._db.execute(
-                """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at, order_key,
-                       written_by, via, route, route_tier, session_id, turn, author, uid,
-                       audience_consent_required)
-                   VALUES (?,?,'shared','pending',?,?,?,?,?,?,?,?,?,?,?,?,1)""",
-                (memory_id, text, "Approve sharing with any model on a Private-capable platform.", stamp, stamp, order_key,
-                 p.written_by, p.via, p.route, p.route_tier, p.session_id, str(p.turn), p.author, new_uid()),
-            )
-            self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
-                             (cur.lastrowid, "share_held", "assistant", stamp))
-            return self.get(cur.lastrowid)
-
-    def consent_proposals(self):
-        with self._lock:
-            rows = self._db.execute("SELECT * FROM memories WHERE audience_consent_required = 1 "
-                                    "AND status = 'pending' ORDER BY id").fetchall()
-        return [self._row(r) for r in rows]
-
-    def decide_shared_proposal(self, memory_id, expected_order_key, *, approve=False,
-                               keep_both=False):
-        """Apply a direct local sharing choice against the exact proposal shown to the owner."""
-        from . import duplicates
-
-        with self._lock:
-            old_isolation = self._db.isolation_level
-            self._db.isolation_level = None
-            try:
-                self._db.execute("BEGIN IMMEDIATE")
-                try:
-                    m = self.get(memory_id)
-                    if (m is None or not m.audience_consent_required or m.status != PENDING
-                            or m.order_key != expected_order_key):
-                        raise StoreError("That sharing proposal changed. Show it again before deciding.")
-                    duplicate_id = 0
-                    if approve:
-                        if self._db.execute("SELECT 1 FROM tombstones WHERE fingerprint = ?",
-                                            (fingerprint(m.text),)).fetchone():
-                            raise StoreError("Those words were forgotten. Restore or add them directly as the owner.")
-                        for row in self._db.execute("SELECT id, text FROM memories WHERE tier = 'private' "
-                                                    "AND status IN ('active','pending') "
-                                                    "AND audience_consent_required = 0 ORDER BY id").fetchall():
-                            if duplicates.repeats(m.text, row["text"]):
-                                duplicate_id = row["id"]
-                                break
-                        if duplicate_id and not keep_both:
-                            raise StoreError("A Private memory may say this too. Review it, then use share keep-both.")
-                        stamp, order_key = self._change(m)
-                        self._db.execute("UPDATE memories SET status = 'active', audience_consent_required = 0, "
-                                         "pending_reason = '', updated_at = ?, order_key = ? WHERE id = ?",
-                                         (stamp, order_key, m.id))
-                        action = "share_approved"
-                    else:
-                        # Declining a proposal creates no tombstone and sends no sync forget.
-                        stamp, order_key = self._change(m, terminal_tie=True)
-                        self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = 'pending', "
-                                         "updated_at = ?, order_key = ? WHERE id = ?",
-                                         (stamp, order_key, m.id))
-                        action = "share_rejected"
-                    self._db.execute("UPDATE events SET undone = 1 WHERE memory_id = ?", (m.id,))
-                    self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
-                                     (m.id, action, "user", now_iso()))
-                    self._db.execute("COMMIT")
-                    return self.get(m.id), duplicate_id
-                except BaseException:
-                    self._db.execute("ROLLBACK")
-                    raise
-            finally:
-                self._db.isolation_level = old_isolation
 
     def get(self, memory_id):
+        if isinstance(memory_id, str) and re.fullmatch(r"[PpSs][1-9][0-9]*", memory_id):
+            return self.resolve_reference(memory_id, allow_legacy=False)
         with self._lock:
             row = self._db.execute("SELECT * FROM memories WHERE id = ?", (int(memory_id),)).fetchone()
         return self._row(row) if row else None
+
+    def resolve_reference(self, token, *, allow_legacy=True):
+        word = str(token or "").strip()
+        if re.fullmatch(r"[PpSs][1-9][0-9]*", word):
+            tier = PRIVATE if word[0].lower() == "p" else SHARED
+            with self._lock:
+                row = self._db.execute("SELECT * FROM memories WHERE tier = ? AND display_number = ?",
+                                       (tier, int(word[1:]))).fetchone()
+            return self._row(row) if row else None
+        if allow_legacy and re.fullmatch(r"#?[1-9][0-9]*", word):
+            m = self.get(int(word.lstrip("#")))
+            return m if m is not None and m.legacy_alias else None
+        return None
 
     def list(self, *, statuses=(ACTIVE,), tiers=TIERS, limit=50):
         s_sql, s_vals = self._in(statuses, STATUSES)
@@ -844,7 +937,9 @@ class SQLiteStore(Store):
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             if m.audience_consent_required:
-                raise StoreError("That sharing proposal needs the direct local share command.")
+                raise StoreError("That old sharing row is unavailable for this change.")
+            if m.sharing_approval_needed and status == ACTIVE:
+                raise StoreError("This Private save needs the numbered sharing review choice.")
             stamp, order_key = self._change(m)
             self._db.execute(
                 "UPDATE memories SET status = ?, pending_reason = ?, "
@@ -899,7 +994,7 @@ class SQLiteStore(Store):
                 raise StoreError(f"No memory #{memory_id}.")
             if m.audience_consent_required and not (
                     m.tier == SHARED and at is not None and order_key is not None and travels is True):
-                raise StoreError("That sharing proposal needs the direct local share command.")
+                raise StoreError("That old sharing row is unavailable for this change.")
             if m.status == FORGOTTEN:
                 tomb = self.tombstone(fingerprint(m.text))
                 tomb_order = self.tombstone_order(fingerprint(m.text))
@@ -962,7 +1057,7 @@ class SQLiteStore(Store):
                 raise StoreError(f"No memory #{memory_id}.")
             if m.audience_consent_required and not (
                     m.tier == SHARED and at is not None and order_key is not None):
-                raise StoreError("That sharing proposal cannot be restored.")
+                raise StoreError("That old sharing row cannot be restored.")
             if m.status != FORGOTTEN:
                 raise StoreError(f"Memory #{m.id} is not forgotten.")
             stamp, change_order = self._change(m, at=at, order_key=order_key)
@@ -987,14 +1082,19 @@ class SQLiteStore(Store):
 
     def withdraw_approval(self, memory_id, reason="You undid the approval.", *, require_sharing_choice=False):
         """Keep a Shared approval pending and publish a UID-only withdrawal atomically."""
+        private_number = self.claim_display_number(PRIVATE) if require_sharing_choice else None
         with self._lock, self._db:
             m = self.get(memory_id)
             if m is None or m.tier != SHARED or m.status != ACTIVE or m.audience_consent_required:
                 raise StoreError(f"No active Shared memory #{memory_id} to withdraw.")
             stamp, order_key = self._change(m, terminal_tie=True)
             self._db.execute("UPDATE memories SET status = 'pending', pending_reason = ?, "
-                             "audience_consent_required = ?, updated_at = ?, order_key = ? WHERE id = ?",
-                             (reason, int(require_sharing_choice), stamp, order_key, m.id))
+                             "tier = ?, display_number = ?, audience_consent_required = 0, "
+                             "sharing_approval_needed = ?, duplicate_of = CASE WHEN ? THEN 0 ELSE duplicate_of END, "
+                             "updated_at = ?, order_key = ? WHERE id = ?",
+                             (reason, PRIVATE if require_sharing_choice else SHARED,
+                              private_number if require_sharing_choice else m.display_number,
+                              int(require_sharing_choice), int(require_sharing_choice), stamp, order_key, m.id))
             self._db.execute("INSERT OR REPLACE INTO withdrawals "
                              "(uid, fingerprint, updated_at, created_at, origin, order_key) VALUES (?,?,?,?,?,?)",
                              (m.uid, fingerprint(m.text), stamp, m.created_at, "", order_key))
@@ -1049,7 +1149,7 @@ class SQLiteStore(Store):
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             if m.audience_consent_required:
-                raise StoreError("That sharing proposal needs the direct local share command.")
+                raise StoreError("That old sharing row is unavailable for this change.")
             self._db.execute("UPDATE memories SET duplicate_of = ? WHERE id = ?", (int(other_id or 0), int(memory_id)))
             return self.get(memory_id)
 
@@ -1065,7 +1165,7 @@ class SQLiteStore(Store):
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
             if m.audience_consent_required and m.status != FORGOTTEN:
-                raise StoreError("Decline that sharing proposal before purging it.")
+                raise StoreError("That old sharing row must be forgotten before purging it.")
             if m.status != FORGOTTEN:
                 raise StoreError(f"Forget memory #{m.id} before purging it.")
             self._db.execute("UPDATE tombstones SET memory_id = NULL WHERE memory_id = ?", (m.id,))
@@ -1119,6 +1219,9 @@ class SQLiteStore(Store):
     def events(self, *, memory_id=None, limit=20):
         sql, args = "SELECT * FROM events", []
         if memory_id is not None:
+            if isinstance(memory_id, str) and re.fullmatch(r"[PpSs][1-9][0-9]*", memory_id):
+                m = self.resolve_reference(memory_id, allow_legacy=False)
+                memory_id = m.id if m else 0
             sql, args = sql + " WHERE memory_id = ?", [int(memory_id)]
         with self._lock:
             rows = self._db.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, int(limit))).fetchall()
@@ -1148,6 +1251,7 @@ class SQLiteStore(Store):
                     latest = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?",
                                               (int(memory_id),)).fetchone()[0] or 0
                     if (row is None or row["status"] != PENDING or row["forget_reason"] or row["audience_consent_required"]
+                            or row["sharing_approval_needed"]
                             or row["order_key"] != expected_order_key or latest != since_event):
                         self._db.execute("ROLLBACK")
                         return False
@@ -1156,8 +1260,12 @@ class SQLiteStore(Store):
                         self._db.execute("UPDATE memories SET status = 'active', pending_reason = '', "
                                          "updated_at = ?, order_key = ? WHERE id = ?", (stamp, order_key, int(memory_id)))
                         self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (row["uid"],))
+                        checked_sharing = row["tier"] == SHARED and self._db.execute(
+                            "SELECT 1 FROM events WHERE memory_id = ? AND action = 'share_held' LIMIT 1",
+                            (int(memory_id),)).fetchone() is not None
                         self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
-                                         (int(memory_id), "approved", "auto-review", now_iso()))
+                                         (int(memory_id), "share_approved" if checked_sharing else "approved",
+                                          "auto-review", now_iso()))
                     else:
                         self._db.execute("UPDATE memories SET pending_reason = ?, updated_at = ?, order_key = ? WHERE id = ?",
                                          ((row["pending_reason"] + " Auto-review: " + reason).strip()[:600],
@@ -1204,6 +1312,7 @@ class SQLiteStore(Store):
         if status not in (ACTIVE, PENDING):
             raise StoreError("A memory arriving by sync is either active or pending.")
         memory_id = self.claim_memory_id()
+        display_number = self.claim_display_number(SHARED)
         order_key = sync_order.key(sync_order.parse(order_key)) if order_key is not None else sync_order.from_iso(updated_at)
         p = provenance
         with self._lock, self._db:
@@ -1213,10 +1322,10 @@ class SQLiteStore(Store):
                              (fingerprint(text),))
             cur = self._db.execute(
                 """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at, order_key,
-                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
-                   VALUES (?,?,'shared',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of, display_number)
+                   VALUES (?,?,'shared',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (memory_id, text, status, pending_reason, created_at, updated_at, order_key, p.written_by, p.via, p.route,
-                 p.route_tier, p.session_id, str(p.turn), p.author, str(uid), int(duplicate_of or 0)),
+                 p.route_tier, p.session_id, str(p.turn), p.author, str(uid), int(duplicate_of or 0), display_number),
             )
             return self.get(cur.lastrowid)
 

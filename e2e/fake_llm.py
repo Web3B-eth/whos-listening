@@ -60,6 +60,9 @@ def side_reply(messages: list) -> str:
     if "You check one memory" in text and found:
         memory, users = found.group(1).strip().lower(), CALL_RE.sub("", found.group(2)).lower()
         if memory and memory in users:
+            if "Target tier: shared" in text:
+                may_share = "any model may see" in users or "can be shared" in users
+                return json.dumps({"save": True, "share": may_share, "reason": "You said this yourself."})
             return '{"save": true, "reason": "You said this yourself."}'
         return '{"save": false, "reason": "You never said this."}'
     return ANSWER

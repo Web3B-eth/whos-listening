@@ -19,7 +19,7 @@ from pathlib import Path
 from . import commands
 from . import settings as wl_settings
 from .routes import RouteSettings, private_storage_refusal, shared_only_gateway
-from .store import SQLiteStore, StoreError
+from .store import SQLiteStore, StoreError, display_ref
 
 DATA_DIR, DB_FILE, SETTINGS_FILE = "whos-listening", "memories.sqlite", "settings.json"
 
@@ -68,17 +68,16 @@ def _why(exc: Exception) -> str:
 
 
 def purge(store: SQLiteStore, arg: str) -> str:
+    memory = store.resolve_reference(arg)
+    if memory is None:
+        return f"No memory {arg}."
     try:
-        memory_id = int(str(arg).lstrip("#"))
-    except ValueError:
-        return "Give a memory number, like 3 or #3."
-    try:
-        store.purge(memory_id)
+        store.purge(memory.id)
     except StoreError as exc:
         return str(exc)
-    return (f"Purged #{memory_id}: its record was removed from SQLite. Old bytes may remain in the "
+    return (f"Purged {display_ref(memory)}: its record was removed from SQLite. Old bytes may remain in the "
             "database, WAL or backups. If this memory had a tombstone, it stays. "
-            "A declined sharing proposal has no tombstone.")
+            "An old declined sharing row may have no tombstone.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             route_settings = route_settings_or_none(home)
             print(commands.run(store, " ".join(args.command), show_private=True, via="cli",
                                private_refused=private_storage_refusal(route_settings),
-                               shared_only=shared_only_gateway(route_settings)))
+                               shared_only=shared_only_gateway(route_settings),
+                               tier_duplicates=route_settings.tier_duplicates if route_settings else "ask"))
     finally:
         store.close()
     return 0

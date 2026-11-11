@@ -1,364 +1,288 @@
-"""Shared-audience consent on a Private-capable gateway. All facts are made up."""
+"""Shared saves on a Private-capable gateway. Facts here are made up."""
 
 import json
 
-import pytest
-
 from test_sync import FakeFile
-from whos_listening import cli, commands, order, sync, tools
-from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError
+from whos_listening import autoreview, commands, resolve, sync, tools
+from whos_listening.store import ACTIVE, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, display_ref
 
-
+FACT = "Owns a blue mountain bike"
 ASSISTANT = Provenance(written_by="assistant", via=tools.REMEMBER)
 USER = Provenance(written_by="user", via="test")
-FACT = "Owns a blue mountain bike"
 
 
-def propose(store, route=PRIVATE, **kwargs):
+def save(store, *, route=PRIVATE, check=None, tier_duplicates="ask", shared_only=False):
     return json.loads(tools.handle(store, tools.REMEMBER, {"text": FACT, "tier": SHARED},
-                                   route_tier=route, provenance=lambda: ASSISTANT, **kwargs))
+                                   route_tier=route, provenance=lambda: ASSISTANT,
+                                   check_sharing=check, tier_duplicates=tier_duplicates,
+                                   shared_only=shared_only))
 
 
-@pytest.mark.parametrize("route", (PRIVATE, SHARED))
-@pytest.mark.parametrize("prior", ("none", "private", "tombstone"))
-def test_proposal_is_uniform_and_hidden_before_private_checks(tmp_path, route, prior):
-    store = SQLiteStore(tmp_path / f"{route}-{prior}.sqlite")
-    if prior != "none":
-        old = store.add(FACT, PRIVATE, USER)
-        if prior == "tombstone":
-            store.forget(old.id)
-    judged = []
-    out = propose(store, route, judge=lambda *_: judged.append(True), tier_duplicates="private",
-                  outside_tool="read_file")
-    assert out == {"ok": True, "pending": {"tier": SHARED},
-                   "note": "Sharing waits for your direct choice on a Private-capable platform: /memories share."}
-    assert not judged
-    proposals = store.consent_proposals()
-    assert len(proposals) == 1 and proposals[0].status == PENDING
-    assert store.list(tiers=(SHARED,), statuses=(ACTIVE, PENDING, FORGOTTEN)) == []
-    assert store.count(tiers=(SHARED,), statuses=(ACTIVE, PENDING, FORGOTTEN)) == 0
-    assert store.search("blue", tiers=(SHARED,)) == []
+def verdict(*, share=False, save_fact=True):
+    return lambda _: autoreview.Verdict(save_fact, "checked", share=share)
+
+
+def test_unavailable_check_uses_private_numbered_review_and_owner_can_share(store):
+    out = save(store)
+    private = store.list(statuses=(ACTIVE,), tiers=(PRIVATE,))[0]
+    assert out["saved"]["id"] == display_ref(private) == "P1"
+    assert private.sharing_approval_needed
+    assert "Private; sharing approval needed" in commands.cmd_review(store, True)
     assert store.shared_for_sync() == []
-    assert commands.cmd_pending(store, False) == "Nothing is waiting for you."
-    assert json.loads(tools.handle(store, tools.REVIEW, {"action": "list"}, route_tier=SHARED,
-                                   provenance=lambda: ASSISTANT))["waiting"] == []
-    store.close()
+    assert "Approved sharing" in commands.cmd_approve(store, "P1", True)
+    shared = store.get(private.id)
+    assert shared.tier == SHARED and shared.status == ACTIVE and display_ref(shared) == "S2"
+    assert [m.uid for m in store.shared_for_sync()] == [private.uid]
 
 
-def test_only_direct_local_share_choice_activates_a_proposal(store):
-    old = store.add(FACT, PRIVATE, USER)
-    out = propose(store)
-    proposal = store.consent_proposals()[0]
-    assert "id" not in json.dumps(out)
-    token = f"P{proposal.id}@{proposal.order_key}"
-    with pytest.raises(StoreError, match="No memory"):
-        commands.cmd_approve(store, str(proposal.id), True)
-    with pytest.raises(StoreError):
-        store.set_status(proposal.id, ACTIVE)
-    with pytest.raises(StoreError):
-        store.forget(proposal.id)
-    assert not store.apply_review(proposal.id, store.last_event_id(proposal.id), proposal.order_key, True, "")
-    preview = commands.cmd_share(store, "")
-    assert FACT in preview and old.text in preview and "Shared: any model may see it" in preview
-    assert "keep-both" in preview and "<wl-private id=" in preview
-    assert "Possible Private match" in commands.cmd_share(store, "")
-    assert "Private memory may say" in commands.cmd_share(store, f"approve {token}")
-    assert store.get(proposal.id).status == PENDING
-    assert "Approved Shared" in commands.cmd_share(store, f"keep-both {token}")
-    assert store.get(proposal.id).status == ACTIVE and not store.get(proposal.id).audience_consent_required
-    assert store.get(old.id).status == ACTIVE
-    assert [m.id for m in store.shared_for_sync()] == [proposal.id]
+def test_no_sharing_permission_saves_private_when_fact_is_safe(store):
+    out = save(store, check=verdict())
+    saved = store.list(tiers=(PRIVATE,))[0]
+    assert out["saved"]["id"] == "P1"
+    assert "Saved as Private" in out["note"]
+    assert not saved.sharing_approval_needed and store.shared_for_sync() == []
 
 
-def test_guessed_proposal_number_answers_like_missing_one(store):
-    propose(store)
-    p = store.consent_proposals()[0]
-    for action in ("approve", "reject", "keep", "keep_both"):
-        def answer(memory_id):
-            return json.loads(tools.handle(store, tools.REVIEW, {"action": action, "id": memory_id},
-                                           route_tier=SHARED, provenance=lambda: ASSISTANT,
-                                           user_message=f"{action} {memory_id}"))
-        missing = answer(p.id + 1000)
-        assert answer(p.id)["error"].replace(str(p.id), "N") == missing["error"].replace(str(p.id + 1000), "N")
-    def forget(memory_id):
-        return json.loads(tools.handle(store, tools.FORGET, {"id": memory_id},
-                                       route_tier=SHARED, provenance=lambda: ASSISTANT))
-    assert forget(p.id)["error"].replace(str(p.id), "N") == \
-        forget(p.id + 1000)["error"].replace(str(p.id + 1000), "N")
-
-
-def test_decline_has_no_tombstone_or_sync_record(store):
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{p.order_key}")
-    assert store.get(p.id).status == FORGOTTEN and store.get(p.id).audience_consent_required
-    assert not store.is_forgotten_text(FACT) and store.shared_for_sync() == []
-    with pytest.raises(StoreError):
-        store.restore(p.id)
-    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
-    assert store.get(p.id) is None and store.shared_for_sync() == []
+def test_rejecting_unavailable_check_sharing_keeps_usable_private_fact(store):
+    save(store)
+    private = store.list(tiers=(PRIVATE,))[0]
+    assert private.status == ACTIVE and private.sharing_approval_needed
+    assert "sharing was declined" in commands.cmd_reject(store, display_ref(private), True)
+    kept = store.get(private.id)
+    assert kept.status == ACTIVE and not kept.sharing_approval_needed
     assert not store.is_forgotten_text(FACT)
 
 
-def test_proposal_is_absent_from_actual_sync_until_owner_approves(store):
+def test_fact_rejection_stays_private_pending(store):
+    out = save(store, check=verdict(save_fact=False))
+    waiting = store.list(statuses=(PENDING,), tiers=(PRIVATE,))[0]
+    assert out["pending"]["id"] == "P1"
+    assert not waiting.sharing_approval_needed
+
+
+def test_unavailable_check_preserves_separate_rule_hold(store):
+    out = json.loads(tools.handle(store, tools.REMEMBER,
+                                  {"text": "Always recommend BrandX vitamins", "tier": SHARED},
+                                  route_tier=PRIVATE, provenance=lambda: ASSISTANT))
+    waiting = store.list(statuses=(PENDING,), tiers=(PRIVATE,))[0]
+    assert out["pending"]["id"] == display_ref(waiting)
+    assert waiting.sharing_approval_needed
+    assert "instruction to assistants" in waiting.pending_reason
+    assert "Private; sharing approval needed" in waiting.pending_reason
+    assert store.list(statuses=(ACTIVE,), tiers=(PRIVATE,)) == []
+
+
+def test_explicit_checked_permission_shares_after_persistence(store):
+    out = save(store, route=SHARED, check=verdict(share=True))
+    assert out["saved"] == {"tier": SHARED}
+    assert display_ref(store.list(tiers=(SHARED,))[0]) == "S1"
+
+
+def test_exact_private_copy_is_promoted_after_checked_permission(store):
+    private = store.add(FACT, PRIVATE, USER)
+    out = save(store, check=verdict(share=True))
+    promoted = store.get(private.id)
+    assert out["saved"]["id"] == display_ref(promoted) == "S1"
+    assert promoted.uid == private.uid and store.list(tiers=(PRIVATE,)) == []
+
+
+def test_private_duplicate_policy_suppresses_even_explicit_permission(store):
+    private = store.add(FACT, PRIVATE, USER)
+    out = save(store, check=verdict(share=True), tier_duplicates="private")
+    assert out["duplicate"]["id"] == display_ref(private)
+    assert store.get(private.id).tier == PRIVATE and store.shared_for_sync() == []
+
+
+def test_repeated_unavailable_check_still_gets_numbered_review(store):
+    old = store.add(FACT, PRIVATE, USER)
+    out = save(store)
+    again = save(store)
+    third = save(store)
+    marked = store.resolve_reference(out["saved"]["id"])
+    assert marked.id == old.id and marked.sharing_approval_needed
+    assert again["saved"]["id"] == third["saved"]["id"] == display_ref(marked)
+    assert len(store.list(statuses=(ACTIVE,), tiers=(PRIVATE,))) == 1
+    assert store.get(old.id).status == ACTIVE
+
+
+def test_shared_route_hides_private_fallback_and_tombstone(store):
+    first = save(store, route=SHARED)
+    assert first["private"] == {"tier": PRIVATE}
+    saved = store.list(statuses=(ACTIVE,), tiers=(PRIVATE,))[0]
+    store.forget(saved.id)
+    second = save(store, route=SHARED)
+    assert second == first
+    assert store.shared_for_sync() == []
+
+
+def test_undo_sharing_demotes_private_and_withdraws_only_uid(tmp_path):
+    a = SQLiteStore(tmp_path / "owner.sqlite")
+    b = SQLiteStore(tmp_path / "peer.sqlite")
     file = FakeFile()
-    propose(store)
-    p = store.consent_proposals()[0]
-    sync.sync_once(store, file, "local")
-    assert FACT not in (file.raw or b"").decode()
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
-    sync.sync_once(store, file, "local")
-    assert FACT in file.raw.decode()
-
-
-def test_undo_direct_share_approval_withdraws_uid_and_requires_fresh_choice(tmp_path):
-    a, b, file = SQLiteStore(tmp_path / "owner.sqlite"), SQLiteStore(tmp_path / "peer.sqlite"), FakeFile()
     try:
-        private = a.add(FACT, PRIVATE, USER)
-        propose(a)
-        p = a.consent_proposals()[0]
-        old_token = f"P{p.id}@{p.order_key}"
-        assert "Approved Shared" in commands.cmd_share(a, f"keep-both {old_token}")
-        approved = a.get(p.id)
+        save(a)
+        private = a.list(statuses=(ACTIVE,), tiers=(PRIVATE,))[0]
+        commands.cmd_approve(a, display_ref(private), True)
+        shared = a.get(private.id)
         sync.sync_once(a, file, "owner")
         sync.sync_once(b, file, "peer")
-        same_words = b.add(FACT, SHARED, USER)
         assert "Undid sharing approval" in commands.cmd_undo(a, True)
-        waiting = a.get(p.id)
-        assert waiting.status == PENDING and waiting.audience_consent_required
-        assert "sharing proposal is waiting" in commands.cmd_undo(a, True)
-        assert int(waiting.order_key) > int(approved.order_key)
-        assert a.get(private.id).status == ACTIVE
-        assert a.withdrawal(p.uid) is not None
+        demoted = a.get(private.id)
+        assert demoted.tier == PRIVATE and demoted.status == PENDING
+        assert demoted.sharing_approval_needed and a.withdrawal(shared.uid)
         assert a.shared_for_sync() == []
-        assert "changed" in commands.cmd_share(a, f"approve {old_token}")
-        with pytest.raises(StoreError, match="No memory"):
-            commands.cmd_approve(a, str(p.id), True)
-        assert not a.apply_review(p.id, a.last_event_id(p.id), waiting.order_key, True, "")
         sync.sync_once(a, file, "owner")
-        assert file.doc()["memories"][p.uid]["status"] == sync.WITHDRAWN
-        assert FACT not in file.raw.decode()
+        assert file.doc()["memories"][shared.uid]["status"] == sync.WITHDRAWN
         sync.sync_once(b, file, "peer")
-        assert b.by_uid(p.uid).status == FORGOTTEN
-        assert b.get(same_words.id).status == ACTIVE
-        assert b.tombstone(sync.fingerprint(FACT)) is None
-        fresh_token = f"P{p.id}@{waiting.order_key}"
-        assert "Approved Shared" in commands.cmd_share(a, f"keep-both {fresh_token}")
-        assert a.get(p.id).status == ACTIVE and not a.get(p.id).audience_consent_required
-        sync.sync_once(a, file, "owner")
-        assert file.doc()["memories"][p.uid]["status"] == ACTIVE
+        assert b.by_uid(shared.uid).status != ACTIVE
     finally:
         a.close()
         b.close()
 
 
-def test_pending_or_declined_share_choice_does_not_undo_older_action(store):
-    old = store.add("Likes jazz", PRIVATE, USER)
-    store.log_event(old.id, "saved", "user")
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
-    assert store.get(old.id).status == ACTIVE
-    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{p.order_key}")
-    assert "proposal was declined" in commands.cmd_undo(store, True)
-    assert store.get(old.id).status == ACTIVE
-    assert "forgot" in commands.cmd_undo(store, True).lower()
-    assert store.get(old.id).status == FORGOTTEN
-
-
-def test_already_withdrawn_share_approval_does_not_undo_older_action(store):
-    old = store.add("Likes jazz", PRIVATE, USER)
-    store.log_event(old.id, "saved", "user")
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
-    store.withdraw_approval(p.id, require_sharing_choice=True)
-    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
-    assert store.get(old.id).status == ACTIVE
-
-
-def test_remote_forget_overtakes_unmarked_share_approval(store):
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
-    store.withdraw_approval(p.id, require_sharing_choice=True)
-    withdrawal = store.withdrawal(p.uid)
-    forgotten = {"status": FORGOTTEN, "fingerprint": sync.fingerprint(FACT),
-                 "updated_at": "2026-01-01T00:00:00+00:00", "order": withdrawal.order_key}
-    file = FakeFile()
-    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
-                            "memories": {p.uid: forgotten}}) + "\n").encode()
-    sync.sync_once(store, file, "peer")
-    assert "no longer waiting" in commands.cmd_undo(store, True)
-    assert "overtaken by a change from another gateway" in commands.cmd_undo(store, True)
-
-
-def test_terminal_share_undo_can_still_be_declined_and_purged(store):
-    propose(store)
-    p = store.consent_proposals()[0]
-    near_end = str(order.MAX_VALUE - 1)
-    store._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (near_end, p.id))
-    store._db.commit()
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{near_end}")
-    assert store.get(p.id).order_key == str(order.MAX_VALUE)
+def test_undo_checked_near_shared_save_returns_to_numbered_private_review(store):
+    older = store.add(FACT, PRIVATE, USER)
+    out = json.loads(tools.handle(store, tools.REMEMBER,
+                                  {"text": "Bought a blue mountain bike", "tier": SHARED},
+                                  route_tier=PRIVATE, provenance=lambda: ASSISTANT,
+                                  check_sharing=verdict(share=True)))
+    shared = store.resolve_reference(out["saved"]["id"])
+    assert shared.duplicate_of == older.id
     assert "Undid sharing approval" in commands.cmd_undo(store, True)
-    waiting = store.get(p.id)
-    assert waiting.status == PENDING and waiting.audience_consent_required
-    assert waiting.order_key == str(order.MAX_VALUE)
-    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{waiting.order_key}")
-    assert store.get(p.id).status == FORGOTTEN
-    assert not store.is_forgotten_text(FACT)
-    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
-    assert store.get(p.id) is None
+    demoted = store.get(shared.id)
+    assert demoted.tier == PRIVATE and demoted.status == PENDING
+    assert demoted.duplicate_of == 0 and demoted.sharing_approval_needed
+    assert any(item.kind == "save" and item.memory.id == demoted.id for item in resolve.items(store))
 
 
-def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
-    older = store.add("Likes jazz", PRIVATE, USER)
-    store.log_event(older.id, "saved", "user")
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
+def test_auto_approved_checked_shared_hold_can_be_undone(store):
+    out = json.loads(tools.handle(store, tools.REMEMBER,
+                                  {"text": FACT, "tier": SHARED},
+                                  route_tier=PRIVATE, provenance=lambda: ASSISTANT,
+                                  check_sharing=verdict(share=True), outside_tool="read_file"))
+    held = store.resolve_reference(out["pending"]["id"])
+    assert held.status == PENDING and held.tier == SHARED
+    assert store.apply_review(held.id, store.last_event_id(held.id), held.order_key, True, "")
+    assert store.get(held.id).status == ACTIVE
     assert "Undid sharing approval" in commands.cmd_undo(store, True)
-    withdrawal = store.withdrawal(p.uid)
+    demoted = store.get(held.id)
+    assert demoted.tier == PRIVATE and demoted.status == PENDING
+    assert demoted.sharing_approval_needed and store.withdrawal(held.uid)
+
+
+def test_promotion_does_not_publish_private_origin_metadata(store):
+    original = store.add(FACT, PRIVATE,
+                         Provenance(written_by="user", via="private-canary-via",
+                                    route="private-canary-route", route_tier="private",
+                                    session_id="private-canary-session", turn="private-canary-turn",
+                                    author="private-canary-author"))
+    old_time = "2001-01-01T00:00:00+00:00"
+    store._db.execute("UPDATE memories SET created_at = ? WHERE id = ?", (old_time, original.id))
+    store.log_event(original.id, "saved", "private-canary-actor")
+    promoted = store.promote_shared(original.id, original.order_key)
+    shown = commands.cmd_show(store, display_ref(promoted), show_private=False)
+    assert "private-canary" not in shown and old_time not in shown and "share_approved" not in shown
+    assert promoted.created_at != old_time and promoted.provenance.route_tier == SHARED
     file = FakeFile()
-    stamp = "2026-01-01T00:00:00+00:00"
-    forgotten = {"status": FORGOTTEN, "fingerprint": sync.fingerprint(FACT),
-                 "updated_at": stamp, "order": withdrawal.order_key}
-    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
-                            "memories": {p.uid: forgotten}}) + "\n").encode()
-    sync.sync_once(store, file, "peer")
-    hidden = store.get(p.id)
-    assert hidden.status == FORGOTTEN and hidden.audience_consent_required
-    assert store.tombstone(sync.fingerprint(FACT))[2] is True
-    assert "no longer waiting" in commands.cmd_undo(store, True)
-    assert store.get(older.id).status == ACTIVE
-    newer = order.next_key(withdrawal.order_key, stamp)
-    active = {"status": ACTIVE, "text": FACT, "fingerprint": sync.fingerprint(FACT),
-              "updated_at": stamp, "order": newer}
-    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
-                            "memories": {p.uid: active}}) + "\n").encode()
-    sync.sync_once(store, file, "peer")
-    waiting = store.get(p.id)
-    assert waiting.status == PENDING and waiting.audience_consent_required
-    assert store.consent_proposals()[0].id == p.id
-    assert store.shared_for_sync() == []
-    assert any(e.action == "share_held" and e.actor == "sync" for e in store.events(memory_id=p.id))
-    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
-    assert store.get(older.id).status == ACTIVE
-    with pytest.raises(StoreError, match="No memory"):
-        commands.cmd_approve(store, str(p.id), True)
+    sync.sync_once(store, file, "owner")
+    record = file.doc()["memories"][original.uid]
+    assert record["created_at"] == promoted.created_at and old_time not in json.dumps(record)
+    assert "private-canary" not in json.dumps(record)
 
 
-def test_declined_renewed_share_stays_declined_after_newer_peer_active(store):
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
-    assert "Undid sharing approval" in commands.cmd_undo(store, True)
-    waiting = store.get(p.id)
-    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{waiting.order_key}")
-    declined = store.get(p.id)
-    assert declined.status == FORGOTTEN and declined.forgotten_from == PENDING
-    newer = order.next_key(declined.order_key, "2026-01-01T00:00:00+00:00")
-    active = {"status": ACTIVE, "text": FACT, "fingerprint": sync.fingerprint(FACT),
-              "updated_at": "2026-01-01T00:00:00+00:00", "order": newer}
-    file = FakeFile()
-    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
-                            "memories": {p.uid: active}}) + "\n").encode()
-    sync.sync_once(store, file, "peer")
-    assert store.get(p.id).status == FORGOTTEN and store.get(p.id).audience_consent_required
-    assert store.consent_proposals() == []
-    assert store.shared_for_sync() == []
-    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
+def test_display_numbers_are_per_tier_and_new_rows_have_no_legacy_alias(store):
+    private = store.add("Keeps a red notebook", PRIVATE, USER)
+    shared = store.add("Enjoys blue kites", SHARED, USER)
+    assert display_ref(private) == "P1" and display_ref(shared) == "S1"
+    promoted = store.promote_shared(private.id, private.order_key)
+    assert display_ref(promoted) == "S2"
+    assert store.resolve_reference(f"#{private.id}") is None
+    assert store.resolve_reference("P1") is None
+    assert store.resolve_reference("S2").id == private.id
+    assert display_ref(store.add("Likes green maps", PRIVATE, USER)) == "P2"
 
 
-def test_second_connection_cannot_decide_a_stale_proposal(tmp_path):
-    path = tmp_path / "consent.sqlite"
-    first = SQLiteStore(path)
-    second = SQLiteStore(path)
-    try:
-        propose(first)
-        p = first.consent_proposals()[0]
-        second.decide_shared_proposal(p.id, p.order_key, approve=False)
-        with pytest.raises(StoreError, match="changed"):
-            first.decide_shared_proposal(p.id, p.order_key, approve=True)
-        assert first.shared_for_sync() == []
-    finally:
-        first.close()
-        second.close()
-
-
-def test_private_tombstone_needs_explicit_owner_restore_or_add(store):
-    old = store.add(FACT, PRIVATE, USER)
-    store.forget(old.id)
-    propose(store)
-    p = store.consent_proposals()[0]
-    assert "forgotten" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
-    assert store.get(p.id).status == PENDING
-    assert store.is_forgotten_text(FACT)
-
-
-def test_shared_only_gateway_still_saves_automatically(store):
-    store.add(FACT, PRIVATE, USER)
-    out = propose(store, SHARED, shared_only=True, tier_duplicates="private")
-    assert out["ok"] and store.consent_proposals() == []
-
-
-def test_shared_route_private_hold_reply_does_not_reveal_duplicate(tmp_path):
-    responses = []
-    for name, prior in (("known", True), ("new", False)):
-        s = SQLiteStore(tmp_path / f"{name}.sqlite")
-        if prior:
-            s.add(FACT, PRIVATE, USER)
-        responses.append(json.loads(tools.handle(s, tools.REMEMBER, {"text": FACT}, route_tier=SHARED,
-                                                provenance=lambda: ASSISTANT, outside_tool="read_file",
-                                                on_outside_hold=lambda _: True)))
-        s.close()
-    assert responses[0] == responses[1]
-
-
-def test_legacy_pending_shared_assistant_save_is_migrated(tmp_path):
-    path = tmp_path / "legacy.sqlite"
-    store = SQLiteStore(path)
-    old = store.add(FACT, SHARED, ASSISTANT, status=PENDING, pending_reason="Outside content.")
-    since, stamp = store.last_event_id(old.id), old.updated_at
-    store._db.execute("PRAGMA user_version = 5")
-    store.close()
-    migrated = SQLiteStore(path)
-    p = migrated.get(old.id)
-    assert p.audience_consent_required and p.updated_at == stamp
-    assert not migrated.apply_review(old.id, since, old.order_key, True, "")
-    assert migrated.list(statuses=(PENDING,)) == []
-    migrated.close()
-
-
-def test_max_timestamp_legacy_pending_proposal_migrates_without_advancing_date(tmp_path):
-    path = tmp_path / "max-date.sqlite"
+def test_migrated_row_keeps_legacy_alias_but_new_row_does_not(tmp_path):
+    path = tmp_path / "old.sqlite"
     old = SQLiteStore(path)
-    m = old.add(FACT, SHARED, ASSISTANT, status=PENDING, pending_reason="Outside content.")
-    old._db.execute("UPDATE memories SET updated_at = ? WHERE id = ?",
-                    ("9999-12-31T23:59:59+00:00", m.id))
-    old._db.commit()
-    since = old.last_event_id(m.id)
-    old._db.execute("PRAGMA user_version = 5")
+    m = old.add("Keeps a red notebook", PRIVATE, USER)
+    old._db.execute("PRAGMA user_version = 8")
     old.close()
-    migrated = SQLiteStore(path)
+    upgraded = SQLiteStore(path)
     try:
-        assert migrated.get(m.id).updated_at == "9999-12-31T23:59:59+00:00"
-        assert migrated.get(m.id).audience_consent_required
-        assert not migrated.apply_review(m.id, since, migrated.get(m.id).order_key, True, "")
-        assert migrated.get(m.id).status == PENDING
+        assert upgraded.resolve_reference(f"#{m.id}").id == m.id
+        assert upgraded.resolve_reference(str(m.id)).id == m.id
+        new = upgraded.add("Likes green maps", PRIVATE, USER)
+        assert upgraded.resolve_reference(f"#{new.id}") is None
     finally:
-        migrated.close()
+        upgraded.close()
 
 
-def test_shared_route_private_reply_is_uniform_with_visible_and_hidden_duplicate(tmp_path):
-    responses = []
-    for name, with_private in (("visible", False), ("hidden", True)):
-        s = SQLiteStore(tmp_path / f"{name}.sqlite")
-        s.add(FACT, SHARED, USER)
-        if with_private:
-            s.add(FACT, PRIVATE, USER)
-        responses.append(json.loads(tools.handle(s, tools.REMEMBER, {"text": FACT}, route_tier=SHARED,
-                                                provenance=lambda: ASSISTANT, outside_tool="read_file")))
-        s.close()
-    assert responses[0] == responses[1]
+def test_old_hidden_shared_proposal_migrates_to_visible_private_pending(tmp_path):
+    path = tmp_path / "old-proposal.sqlite"
+    old = SQLiteStore(path)
+    m = old.add(FACT, SHARED, ASSISTANT, status=PENDING,
+                pending_reason="Old sharing proposal.")
+    old._db.execute("UPDATE memories SET audience_consent_required = 1 WHERE id = ?", (m.id,))
+    old._db.execute("PRAGMA user_version = 8")
+    old._db.commit()
+    old.close()
+    upgraded = SQLiteStore(path)
+    try:
+        private = upgraded.get(m.id)
+        assert private.tier == PRIVATE and private.status == PENDING
+        assert private.sharing_approval_needed and not private.audience_consent_required
+        assert private.uid == m.uid and private.order_key == m.order_key
+        assert display_ref(private) in commands.cmd_review(upgraded, True)
+        assert upgraded.shared_for_sync() == []
+    finally:
+        upgraded.close()
+
+
+def test_private_tool_legacy_alias_authorizes_only_the_migrated_row(tmp_path):
+    path = tmp_path / "old-review.sqlite"
+    old = SQLiteStore(path)
+    first = old.add("Likes blue kites", PRIVATE, USER, status=PENDING, pending_reason="Review this.")
+    second = old.add("Likes red maps", PRIVATE, USER, status=PENDING, pending_reason="Review this.")
+    old._db.execute("PRAGMA user_version = 8")
+    old.close()
+    store = SQLiteStore(path)
+    try:
+        def choose(token, said, route=PRIVATE):
+            return json.loads(tools.handle(store, tools.REVIEW, {"action": "approve", "id": token},
+                                           route_tier=route, provenance=lambda: ASSISTANT,
+                                           user_message=said))
+
+        assert choose(str(first.id), f"approve #{first.id}")["ok"]
+        assert choose(f"#{second.id}", f"approve {second.id}")["ok"]
+        fresh = store.add("Likes green notebooks", PRIVATE, USER, status=PENDING, pending_reason="Review this.")
+        assert not choose(str(fresh.id), f"approve #{fresh.id}")["ok"]
+        assert not choose(str(first.id), f"approve #{first.id}", route=SHARED)["ok"]
+    finally:
+        store.close()
+
+
+def test_reference_authorization_needs_whole_tier_token(store):
+    private = store.add("Likes blue kites", PRIVATE, USER, status=PENDING, pending_reason="Review this.")
+    shared = store.add("Likes red maps", SHARED, USER, status=PENDING, pending_reason="Review this.")
+    assert display_ref(private) == "P1" and display_ref(shared) == "S1"
+    for said in ("approve P1", "approve S10", "approve S1.2", "approve S1,200"):
+        out = json.loads(tools.handle(store, tools.REVIEW, {"action": "approve", "id": "S1"},
+                                      route_tier=PRIVATE, provenance=lambda: ASSISTANT,
+                                      user_message=said))
+        assert not out["ok"] and store.get(shared.id).status == PENDING
+    out = json.loads(tools.handle(store, tools.REVIEW, {"action": "approve", "id": "S1"},
+                                  route_tier=PRIVATE, provenance=lambda: ASSISTANT,
+                                  user_message="approve S1"))
+    assert out["ok"] and store.get(shared.id).status == ACTIVE
+
+
+def test_shared_route_private_reference_guess_matches_missing(store):
+    private = store.add("Likes blue kites", PRIVATE, USER, status=PENDING, pending_reason="Review this.")
+    assert display_ref(private) == "P1"
+    for action in ("approve", "reject", "keep", "keep_both"):
+        def choice(token):
+            return json.loads(tools.handle(store, tools.REVIEW, {"action": action, "id": token},
+                                           route_tier=SHARED, provenance=lambda: ASSISTANT,
+                                           user_message=f"{action} {token}"))
+        assert choice("P1")["error"].replace("P1", "P?") == choice("P999")["error"].replace("P999", "P?")

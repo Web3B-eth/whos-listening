@@ -1,7 +1,7 @@
 """The command line. All data is made up."""
 
 from whos_listening import cli
-from whos_listening.store import Provenance, SQLiteStore
+from whos_listening.store import Provenance, SQLiteStore, display_ref
 
 
 def test_cli_runs_commands_and_purges(tmp_path, capsys):
@@ -10,10 +10,10 @@ def test_cli_runs_commands_and_purges(tmp_path, capsys):
     store.close()
     assert cli.main(["--home", str(tmp_path)]) == 0
     assert "peanut" in capsys.readouterr().out          # the owner sees Private text
-    assert cli.main(["--home", str(tmp_path), "purge", str(m.id)]) == 0
+    assert cli.main(["--home", str(tmp_path), "purge", display_ref(m)]) == 0
     assert "Forget memory" in capsys.readouterr().out   # forget first
-    cli.main(["--home", str(tmp_path), "forget", str(m.id)])
-    cli.main(["--home", str(tmp_path), "purge", str(m.id)])
+    cli.main(["--home", str(tmp_path), "forget", display_ref(m)])
+    cli.main(["--home", str(tmp_path), "purge", display_ref(m)])
     output = capsys.readouterr().out
     assert "Purged" in output and "record was removed" in output and "Old bytes may remain" in output
     cli.main(["--home", str(tmp_path), "add", "shared", "Likes jazz, a lot"])

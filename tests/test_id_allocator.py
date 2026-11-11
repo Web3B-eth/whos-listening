@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from whos_listening import tools
-from whos_listening.store import ACTIVE, PRIVATE, SHARED, Provenance, SQLiteStore
+from whos_listening.store import ACTIVE, PRIVATE, SHARED, Provenance, SQLiteStore, display_ref
 
 
 USER = Provenance(written_by="user", via="test")
@@ -34,7 +34,7 @@ def test_private_guess_consumes_one_claim_before_shared_marker(tmp_path, prior):
     store.close()
 
 
-def test_shared_only_private_preference_and_proposal_each_claim_once(tmp_path):
+def test_shared_attempt_reserves_display_number_on_both_gateway_types(tmp_path):
     for shared_only in (True, False):
         store = SQLiteStore(tmp_path / f"mode-{shared_only}.sqlite")
         old = store.add(FACT, PRIVATE, USER)
@@ -42,7 +42,9 @@ def test_shared_only_private_preference_and_proposal_each_claim_once(tmp_path):
         assert out["ok"]
         marker = store.add("Collects stamps", SHARED, USER)
         assert marker.id == old.id + 2
-        assert len(store.consent_proposals()) == (0 if shared_only else 1)
+        assert display_ref(marker) == "S2"
+        flagged = [m for m in store.list(statuses=(ACTIVE,), tiers=(PRIVATE,)) if m.sharing_approval_needed]
+        assert len(flagged) == (0 if shared_only else 1)
         store.close()
 
 
@@ -55,7 +57,7 @@ def test_claim_precedes_duplicate_judge_even_if_another_save_finishes_first(stor
         return None
 
     out = remember(store, "Plays chess on Sundays", route=PRIVATE, judge=judge)
-    assert inserted[0].id == 3 and out["saved"]["id"] == 2
+    assert inserted[0].id == 3 and out["saved"]["id"] == "P2"
 
 
 def test_invalid_or_publicly_refused_attempt_does_not_claim(store):

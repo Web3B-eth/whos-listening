@@ -9,7 +9,7 @@ import pytest
 from test_sync import FakeFile
 from whos_listening import commands, resolve, sync, tools
 from whos_listening import settings as ws
-from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError
+from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError, display_ref
 
 USER = Provenance(written_by="user", via="test")
 
@@ -32,7 +32,7 @@ def test_review_approve_pending_save_keeps_save_when_forget_is_requested(store):
     waiting = review(store, "list")["waiting"]
     assert len(waiting) == 1 and waiting[0]["kind"] == "save"
     assert waiting[0]["forget_requested"] is True
-    out = review(store, "approve", id=held.id, said=f"Approve the pending save {held.id}")
+    out = review(store, "approve", id=display_ref(held), said=f"Approve the pending save {display_ref(held)}")
     assert out["ok"] and out["status"] == ACTIVE
     assert not store.get(held.id).forget_reason and not store.is_forgotten_text(held.text)
 
@@ -40,7 +40,7 @@ def test_review_approve_pending_save_keeps_save_when_forget_is_requested(store):
 def test_review_reject_pending_save_rejects_save_when_forget_is_requested(store):
     held = store.add("Likes puzzles", SHARED, USER, status=PENDING, pending_reason="Outside content.")
     store.request_forget(held.id, "A forget was suggested.")
-    out = review(store, "reject", id=held.id, said=f"Reject the pending save {held.id}")
+    out = review(store, "reject", id=display_ref(held), said=f"Reject the pending save {display_ref(held)}")
     assert out["ok"] and out["status"] == FORGOTTEN
     assert store.is_forgotten_text(held.text)
 
@@ -112,7 +112,7 @@ BIKE2 = "Bought a Santa Cruz Hightower mountain bike"
 def test_a_private_save_that_repeats_a_shared_memory_is_skipped(store):
     shared = store.add(BIKE, SHARED, USER)
     out = save(store, BIKE2)
-    assert out["duplicate"]["id"] == shared.id and store.count() == 1
+    assert out["duplicate"]["id"] == display_ref(shared) and store.count() == 1
 
 
 def test_a_shared_save_over_a_private_memory_is_flagged_for_the_user_by_default(store):
@@ -121,7 +121,7 @@ def test_a_shared_save_over_a_private_memory_is_flagged_for_the_user_by_default(
     new = store.get(out["saved"]["id"])
     assert new.status == ACTIVE and new.duplicate_of == private.id and new.tier == SHARED
     assert new.pending_reason == ""                               # the pair never goes into a reason
-    assert f"private memory #{private.id}" in out["note"] and "whos-listening_review" in out["note"]
+    assert f"private memory {display_ref(private)}" in out["note"] and "whos-listening_review" in out["note"]
     assert [(i.kind, i.memory.id, [m.id for m in i.others]) for i in resolve.items(store)] == \
         [("duplicate", private.id, [new.id])]
 
@@ -139,7 +139,7 @@ def test_a_shared_route_never_learns_of_the_private_memory(tmp_path):
 def test_the_shared_setting_replaces_the_private_memory(store):
     private = store.add(BIKE, PRIVATE, USER)
     out = save(store, BIKE2, tier=SHARED, setting="shared")
-    assert out["saved"]["tier"] == SHARED and f"replaced private memory #{private.id}" in out["note"]
+    assert out["saved"]["tier"] == SHARED and f"replaced private memory {display_ref(private)}" in out["note"]
     assert store.get(private.id).status == FORGOTTEN
 
 
@@ -153,13 +153,13 @@ def test_the_shared_setting_still_waits_when_the_chat_holds_saves(store):
 def test_the_private_setting_keeps_the_private_memory(store):
     private = store.add(BIKE, PRIVATE, USER)
     out = save(store, BIKE2, tier=SHARED, setting="private")
-    assert out["duplicate"]["id"] == private.id and store.count(statuses=(ACTIVE, PENDING)) == 1
+    assert out["duplicate"]["id"] == display_ref(private) and store.count(statuses=(ACTIVE, PENDING)) == 1
 
 
 def test_a_shared_save_checks_shared_memories_first_and_asks_the_judge_both(store):
     shared = store.add(BIKE, SHARED, USER)
     store.add(BIKE + " now", PRIVATE, USER)
-    assert save(store, BIKE2, tier=SHARED)["duplicate"]["id"] == shared.id
+    assert save(store, BIKE2, tier=SHARED)["duplicate"]["id"] == display_ref(shared)
     seen = []
     assert save(store, "Speaks French", tier=SHARED, judge=lambda t, tiers: seen.append(tiers))["saved"]
     assert seen == [(SHARED, PRIVATE)]
@@ -175,7 +175,7 @@ def test_a_flagged_save_held_for_outside_content_keeps_its_own_reason(store):
     assert new.duplicate_of == private.id and "web_extract" in new.pending_reason and len(started) == 1
     assert "#" + str(private.id) not in new.pending_reason
     review_text = commands.cmd_review(store, True)
-    assert f"#{new.id} also waits because:" in review_text           # the hold is never hidden by the pair
+    assert f"{display_ref(new)} also waits because:" in review_text           # the hold is never hidden by the pair
 
 
 def test_the_setting(tmp_path):
@@ -214,7 +214,7 @@ def test_two_saves_flagged_against_one_memory_are_one_group(store):
     other = store.add("Got a Santa Cruz Hightower last spring", SHARED, USER, duplicate_of=private.id)
     groups = resolve.items(store)
     assert len(groups) == 1 and [m.id for m in groups[0].others] == [new.id, other.id]
-    assert f"/memories keep {private.id}  ·  /memories keep {new.id}  ·  /memories keep {other.id}" in \
+    assert f"/memories keep {display_ref(private)}  ·  /memories keep {display_ref(new)}  ·  /memories keep {display_ref(other)}" in \
         commands.cmd_review(store, True)
     resolve.keep(store, new.id, show_private=True)                  # keeping one of the new ones...
     assert store.get(private.id).status == FORGOTTEN
@@ -228,7 +228,7 @@ def test_keep_both_and_approve_clear_the_flag(store):
     private2 = store.add("Has a dog named Max", PRIVATE, USER)
     new2 = store.get(save(store, "My dog is named Max", tier=SHARED)["saved"]["id"])
     store.set_status(new2.id, PENDING, pending_reason="It came after a web page.")
-    commands.cmd_approve(store, str(new2.id), True)
+    commands.cmd_approve(store, display_ref(new2), True)
     assert store.get(new2.id).duplicate_of == 0 and resolve.items(store) == []
     assert private2.id
 
@@ -250,11 +250,11 @@ def test_the_review_command(store):
     private, new = _pair(store)
     held = store.add("Likes tea", PRIVATE, USER, status=PENDING, pending_reason="It came after a web page.")
     out = commands.run(store, "review", show_private=True)
-    assert "These may say the same thing" in out and f"/memories keep {new.id}" in out
-    assert f"keep all: /memories keep both {new.id}" in out and f"/memories approve {held.id}" in out
-    assert "keep 41" in out
-    out = commands.run(store, f"keep {new.id}", show_private=True)
-    assert out.startswith("Kept") and f"Forgot #{private.id}" in out
+    assert "These may say the same thing" in out and f"/memories keep {display_ref(new)}" in out
+    assert f"keep all: /memories keep both {display_ref(new)}" in out and f"/memories approve {display_ref(held)}" in out
+    assert "keep S3" in out
+    out = commands.run(store, f"keep {display_ref(new)}", show_private=True)
+    assert out.startswith("Kept") and f"Forgot {display_ref(private)}" in out
     assert "Nothing is waiting" not in commands.run(store, "review", show_private=True)     # tea still waits
     assert "Say which one" in commands.run(store, "keep", show_private=True)
 
@@ -263,10 +263,10 @@ def test_the_review_command(store):
 
 def test_a_choice_needs_the_number_in_the_users_own_message(store):
     private, new = _pair(store)
-    out = review(store, "keep", id=new.id, said="keep the new one")
+    out = review(store, "keep", id=display_ref(new), said="keep the new one")
     assert out["ok"] is False and "doesn't name" in out["error"] and store.get(private.id).status == ACTIVE
-    out = review(store, "keep", id=new.id, said=f"ok let's keep new {new.id} and remove old number {private.id}")
-    assert out["ok"] and out["forgotten"] == [private.id] and store.get(new.id).status == ACTIVE
+    out = review(store, "keep", id=display_ref(new), said=f"ok let's keep new {display_ref(new)} and remove old number {display_ref(private)}")
+    assert out["ok"] and out["forgotten"] == [display_ref(private)] and store.get(new.id).status == ACTIVE
 
 
 def test_names_number():
@@ -281,7 +281,7 @@ def test_the_tool_lists_and_hides_private_pairs_on_a_shared_route(store):
     store.add("Likes jazz", SHARED, USER, status=PENDING, pending_reason="It came after a web page.")
     out = review(store, "list")
     assert [w["kind"] for w in out["waiting"]] == ["duplicate", "save"]
-    assert out["waiting"][0]["memories"][0]["line"].startswith(f"- #{private.id} <wl-private")   # tagged
+    assert out["waiting"][0]["memories"][0]["line"].startswith(f"- {display_ref(private)} <wl-private")   # tagged
     shared_view = review(store, "list", route=SHARED)
     assert [w["kind"] for w in shared_view["waiting"]] == ["save"] and "private_omitted" not in shared_view
 
@@ -291,7 +291,7 @@ def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
         s = SQLiteStore(tmp_path / f"{flag}.sqlite")
         s.add(BIKE if flag else "Likes tea", PRIVATE, USER)
         out = save(s, BIKE2, tier=SHARED, route=SHARED)
-        new_id = s.list(tiers=(SHARED,), limit=5)[0].id
+        new_id = display_ref(s.list(tiers=(SHARED,), limit=5)[0])
         said = f"keep {new_id}"
         got = (out, review(s, "list", route=SHARED), review(s, "all", route=SHARED)["private_omitted"],
                review(s, "keep", id=new_id, said=said, route=SHARED), review(s, "keep_both", id=new_id, said=said,
@@ -304,11 +304,11 @@ def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
 
 def test_the_tool_approves_and_rejects_with_the_number(store):
     held = store.add("Likes jazz", SHARED, USER, status=PENDING, pending_reason="r")
-    assert review(store, "approve", id=held.id, said="yes")["ok"] is False
-    assert review(store, "approve", id=held.id, said=f"yes, save {held.id}")["status"] == ACTIVE
+    assert review(store, "approve", id=display_ref(held), said="yes")["ok"] is False
+    assert review(store, "approve", id=display_ref(held), said=f"yes, save {display_ref(held)}")["status"] == ACTIVE
     p = store.add("Likes tea", PRIVATE, USER, status=PENDING, pending_reason="r")
     for action in ("approve", "reject"):
-        out = review(store, action, id=p.id, said=f"{action} {p.id}", route=SHARED)
+        out = review(store, action, id=display_ref(p), said=f"{action} {display_ref(p)}", route=SHARED)
         assert out["ok"] is False and store.get(p.id).status == PENDING     # Private, on a Shared route: untouched
     assert store.events(memory_id=held.id, limit=1)[0].actor == "assistant"
 

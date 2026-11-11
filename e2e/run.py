@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from whos_listening.store import Provenance, SQLiteStore, fingerprint  # noqa: E402
+from whos_listening.store import Provenance, SQLiteStore, fingerprint, display_ref  # noqa: E402
 
 PRIVATE_TEXT = "Keeps a vegetarian diet on weekdays"
 SHARED_TEXT = "Likes spicy food"
@@ -260,7 +260,7 @@ def main() -> int:
     store = SQLiteStore(data / "memories.sqlite")
     seed = Provenance(written_by="user", via="e2e seed")
     store.add(PRIVATE_TEXT, "private", seed)
-    shared_id = store.add(SHARED_TEXT, "shared", seed).id
+    shared_ref = display_ref(store.add(SHARED_TEXT, "shared", seed))
     store.close()
 
     log = home / "requests.jsonl"
@@ -310,15 +310,14 @@ def main() -> int:
         run.check("shared route: no Private memory in any request", not has(reqs, PRIVATE_WORD))
         run.check("shared route: carries the Shared memory", has(main_requests(reqs), SHARED_WORD))
 
-        # 4. Forget through the tool. A later assistant Shared suggestion is held before the
+        # 4. Forget through the tool. A later assistant Shared suggestion is screened before the
         #    Private-capable gateway checks duplicates or tombstones; it cannot revive the fact.
-        _, reqs = run.chat(f'Please forget that. [[call whos-listening_forget {{"id": {shared_id}}}]]',
+        _, reqs = run.chat(f'Please forget that. [[call whos-listening_forget {{"id": "{shared_ref}"}}]]',
                            provider="private-sim", model="private-model")
         run.check("forget: tool ran", has(reqs, "won't be saved again"))
         _, reqs = run.chat(f'Remember this. [[call whos-listening_remember {{"text": "{SHARED_TEXT.lower()}", "tier": "shared"}}]]',
                            provider="private-sim", model="private-model")
-        run.check("forget: Shared re-save waits without revealing the tombstone",
-                  has(reqs, "Sharing waits for your direct choice") and not has(reqs, "forgotten at the user"))
+        run.check("forget: Shared re-save is blocked by its tombstone", has(reqs, "forgotten"))
         store = SQLiteStore(data / "memories.sqlite")
         active = [m.text for m in store.list()]
         tombstone_still_here = store.is_forgotten_text(SHARED_TEXT)
@@ -349,7 +348,7 @@ def main() -> int:
         # 7. /memories in the chat, then the CLI approves the planted memory.
         out = run.command("/memories pending")
         run.check("/memories pending lists it", PLANTED_TEXT in out and "read_file" in out, out[-200:])
-        out = run.cli(["approve", str(pending[0].id)])
+        out = run.cli(["approve", display_ref(pending[0])])
         run.check("cli: approve", "Saved" in out, out.strip())
         _, reqs = run.chat("Where should I sit on the plane?", provider="private-sim", model="private-model")
         run.check("approved: now recalled", has(main_requests(reqs), "window seats"))
@@ -374,12 +373,12 @@ def main() -> int:
         run.check("auto-review: the check ran on the chat's own model",
                   bool(check_reqs) and all(r["model"] == "private-model" for r in check_reqs))
 
-        # 8b. An assistant's Shared suggestion stays hidden until the user chooses its audience
-        #     in the local slash command. A possible Private original stays in place.
+        # 8b. Explicit permission in the user's own words allows a checked Shared save.
+        #     A near Private original stays in place for the ordinary duplicate review.
         store = SQLiteStore(data / "memories.sqlite")
         private_id = next(m.id for m in store.list() if m.text == PRIVATE_TEXT)
         store.close()
-        _, reqs = run.chat('Remember this, any model may see it. [[call whos-listening_remember '
+        _, reqs = run.chat('Keeps a vegetarian diet on all weekdays. Any model may see this. [[call whos-listening_remember '
                            '{"text": "Keeps a vegetarian diet on all weekdays", "tier": "shared"}]]',
                            provider="private-sim", model="private-model")
         offered = [sorted(t.get("function", {}).get("name", "") for t in json.loads(r["text"]).get("tools") or [])
@@ -388,27 +387,12 @@ def main() -> int:
                   bool(offered) and all({f"whos-listening_{x}" for x in ("remember", "recall", "forget", "review")}
                                         <= set(names) for names in offered),
                   str([n for n in (offered[0] if offered else []) if n.startswith(("whos", "tool_"))]))
-        proposal_store = SQLiteStore(data / "memories.sqlite")
-        try:
-            proposals = proposal_store.consent_proposals()
-            proposal = next((m for m in proposals if m.text == "Keeps a vegetarian diet on all weekdays"), None)
-            token = f"P{proposal.id}@{proposal.order_key}" if proposal else ""
-        finally:
-            proposal_store.close()
-        run.check("shared audience: proposal is held without a Private-match reply",
-                  bool(proposal) and has(reqs, "Sharing waits for your direct choice")
-                  and not has(reqs, f"private memory #{private_id}"))
-        preview = run.command("/memories share")
-        run.check("shared audience: local preview shows both facts and audience",
-                  bool(token) and token in preview and "Shared: any model may see it" in preview
-                  and PRIVATE_TEXT in preview)
-        decision = run.command(f"/memories share keep-both {token}") if token else ""
         approved = [m for m in memories_in(data, tiers=("shared",), statuses=("active",))
                     if m.text == "Keeps a vegetarian diet on all weekdays"]
-        run.check("shared audience: explicit keep-both preserves Private original",
-                  "Approved Shared" in decision and bool(approved)
-                  and any(m.id == private_id and m.status == "active" for m in memories_in(data, tiers=("private",))),
-                  decision.strip()[-160:])
+        run.check("shared audience: checked permission saves Shared and preserves near Private original",
+                  bool(approved) and any(m.id == private_id and m.status == "active"
+                                         for m in memories_in(data, tiers=("private",))),
+                  str([display_ref(m) for m in approved]))
 
         # 9. Sync between gateways: a second gateway (B) and a fake GitHub. Only Shared memories
         #    and forgets travel; an arrival passes the rule screen; a Shared change pushes by itself.
@@ -457,7 +441,7 @@ def main() -> int:
         _, reqs = run_b.chat(QUESTION, provider="private-sim", model="private-model")
         run.check("sync: B's chat recalls the synced memory", has(main_requests(reqs), SYNC_WORD))
 
-        run_b.command(f"/memories forget {b_active[SYNC_TEXT].id}")
+        run_b.command(f"/memories forget {display_ref(b_active[SYNC_TEXT])}")
         run_b.command("/memories sync")
         run.check("sync: a forget travels without its text", SYNC_TEXT not in written_files(gh_log)[-1])
         run.command("/memories sync")

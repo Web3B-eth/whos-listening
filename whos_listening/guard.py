@@ -54,8 +54,8 @@ def _walk(obj: Any, fn: Callable[[str], str], on_dict: Optional[Callable[[dict],
 
 
 def _redact_args(name: str, args: Any) -> Any:
-    """``args`` with the model's own words taken out: a Private ``whos-listening_remember`` text, and any
-    ``whos-listening_recall`` query (it may name a Private fact). Unreadable arguments are dropped."""
+    """Remove replayed remember text regardless of requested tier: a Shared request may have
+    fallen back to Private. Recall queries may also name a Private fact."""
     if isinstance(args, str):
         try:
             parsed = json.loads(args) if args.strip() else {}
@@ -66,7 +66,7 @@ def _redact_args(name: str, args: Any) -> Any:
     if not isinstance(args, dict):
         return {"text": WITHHELD} if name == REMEMBER else {"query": ""}
     out = dict(args)
-    if name == REMEMBER and str(out.get("tier") or PRIVATE).strip().lower() != SHARED and "text" in out:
+    if name == REMEMBER and "text" in out:
         out["text"] = WITHHELD
     if name == RECALL and out.get("query"):
         out["query"] = ""

@@ -1,7 +1,7 @@
 import json
 
 from whos_listening import guard, tools
-from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance, SQLiteStore
+from whos_listening.store import FORGOTTEN, PRIVATE, SHARED, Provenance, SQLiteStore, display_ref
 
 
 def call(store, name, args, route_tier):
@@ -23,7 +23,7 @@ def test_remember_defaults_to_private(store):
 
 def test_remember_private_on_shared_route_does_not_echo(store):
     r = call(store, tools.REMEMBER, {"text": "Is training for a 10k"}, SHARED)
-    assert r["ok"] and "line" not in r["saved"] and r["note"]
+    assert r["ok"] and "line" not in r["private"] and r["note"]
 
 
 def test_recall_withholds_private_on_shared_route(store):
@@ -94,9 +94,9 @@ def test_shared_route_cannot_forget_private_or_distinguish_missing_id(store, tmp
     try:
         for outside in ("", "read_file"):
             for m in (active, pending):
-                hidden = json.loads(tools.handle(store, tools.FORGET, {"id": m.id}, route_tier=SHARED,
+                hidden = json.loads(tools.handle(store, tools.FORGET, {"id": display_ref(m)}, route_tier=SHARED,
                                                  provenance=lambda: Provenance(), outside_tool=outside))
-                missing = json.loads(tools.handle(empty, tools.FORGET, {"id": m.id}, route_tier=SHARED,
+                missing = json.loads(tools.handle(empty, tools.FORGET, {"id": display_ref(m)}, route_tier=SHARED,
                                                   provenance=lambda: Provenance(), outside_tool=outside))
                 assert hidden == missing
                 assert store.get(m.id).status == m.status and not store.get(m.id).forget_reason
@@ -104,7 +104,7 @@ def test_shared_route_cannot_forget_private_or_distinguish_missing_id(store, tmp
     finally:
         empty.close()
     shared = store.add("Likes tea", SHARED, Provenance())
-    assert call(store, tools.FORGET, {"id": shared.id}, SHARED)["ok"]
+    assert call(store, tools.FORGET, {"id": display_ref(shared)}, SHARED)["ok"]
 
 
 def test_bad_input_returns_error_json(store):
@@ -149,9 +149,9 @@ def test_rule_screen_holds_even_without_outside_content(store):
 
 def test_forget_after_outside_content_waits(store):
     m = store.add("Likes jazz", "shared", Provenance())
-    out = json.loads(tools.handle(store, "whos-listening_forget", {"id": m.id}, route_tier="private",
+    out = json.loads(tools.handle(store, "whos-listening_forget", {"id": display_ref(m)}, route_tier="private",
                                   provenance=lambda: Provenance(), outside_tool="web_extract"))
-    assert out["forget_requested"] == {"id": m.id}
+    assert out["forget_requested"] == {"id": display_ref(m)}
     assert store.get(m.id).status == "active" and store.get(m.id).forget_reason
 
 
@@ -159,9 +159,9 @@ def test_pending_forget_after_outside_content_waits_without_tombstone(store):
     for tier, route in ((PRIVATE, PRIVATE), (SHARED, SHARED)):
         m = store.add(f"Likes {tier} puzzles", tier, Provenance(), status="pending",
                       pending_reason="This save waits for review.")
-        out = json.loads(tools.handle(store, tools.FORGET, {"id": m.id}, route_tier=route,
+        out = json.loads(tools.handle(store, tools.FORGET, {"id": display_ref(m)}, route_tier=route,
                                       provenance=lambda: Provenance(), outside_tool="read_file"))
-        assert out["forget_requested"] == {"id": m.id}
+        assert out["forget_requested"] == {"id": display_ref(m)}
         assert store.get(m.id).status == "pending" and store.get(m.id).forget_reason
         assert not store.is_forgotten_text(m.text)
 

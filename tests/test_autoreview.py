@@ -29,7 +29,7 @@ def test_check_says_no_without_user_words_or_on_error():
     def boom(_):
         raise TimeoutError
     v = autoreview.check("x", ["hi"], boom)
-    assert v == autoreview.Verdict(False, "The check could not run.")
+    assert v == autoreview.Verdict(False, "The check could not run.", answered=False)
     assert autoreview.check("x", ["hi"], lambda p: '{"save": true, "reason": "ok"}').save is True
 
 
@@ -39,3 +39,14 @@ def test_data_cannot_fake_our_markers():
     assert prompt.count("<<memory>>") == 1 and prompt.count("<</memory>>") == 1
     assert prompt.count("<<user-messages>>") == 1 and prompt.count("<</user-messages>>") == 1
     assert "\u200b" not in prompt
+
+
+def test_shared_check_requires_a_separate_explicit_sharing_verdict():
+    prompt = autoreview.build_prompt("Likes jazz", ["Remember that I like jazz"], "shared")
+    assert "Target tier: shared" in prompt
+    assert "'Remember this' alone is not permission" in prompt
+    assert '"share": true or false' in prompt
+    assert not autoreview.parse_verdict('{"save": true}', "shared").share
+    accepted = autoreview.parse_verdict('{"save": true, "share": true}', "shared")
+    assert accepted.save and accepted.share
+    assert not autoreview.parse_verdict('{"save": false, "share": true}', "shared").share

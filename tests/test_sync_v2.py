@@ -6,7 +6,7 @@ import pytest
 
 from test_sync import FakeFile
 from whos_listening import commands, order, sync
-from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, fingerprint
+from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, fingerprint, display_ref
 
 
 USER = Provenance(written_by="user", via="test")
@@ -32,7 +32,7 @@ def test_undo_approved_shared_withdraws_one_uid_and_reapproval_wins(tmp_path):
     try:
         m = a.add(FACT, SHARED, USER, status=PENDING, pending_reason="Review first.")
         a.log_event(m.id, "held", "assistant")
-        assert "Saved" in commands.cmd_approve(a, str(m.id), True)
+        assert "Saved" in commands.cmd_approve(a, display_ref(m), True)
         sync.sync_once(a, file, "a")
         sync.sync_once(b, file, "b")
         other = b.add(FACT, SHARED, USER)
@@ -53,7 +53,7 @@ def test_undo_approved_shared_withdraws_one_uid_and_reapproval_wins(tmp_path):
         assert b.get(other.id).status == ACTIVE and b.get(private.id).status == ACTIVE
         sync.sync_once(b, file, "b")
         assert file.doc()["memories"][m.uid]["status"] == sync.WITHDRAWN
-        assert "Saved" in commands.cmd_approve(a, str(m.id), True)
+        assert "Saved" in commands.cmd_approve(a, display_ref(m), True)
         assert int(a.get(m.id).order_key) > int(withdrawal.order_key)
         sync.sync_once(a, file, "a")
         assert file.doc()["memories"][m.uid]["status"] == ACTIVE
@@ -285,7 +285,7 @@ def test_max_legacy_pending_approval_and_forget_restore(tmp_path):
         assert sync.sync_once(s, file, "s").held == 1
         pending = s.by_uid(uid)
         assert pending.status == PENDING
-        assert "Saved" in commands.cmd_approve(s, str(pending.id), True)
+        assert "Saved" in commands.cmd_approve(s, display_ref(pending), True)
         assert int(s.by_uid(uid).order_key) > int(pending.order_key)
         sync.sync_once(s, file, "s")
         assert file.doc()["memories"][uid]["status"] == ACTIVE
@@ -328,7 +328,7 @@ def test_withdrawal_before_first_upload_and_restart(tmp_path):
     try:
         m = s.add(FACT, SHARED, USER, status=PENDING, pending_reason="Review first.")
         s.log_event(m.id, "held", "assistant")
-        commands.cmd_approve(s, str(m.id), True)
+        commands.cmd_approve(s, display_ref(m), True)
         commands.cmd_undo(s, True)
         assert s.get(m.id).status == PENDING
         s.close()
@@ -406,7 +406,7 @@ def test_pending_row_approval_advances_beyond_newer_observed_head(tmp_path):
         sync.sync_once(s, file, "s")
         assert s.by_uid(uid).status == PENDING
         assert s.by_uid(uid).order_key == first
-        commands.cmd_approve(s, str(pending.id), True)
+        commands.cmd_approve(s, display_ref(pending), True)
         assert int(s.by_uid(uid).order_key) > int(later)
         sync.sync_once(s, file, "s")
         assert int(file.doc()["memories"][uid]["order"]) > int(later)
@@ -460,7 +460,7 @@ def test_withdrawn_pending_peer_stays_pending_and_local_rejection_keeps_marker(t
         fact = "Visits https://example.com for puzzles"
         m = a.add(fact, SHARED, USER, status=PENDING, pending_reason="Review first.")
         a.log_event(m.id, "held", "assistant")
-        commands.cmd_approve(a, str(m.id), True)
+        commands.cmd_approve(a, display_ref(m), True)
         sync.sync_once(a, file, "owner")
         sync.sync_once(b, file, "peer")
         assert b.by_uid(m.uid).status == PENDING
@@ -469,12 +469,12 @@ def test_withdrawn_pending_peer_stays_pending_and_local_rejection_keeps_marker(t
         sync.sync_once(b, file, "peer")
         assert b.by_uid(m.uid).status == PENDING
         assert b.withdrawal(m.uid) is not None
-        commands.cmd_reject(a, str(m.id), True)
+        commands.cmd_reject(a, display_ref(m), True)
         sync.sync_once(a, file, "owner")
         assert file.doc()["memories"][m.uid]["status"] == sync.WITHDRAWN
         commands.cmd_undo(a, True)
         assert a.get(m.id).status == PENDING and a.withdrawal(m.uid) is not None
-        commands.cmd_approve(a, str(m.id), True)
+        commands.cmd_approve(a, display_ref(m), True)
         sync.sync_once(a, file, "owner")
         sync.sync_once(b, file, "peer")
         assert file.doc()["memories"][m.uid]["status"] == ACTIVE

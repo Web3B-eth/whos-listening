@@ -61,7 +61,7 @@ def test_terminal_order_allows_genuine_forget_but_blocks_restore(tmp_path):
 
 def test_terminal_pending_approval_preserves_forget_request(tmp_path):
     from whos_listening import commands
-    from whos_listening.store import PENDING, Provenance, SQLiteStore, SHARED, StoreError
+    from whos_listening.store import PENDING, Provenance, SQLiteStore, SHARED, StoreError, display_ref
 
     s = SQLiteStore(tmp_path / "pending-terminal.sqlite")
     try:
@@ -70,7 +70,7 @@ def test_terminal_pending_approval_preserves_forget_request(tmp_path):
         s._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (str(order.MAX_VALUE), m.id))
         s._db.commit()
         with pytest.raises(StoreError, match="order limit"):
-            commands.cmd_approve(s, str(m.id), True)
+            commands.cmd_approve(s, display_ref(m), True)
         assert s.get(m.id).status == PENDING
         assert s.get(m.id).forget_reason == "Review this forget."
         assert not s.is_forgotten_text("Likes jazz")

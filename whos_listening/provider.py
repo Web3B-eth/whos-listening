@@ -298,6 +298,7 @@ class WhosListeningProvider(MemoryProvider):
                            private_refused=_private_refused(self._home()), shared_only=self._shared_only(),
                            outside_tool=self._outside_tool(str(kwargs.get("session_id") or "")),
                            on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
+                           check_sharing=self._check_sharing if tool_name == tools.REMEMBER else None,
                            judge=self._duplicate_judge(route, verdict) if tool_name == tools.REMEMBER else None,
                            tier_duplicates=self._tier_duplicates(),
                            user_message=self._turn_message,
@@ -362,6 +363,30 @@ class WhosListeningProvider(MemoryProvider):
         if self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
             return f"it checks at most {autoreview.CHECKS_PER_TURN} saves a turn", route
         return "", route
+
+    def _check_sharing(self, text: str) -> autoreview.Verdict:
+        """Check the candidate against the user's own words before any Shared write.
+
+        On a Shared route, only this turn's user text goes to the side call; older Private
+        turns and stored Private memories never enter its prompt.
+        """
+        route, verdict = self._route()
+        if route is None or not route.model or self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            return autoreview.Verdict(False, "The check could not run.", answered=False)
+        if verdict.tier == PRIVATE:
+            side = side_call_routes_private(_config(), _settings_or_none(self._dir))
+            if side.tier != PRIVATE:
+                return autoreview.Verdict(False, "The check could not run.", answered=False)
+            words = self._own_words()
+        else:
+            words = [self._turn_message] if self._turn_message else []
+        if not words:
+            return autoreview.Verdict(False, "The check found none of your words.", answered=False)
+        self._checks_this_turn += 1
+        return autoreview.check(text, words,
+                                lambda prompt: _ask_chat_model(prompt, route.model,
+                                                                purpose="whos-listening sharing check"),
+                                target_tier=SHARED)
 
     def _start_auto_review(self, memory: Memory) -> bool:
         """Check a held save in the background, on the chat's own model. Returns True if started;
@@ -477,20 +502,6 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if home is None:
         return "Who's Listening can't tell which Hermes profile this is."
     words = (raw_args or "").split()
-    if words and words[0].lower() == "share":
-        settings, _ = _load_settings(home)
-        if settings is None or _shared_only(home) or not commands.shows_private(platform, settings):
-            return "Sharing proposals are available only on a configured Private-capable platform."
-        path = home / DATA_DIR / DB_FILE
-        before = _stamp_at(path)
-        store = SQLiteStore(path)
-        try:
-            out = commands.cmd_share(store, " ".join(words[1:]))
-        finally:
-            store.close()
-        if _stamp_at(path) != before:
-            maybe_sync(home, force=True)
-        return out
     if words and words[0].lower() == "sync":
         return _sync_command(home, words[1].lower() if len(words) > 1 else "")
     if words and words[0].lower() == "settings":
@@ -510,7 +521,8 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     show_private = settings is not None and commands.shows_private(platform, settings)
     out = commands.open_and_run(lambda: SQLiteStore(store_path), raw_args,
                                 show_private=show_private,
-                                private_refused=_private_refused(home), shared_only=_shared_only(home))
+                                private_refused=_private_refused(home), shared_only=_shared_only(home),
+                                tier_duplicates=settings.tier_duplicates if settings is not None else "ask")
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)
     if not words or words[0].lower() in ("list", "pending"):
@@ -993,4 +1005,4 @@ def register_hooks(ctx) -> None:
     ctx.register_middleware("llm_request", _on_llm_request)
     ctx.register_command("memories", _memories_command,
                          description="Review what Who's Listening remembers: pending, approve, undo, forget, show",
-                         args_hint="[pending|approve N|reject N|undo|forget N|restore N|show N|add TEXT|sync|settings]")
+                         args_hint="[pending|approve Pn/Sn|reject Pn/Sn|undo|forget Pn/Sn|restore Pn/Sn|show Pn/Sn|add TEXT|sync|settings]")

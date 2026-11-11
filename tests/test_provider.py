@@ -8,6 +8,7 @@ import pytest
 
 from conftest import FAKE_VENICE
 from wl_helpers import load_plugin
+from whos_listening.store import display_ref
 
 
 @pytest.fixture(autouse=True)
@@ -293,7 +294,7 @@ def test_memories_command_through_hermes_dispatch(plugin, tmp_path, monkeypatch)
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     out = invoke_plugin_command(plugin._memories_command, "add shared Likes jazz",
                                 source="cli", session_id="s", session_key="k", platform="cli")
-    assert "Saved #1 [shared] Likes jazz" in out and out.startswith('<wl-private id="0">')
+    assert "Saved S1 [shared] Likes jazz" in out and out.startswith('<wl-private id="0">')
 
 
 def test_private_capable_command_reply_is_scrubbed_from_shared_replay(plugin, provider, monkeypatch):
@@ -438,7 +439,7 @@ def test_auto_review_on_a_shared_route_only_for_shared_memories(plugin, provider
     assert "memory is private" in held.pending_reason
     out = json.loads(provider.handle_tool_call("whos-listening_remember", {"text": "likes jazz", "tier": "shared"}))
     assert out["pending"]
-    assert len(provider._store.consent_proposals()) == 1
+    assert len(provider._store.list(statuses=("pending",), tiers=("private",))) == 2
     assert provider._store.search("jazz") == []
 
 
@@ -660,13 +661,12 @@ def test_only_a_shared_change_forces_a_sync(plugin, provider, monkeypatch):
     tool(provider, "whos-listening_recall", {"query": ""})
     assert calls == []
     tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
-    assert calls == []                              # a proposal is not published
+    assert calls == []                              # Private review is not published
     monkeypatch.setattr(plugin, "_active_home", lambda: Path(provider._store.path).parent.parent)
-    proposal = provider._store.consent_proposals()[0]
-    token = f"P{proposal.id}@{proposal.order_key}"
-    assert "Likes jazz" in plugin._memories_command("share", platform="desktop")
-    assert "Approved Shared" in plugin._memories_command(f"share approve {token}", platform="desktop")
-    assert calls == [True]
+    pending = [m for m in provider._store.list(statuses=("active",), tiers=("private",)) if m.text == "Likes jazz"][0]
+    assert "Likes jazz" in plugin._memories_command("review", platform="desktop")
+    assert "Approved sharing" in plugin._memories_command(f"approve {display_ref(pending)}", platform="desktop")
+    assert [c for c in calls if c] == [True]
 
 
 def test_undo_approved_shared_save_forces_withdrawal_sync(plugin, provider, monkeypatch):
@@ -677,40 +677,37 @@ def test_undo_approved_shared_save_forces_withdrawal_sync(plugin, provider, monk
     m = provider._store.add("Likes jazz", "shared", plugin.Provenance(written_by="user"),
                             status="pending", pending_reason="Review first.")
     provider._store.log_event(m.id, "held", "assistant")
-    assert "Saved" in plugin._memories_command(f"approve {m.id}", platform="cli")
+    assert "Saved" in plugin._memories_command(f"approve {display_ref(m)}", platform="cli")
     assert "waiting for you again" in plugin._memories_command("undo", platform="cli")
     assert provider._store.withdrawal(m.uid) is not None
     assert calls == [False, True, False, True]
 
 
-def test_sharing_proposal_uses_local_slash_and_is_scrubbed_on_shared_replay(plugin, provider, monkeypatch):
+def test_private_sharing_review_is_scrubbed_on_shared_replay(plugin, provider, monkeypatch):
     home = Path(provider._store.path).parent.parent
     monkeypatch.setattr(plugin, "_active_home", lambda: home)
     see(plugin, "http://127.0.0.1:9/v1")
     result = tool(provider, "whos-listening_remember", {"text": "Likes <blue> puzzles", "tier": "shared"})
-    assert result == {"ok": True, "pending": {"tier": "shared"},
-                     "note": "Sharing waits for your direct choice on a Private-capable platform: /memories share."}
-    proposal = provider._store.consent_proposals()[0]
-    token = f"P{proposal.id}@{proposal.order_key}"
-    assert "Private-capable platform" in plugin._memories_command("share", platform="telegram")
-    preview = plugin._memories_command("share", platform="desktop")
-    assert "Likes ‹blue› puzzles" in preview and token in preview
+    assert result["saved"]["tier"] == "private"
+    pending = provider._store.list(statuses=("active",), tiers=("private",))[0]
+    assert "puzzles" not in plugin._memories_command("review", platform="telegram")
+    preview = plugin._memories_command("review", platform="desktop")
+    assert "Likes ‹blue› puzzles" in preview and display_ref(pending) in preview
     cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": preview}]}, "shared")
     assert cleaned is not None and "puzzles" not in cleaned["messages"][0]["content"]
-    assert "Approved Shared" in plugin._memories_command(f"share approve {token}", platform="desktop")
+    assert "Approved sharing" in plugin._memories_command(f"approve {display_ref(pending)}", platform="desktop")
     assert provider._store.search("puzzles", tiers=("shared",))
 
 
-def test_sharing_approval_rechecks_gateway_settings(plugin, provider, monkeypatch):
+def test_numbered_sharing_approval_rechecks_gateway_settings(plugin, provider, monkeypatch):
     home = Path(provider._store.path).parent.parent
     monkeypatch.setattr(plugin, "_active_home", lambda: home)
     see(plugin, "http://127.0.0.1:9/v1")
     tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
-    p = provider._store.consent_proposals()[0]
-    token = f"P{p.id}@{p.order_key}"
+    p = provider._store.list(statuses=("active",), tiers=("private",))[0]
     (home / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
-    assert "Private-capable platform" in plugin._memories_command(f"share approve {token}", platform="desktop")
-    assert provider._store.get(p.id).audience_consent_required
+    assert "Private-capable gateway" in plugin._memories_command(f"approve {display_ref(p)}", platform="desktop")
+    assert provider._store.get(p.id).sharing_approval_needed
 
 
 # -- settings from Hermes (Desktop's plugin form) and the hosted default -----------------------
@@ -1020,7 +1017,8 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
 
         def complete(self, **kw):
             calls.append(kw)
-            return type("R", (), {"text": f'{{"repeats": {first["id"]}}}', "model": FakeLlm.model})()
+            internal = provider._store.resolve_reference(first["id"]).id
+            return type("R", (), {"text": f'{{"repeats": {internal}}}', "model": FakeLlm.model})()
 
     import agent.plugin_llm as pl
     monkeypatch.setattr(pl, "PluginLlm", FakeLlm)
@@ -1035,17 +1033,18 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
 def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin, provider, monkeypatch):
     see(plugin, "http://127.0.0.1:9/v1")
     private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
-    new_id = owner_shared(plugin, provider, "Bought a Santa Cruz Hightower mountain bike",
-                          duplicate_of=private.id).id
+    new = owner_shared(plugin, provider, "Bought a Santa Cruz Hightower mountain bike",
+                       duplicate_of=private.id)
+    new_id = display_ref(new)
     provider.on_turn_start(1, "let's review your memories")
     assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
     assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False
-    provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {private.id}")
+    provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {display_ref(private)}")
     provider.on_turn_start(3, {"image": "made-up"})                 # not words: the last turn's don't count
     assert "doesn't name" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
-    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {private.id}")
+    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {display_ref(private)}")
     out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
-    assert out["ok"] and out["forgotten"] == [private.id]
+    assert out["ok"] and out["forgotten"] == [display_ref(private)]
 
 
 def test_review_tool_exports_into_the_profile(plugin, provider, tmp_path):
