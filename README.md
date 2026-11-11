@@ -61,7 +61,7 @@ To stop using it, run `hermes memory off` (and `hermes plugins remove whos-liste
 
 - **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request, and, if you set up [sync](#sync-between-gateways), your Shared memories.
 - **Three layers, all must be Private.** A request may carry Private memories only if every layer is Private. Each is your call in [Settings](#settings):
-  - **Gateway:** the machine running Hermes, which stores the memories and builds every prompt. Private by default. Set it to Shared where you don't trust the machine (for example Hermes Cloud, or a server someone else runs); a Shared gateway also keeps no Private memories: `whos-listening_remember` and `/memories add` refuse Private saves there. See [Where the backend runs](#where-the-backend-runs).
+  - **Gateway:** the machine running Hermes, which stores the memories and builds every prompt. Private by default. Set it to Shared where you don't trust the machine (for example Hermes Cloud, or a server someone else runs); a Shared gateway also keeps no Private memories. There the model is told that every memory it saves is Shared, so it saves without asking which tier, and `/memories add TEXT` saves Shared too. A save that asks for Private is refused. If the settings can't be read, a save with no tier is refused rather than made Shared. See [Where the backend runs](#where-the-backend-runs).
   - **Platform:** where you chat. The terminal, the Hermes TUI, Desktop and `hermes chat` (Hermes platforms `cli`, `tui`, `desktop` and `local`) are Private by default. Every other platform is Shared: chat apps such as Telegram, Signal, Slack and WhatsApp, whose servers see the replies, and also the API server, the dashboard's web chat, scheduled jobs and subagents. The Hermes Webapp (Desktop's interface in a browser, for example on your phone) counts as `desktop` too.
   - **Model route:** where a request goes: the provider, the model and the endpoint address (`base_url`). Who's Listening classifies a route by the host in its address:
     - **Venice:** Venice runs some models itself with no data kept (private) and passes others, such as Claude and Gemini, to the company that made them with your identity stripped (anonymized: that company sees the content). Venice labels each model in a public list, which the gateway fetches from `https://api.venice.ai/api/v1/models?type=all` at most once a day (no key, nothing about you is sent) and keeps in `whos-listening/venice-models.json`. Venice's private models are Private. Anonymized models, and any model not on the list (or before the list is fetched), are Shared, unless you set `venice_anonymized` to `private`.
@@ -111,7 +111,7 @@ Type these in any Hermes chat. They need the plugin enabled with `hermes plugins
 | `/memories undo` | Undo the last change (a save, forget, approval, …). |
 | `/memories forget N` / `restore N` | Forget a memory, or undo a forget. |
 | `/memories show N` | Tier, status, who wrote it, with which tool, on which route, and its history. |
-| `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`. Your own saves skip the checks. |
+| `/memories add [shared] TEXT` | Save a memory yourself. Private unless you say `shared`; on a Shared gateway, always Shared. Your own saves skip the checks. |
 | `/memories sync` | Sync Shared memories with your other gateways now (when sync is set up). |
 | `/memories sync status` | How sync is set up, when it last ran and what it did. |
 | `/memories settings` | The settings in effect, and where each one comes from (Desktop, `settings.json` or the default). |
@@ -265,6 +265,7 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 
 Be clear about what Who's Listening does not protect (yet):
 
+- **A Shared gateway saves what you tell it as Shared, without asking.** That includes health details: any model you chat with on that gateway, or on any gateway it syncs with, may see them. To keep a fact Private, tell it to a Private gateway.
 - **Sync shares your Shared memories with GitHub.** The sync file, in a private repository you create, holds the text of every Shared memory (forgotten ones only as a hash), which gateway saved it, and when. Anyone who can read the repository can read them, and anyone who can write to it can add memories to all your gateways. Arrivals pass the rule screen, but that's a short list of patterns. Keep the repository private, and give the token access to that repository alone.
 - **Clocks decide between changes made at the same time.** A change made after seeing another one always wins over it. But when two gateways change the same memory before either has synced, the one whose clock reads later wins, even if its clock is wrong.
 - **Sync needs the gateway to reach GitHub.** A gateway that can't keeps working on its own memories and catches up on its next sync.

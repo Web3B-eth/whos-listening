@@ -76,6 +76,13 @@ def private_storage_refusal(settings: Optional["RouteSettings"]) -> str:
     return ""
 
 
+def shared_only_gateway(settings: Optional["RouteSettings"]) -> bool:
+    """True when the settings say this gateway is Shared: it keeps Shared memories only, so a
+    save with no tier is Shared. Unreadable settings (``None``) aren't enough: there a save with
+    no tier is still refused rather than quietly made Shared."""
+    return settings is not None and gateway_verdict(settings) is not None
+
+
 def layered_verdict(route: Optional[Route], platform: str, settings: Optional["RouteSettings"] = None) -> "Verdict":
     """A request is Private only if the gateway, the platform and the model route all are."""
     for layer in (gateway_verdict(settings), platform_verdict(platform, settings)):

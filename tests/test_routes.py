@@ -146,3 +146,6 @@ def test_shared_gateway_keeps_no_private_memories():
     assert "set to shared" in private_storage_refusal(RouteSettings(gateway=SHARED))
     assert "hosted Hermes" in private_storage_refusal(RouteSettings(gateway=SHARED, gateway_hosted=True))
     assert "can't be read" in private_storage_refusal(None)
+    from whos_listening.routes import shared_only_gateway
+    assert not shared_only_gateway(RouteSettings()) and not shared_only_gateway(None)   # unreadable: not sure
+    assert shared_only_gateway(RouteSettings(gateway=SHARED))
