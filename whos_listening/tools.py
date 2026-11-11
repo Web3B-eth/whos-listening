@@ -364,8 +364,9 @@ def _shared_route_saved(tier: str, hold: Optional[str], reviewing: bool = False)
     if hold:
         return _ok(pending={"tier": tier}, note=_held_note(hold, None, reviewing))
     if tier == PRIVATE:
-        return _ok(private={"tier": PRIVATE}, note="This was not shared. Check /memories on a Private-capable platform "
-                   "to see whether it was saved; tell me if it can be shared.")
+        return _ok(private={"tier": PRIVATE}, note="Tell the user it goes to their private memories only, which this "
+                   "model can't see, and that /memories in a private app (such as Hermes Desktop or the terminal) "
+                   "shows what's saved. If they say any model may see it, save it again with tier 'shared'.")
     return _ok(saved={"tier": SHARED}, note="Saved.")
 
 
