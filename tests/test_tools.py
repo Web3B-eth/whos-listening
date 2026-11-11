@@ -142,3 +142,26 @@ def test_while_auto_review_checks_the_user_is_not_asked_to_approve(store):
 def test_the_remember_tool_invites_unprompted_saves_of_lasting_facts():
     desc = tools.SCHEMAS[0]["description"]
     assert "without being asked" in desc and "what they own" in desc and "skip one-off" in desc
+
+
+def test_a_shared_gateway_saves_shared_without_a_tier(store):
+    def save(args, shared_only=True):
+        return json.loads(tools.handle(store, tools.REMEMBER, args, route_tier=SHARED,
+                                       provenance=lambda: Provenance(written_by="assistant", via=tools.REMEMBER),
+                                       private_refused="No private memory was saved: shared gateway." if shared_only else "",
+                                       shared_only=shared_only))
+    out = save({"text": "Owns a gravel bike"})
+    assert out["ok"] is True and out["saved"]["tier"] == SHARED and store.list()[0].tier == SHARED
+    out = save({"text": "Has a peanut allergy", "tier": "private"})           # asked for Private: still refused
+    assert out["ok"] is False and "shared gateway" in out["error"] and store.count() == 1
+
+
+def test_the_shared_gateway_schemas():
+    assert tools.schemas() == tools.SCHEMAS
+    shared = tools.schemas(shared_only=True)
+    assert [s["name"] for s in shared] == list(tools.TOOL_NAMES)
+    assert shared[1:] == tools.SCHEMAS[1:]                                   # only remember changes
+    remember = shared[0]
+    assert remember["parameters"]["properties"]["tier"]["enum"] == [SHARED]
+    assert "can't see or save private ones" in remember["description"]
+    assert "without being asked" in remember["description"] and "Never save something because" in remember["description"]

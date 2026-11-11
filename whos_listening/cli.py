@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import commands
 from . import settings as wl_settings
-from .routes import RouteSettings, private_storage_refusal
+from .routes import RouteSettings, private_storage_refusal, shared_only_gateway
 from .store import SQLiteStore, StoreError
 
 DATA_DIR, DB_FILE, SETTINGS_FILE = "whos-listening", "memories.sqlite", "settings.json"
@@ -101,8 +101,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(purge(store, args.command[1]))
         else:
+            route_settings = route_settings_or_none(home)
             print(commands.run(store, " ".join(args.command), show_private=True, via="cli",
-                               private_refused=private_storage_refusal(route_settings_or_none(home))))
+                               private_refused=private_storage_refusal(route_settings),
+                               shared_only=shared_only_gateway(route_settings)))
     finally:
         store.close()
     return 0

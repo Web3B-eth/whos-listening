@@ -480,9 +480,22 @@ def main() -> int:
         out = run.command("/memories settings")
         run.check("desktop settings: they win over settings.json", "gateway: shared  (Hermes settings)" in out
                   and "review: auto  (settings.json)" in out, out.strip()[-200:])
-        out = run.command("/memories add Keeps bees")
+        out = run.command("/memories add private Keeps bees")
         run.check("desktop settings: a Shared gateway refuses a Private save", "No private memory was saved" in out,
                   out.strip()[-160:])
+        out = run.command("/memories add Keeps bees")
+        run.check("shared gateway: /memories add saves Shared", "[shared] Keeps bees" in out, out.strip()[-160:])
+        _, reqs = run.chat('I just bought a gravel bike. [[call whos-listening_remember {"text": "Owns a gravel bike"}]]',
+                           provider="private-sim", model="private-model")
+        remember = [t["function"] for r in main_requests(reqs) for t in json.loads(r["text"]).get("tools") or []
+                    if t.get("function", {}).get("name") == "whos-listening_remember"]
+        run.check("shared gateway: the model is told every save is Shared",
+                  bool(remember) and all(f["parameters"]["properties"]["tier"]["enum"] == ["shared"] for f in remember)
+                  and has(main_requests(reqs), "keeps shared memories only"))
+        bike = [m for m in memories_in(data) if m.text == "Owns a gravel bike"]
+        run.check("shared gateway: a save with no tier is Shared, with no refusal",
+                  bool(bike) and bike[0].tier == "shared" and not has(reqs, "No private memory was saved"),
+                  str([(m.tier, m.status) for m in bike]))
         out = run.cli(["settings"])
         run.check("desktop settings: the command line sees the gateway's copy",
                   "gateway: shared  (Hermes settings)" in out, out.strip()[-160:])

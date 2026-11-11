@@ -32,7 +32,10 @@ def test_default_home(monkeypatch, tmp_path):
 def test_cli_add_respects_a_shared_gateway(tmp_path, capsys):
     SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
     (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
-    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])          # a Shared gateway saves Shared
+    out = capsys.readouterr().out
+    assert "[shared] Keeps bees" in out and "shared memories only" in out
+    cli.main(["--home", str(tmp_path), "add", "private", "Has a peanut allergy"])
     assert "No private memory was saved" in capsys.readouterr().out
 
 
@@ -44,7 +47,7 @@ def test_cli_uses_the_gateways_copy_of_desktop_settings(tmp_path, capsys):
     assert "gateway: private  (default)" in out and "aren't known here yet" in out
     ws.write_snapshot(tmp_path / "whos-listening", {"gateway": "shared"}, False)
     cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
-    assert "No private memory was saved" in capsys.readouterr().out
+    assert "[shared] Keeps bees" in capsys.readouterr().out
     ws.write_snapshot(tmp_path / "whos-listening", {}, True)               # a hosted Hermes
     cli.main(["--home", str(tmp_path), "settings"])
     assert "default on a hosted Hermes" in capsys.readouterr().out
@@ -55,7 +58,7 @@ def test_cli_refuses_private_saves_when_the_copy_is_damaged(tmp_path, capsys):
     SQLiteStore(tmp_path / "whos-listening" / "memories.sqlite").close()
     ws.write_snapshot(tmp_path / "whos-listening", {"gateway": "shared"}, False)
     ws.snapshot_path(tmp_path / "whos-listening").write_text('{"hosted": false, "sett')     # cut short
-    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])
+    cli.main(["--home", str(tmp_path), "add", "Keeps bees"])          # unknown: refused, not made Shared
     assert "No private memory was saved" in capsys.readouterr().out
     cli.main(["--home", str(tmp_path), "settings"])
     assert "can't be read" in capsys.readouterr().out

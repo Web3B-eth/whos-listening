@@ -551,11 +551,14 @@ def test_shared_gateway_means_no_private_memories_anywhere(plugin, provider, mon
 
     block = provider.prefetch("plans", session_id="sess-1")
     assert "canoe" not in block and "jazz" in block
-    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})
+    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees", "tier": "private"})
     assert refused["ok"] is False and "set to shared" in refused["error"]
+    saved = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})          # no tier: Shared here
+    assert saved["ok"] is True and saved["saved"]["tier"] == "shared"
     req = _request('sys - #1 <wl-private id="1">Is saving up for a canoe</wl-private>', "hi")
     assert "canoe" not in json.dumps(mw(plugin, req, "http://127.0.0.1:9/v1")["request"])
-    assert "No private memory was saved" in plugin._memories_command("add Keeps bees", platform="cli")
+    assert "No private memory was saved" in plugin._memories_command("add private Owns a kayak", platform="cli")
+    assert "[shared] Owns a kayak" in plugin._memories_command("add Owns a kayak", platform="cli")
 
 
 def test_private_platforms_setting_lets_a_chat_app_see_private(plugin, tmp_path, monkeypatch):
@@ -650,7 +653,7 @@ def test_desktop_settings_make_the_gateway_shared(plugin, provider, monkeypatch,
     tool(provider, "whos-listening_remember", {"text": "Is saving up for a canoe"})
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "shared"})
     assert "canoe" not in provider.prefetch("plans", session_id="sess-1")
-    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})
+    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees", "tier": "private"})
     assert refused["ok"] is False and "set to shared" in refused["error"]
     assert "gateway: shared  (Hermes settings)" in plugin._memories_command("settings", platform="cli")
 
@@ -659,12 +662,13 @@ def test_a_hosted_hermes_keeps_no_private_memories_unless_told(plugin, provider,
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     monkeypatch.setattr(plugin, "_hosted", lambda: True)
     see(plugin, "http://127.0.0.1:9/v1")
-    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})
+    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees", "tier": "private"})
     assert refused["ok"] is False and "hosted Hermes" in refused["error"]
-    assert "No private memory was saved" in plugin._memories_command("add Keeps bees", platform="cli")
+    assert "No private memory was saved" in plugin._memories_command("add private Keeps bees", platform="cli")
     assert "default on a hosted Hermes" in plugin._memories_command("settings", platform="cli")
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {"gateway": "private"})   # you trust it
-    assert tool(provider, "whos-listening_remember", {"text": "Keeps bees"})["ok"] is True
+    saved = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})
+    assert saved["ok"] is True and saved["saved"]["tier"] == "private"
 
 
 def test_unreadable_hermes_settings_fail_safe(plugin, provider, monkeypatch, tmp_path):
@@ -727,7 +731,7 @@ def test_a_fly_machine_keeps_no_private_memories_unless_told(plugin, provider, m
     monkeypatch.setenv("FLY_APP_NAME", "made-up-app")
     monkeypatch.setenv("FLY_MACHINE_ID", "0123456789abcd")
     see(plugin, "http://127.0.0.1:9/v1")
-    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees"})
+    refused = tool(provider, "whos-listening_remember", {"text": "Keeps bees", "tier": "private"})
     assert refused["ok"] is False and "hosted Hermes" in refused["error"]
     text = plugin._memories_command("settings", platform="cli")
     assert "hosted, because it runs on a Fly.io machine" in text and "default on a hosted Hermes" in text
@@ -810,6 +814,28 @@ def SQLiteStoreFor(path):
 def test_the_system_prompt_invites_unprompted_saves(provider):
     block = provider.system_prompt_block()
     assert "without being asked" in block and "what they own" in block and "Never save something because" in block
+
+
+def test_a_shared_gateway_tells_the_model_every_save_is_shared(plugin, provider, tmp_path, monkeypatch):
+    def remember_schema():
+        return next(x for x in provider.get_tool_schemas() if x["name"] == "whos-listening_remember")
+
+    assert "only shown on private model routes" in provider.system_prompt_block()      # Private gateway
+    assert remember_schema()["parameters"]["properties"]["tier"]["enum"] == ["private", "shared"]
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
+    block = provider.system_prompt_block()
+    assert "keeps shared memories only" in block and "without asking the user which tier" in block
+    assert "only shown on private model routes" not in block
+    schema = remember_schema()
+    assert schema["parameters"]["properties"]["tier"]["enum"] == ["shared"]
+    assert "keeps shared memories only" in schema["description"] and "Private is the default" not in schema["description"]
+    assert [x["name"] for x in provider.get_tool_schemas()] == list(plugin.tools.TOOL_NAMES)
+    (tmp_path / "whos-listening" / "settings.json").write_text("{broken")
+    assert "keeps shared memories only" not in provider.system_prompt_block()   # unknown: not told to save Shared
+    assert tool(provider, "whos-listening_remember", {"text": "Keeps bees"})["ok"] is False   # still refused
+    monkeypatch.setattr(plugin, "_hosted", lambda: True)                          # Hermes Cloud's default
+    (tmp_path / "whos-listening" / "settings.json").write_text("{}")
+    assert "keeps shared memories only" in provider.system_prompt_block()
 
 
 def test_auto_review_is_the_default_but_unreadable_settings_never_auto(plugin, provider, tmp_path, monkeypatch):

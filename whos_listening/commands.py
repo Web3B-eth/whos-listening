@@ -31,7 +31,7 @@ HELP = """\
 /memories forget N        forget a memory (it can't be saved again from chat)
 /memories restore N       undo a forget
 /memories show N          a memory's details: tier, who wrote it, on which route
-/memories add [shared] TEXT   save a memory yourself (Private unless you say shared)
+/memories add [shared] TEXT   save a memory yourself (Private unless you say shared, or on a Shared gateway)
 /memories sync            sync Shared memories with your other gateways now (if sync is set up)
 /memories sync status     how sync is set up and how the last one went
 /memories settings        the settings in effect and where each one comes from"""
@@ -187,17 +187,19 @@ def cmd_restore(store: Store, arg: str, show_private: bool) -> str:
     return f"Restored {_line(store.get(m.id), show_private)}"
 
 
-def cmd_add(store: Store, text: str, show_private: bool, via: str, private_refused: str = "") -> str:
+def cmd_add(store: Store, text: str, show_private: bool, via: str, private_refused: str = "",
+            shared_only: bool = False) -> str:
     """``text`` exactly as typed after ``add`` (no shell-style quoting, so "don't" stays).
-    ``private_refused`` says why this gateway may not keep a Private memory ("" if it may)."""
-    tier, words = PRIVATE, text.split(None, 1)
+    ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
+    ``shared_only``: this is a Shared gateway, so ``add TEXT`` saves a Shared memory."""
+    tier, words = (SHARED if shared_only else PRIVATE), text.split(None, 1)
     if words and words[0].lower() in (PRIVATE, SHARED):
         tier, text = words[0].lower(), (words[1] if len(words) > 1 else "")
     if tier == PRIVATE and private_refused:
         return f"{private_refused} Use `add shared TEXT` for a memory any model may see."
     m = store.add(text, tier, Provenance(written_by="user", via=via), allow_forgotten=True)
     store.log_event(m.id, "saved", "user")
-    return f"Saved {_line(m, show_private)}"
+    return f"Saved {_line(m, show_private)}" + (" (this gateway keeps shared memories only)" if shared_only else "")
 
 
 def cmd_show(store: Store, arg: str, show_private: bool) -> str:
@@ -268,7 +270,7 @@ def cmd_undo(store: Store, show_private: bool) -> str:
 
 
 def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memories",
-        private_refused: str = "") -> str:
+        private_refused: str = "", shared_only: bool = False) -> str:
     """Run one ``/memories`` command and return the reply. Never raises."""
     head = (raw_args or "").split(None, 1)
     cmd = head[0].lower() if head else "list"
@@ -309,7 +311,7 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
         if cmd == "show":
             return cmd_show(store, one(), show_private)
         if cmd == "add":
-            return cmd_add(store, tail, show_private, via, private_refused)
+            return cmd_add(store, tail, show_private, via, private_refused, shared_only)
         if cmd == "sync":
             return "Sync runs inside Hermes: type /memories sync in a chat."
         if cmd == "settings":
@@ -326,13 +328,14 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
 
 
 def open_and_run(store_factory, raw_args: str, *, show_private: bool, via: str = "/memories",
-                 private_refused: str = "") -> str:
+                 private_refused: str = "", shared_only: bool = False) -> str:
     """Open the store, run one command, close it."""
     try:
         store = store_factory()
     except Exception as exc:
         return f"Who's Listening could not open its memories: {type(exc).__name__}"
     try:
-        return run(store, raw_args, show_private=show_private, via=via, private_refused=private_refused)
+        return run(store, raw_args, show_private=show_private, via=via, private_refused=private_refused,
+                   shared_only=shared_only)
     finally:
         store.close()
