@@ -772,7 +772,8 @@ class SQLiteStore(Store):
                     else:
                         # Declining a proposal creates no tombstone and sends no sync forget.
                         stamp, order_key = self._change(m, terminal_tie=True)
-                        self._db.execute("UPDATE memories SET status = 'forgotten', updated_at = ?, order_key = ? WHERE id = ?",
+                        self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = 'pending', "
+                                         "updated_at = ?, order_key = ? WHERE id = ?",
                                          (stamp, order_key, m.id))
                         action = "share_rejected"
                     self._db.execute("UPDATE events SET undone = 1 WHERE memory_id = ?", (m.id,))
@@ -994,6 +995,9 @@ class SQLiteStore(Store):
             self._db.execute("INSERT OR REPLACE INTO withdrawals "
                              "(uid, fingerprint, updated_at, created_at, origin, order_key) VALUES (?,?,?,?,?,?)",
                              (m.uid, fingerprint(m.text), stamp, m.created_at, "", order_key))
+            if require_sharing_choice:
+                self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                 (m.id, "share_held", "user", stamp))
             return self.get(m.id)
 
     @staticmethod

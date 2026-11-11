@@ -126,6 +126,7 @@ def test_undo_direct_share_approval_withdraws_uid_and_requires_fresh_choice(tmp_
         assert "Undid sharing approval" in commands.cmd_undo(a, True)
         waiting = a.get(p.id)
         assert waiting.status == PENDING and waiting.audience_consent_required
+        assert "sharing proposal is waiting" in commands.cmd_undo(a, True)
         assert int(waiting.order_key) > int(approved.order_key)
         assert a.get(private.id).status == ACTIVE
         assert a.withdrawal(p.uid) is not None
@@ -172,7 +173,7 @@ def test_already_withdrawn_share_approval_does_not_undo_older_action(store):
     p = store.consent_proposals()[0]
     assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
     store.withdraw_approval(p.id, require_sharing_choice=True)
-    assert "already waiting" in commands.cmd_undo(store, True)
+    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
     assert store.get(old.id).status == ACTIVE
 
 
@@ -188,6 +189,7 @@ def test_remote_forget_overtakes_unmarked_share_approval(store):
     file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
                             "memories": {p.uid: forgotten}}) + "\n").encode()
     sync.sync_once(store, file, "peer")
+    assert "no longer waiting" in commands.cmd_undo(store, True)
     assert "overtaken by a change from another gateway" in commands.cmd_undo(store, True)
 
 
@@ -238,6 +240,28 @@ def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
     assert store.shared_for_sync() == []
     with pytest.raises(StoreError, match="No memory"):
         commands.cmd_approve(store, str(p.id), True)
+
+
+def test_declined_renewed_share_stays_declined_after_newer_peer_active(store):
+    propose(store)
+    p = store.consent_proposals()[0]
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
+    assert "Undid sharing approval" in commands.cmd_undo(store, True)
+    waiting = store.get(p.id)
+    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{waiting.order_key}")
+    declined = store.get(p.id)
+    assert declined.status == FORGOTTEN and declined.forgotten_from == PENDING
+    newer = order.next_key(declined.order_key, "2026-01-01T00:00:00+00:00")
+    active = {"status": ACTIVE, "text": FACT, "fingerprint": sync.fingerprint(FACT),
+              "updated_at": "2026-01-01T00:00:00+00:00", "order": newer}
+    file = FakeFile()
+    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                            "memories": {p.uid: active}}) + "\n").encode()
+    sync.sync_once(store, file, "peer")
+    assert store.get(p.id).status == FORGOTTEN and store.get(p.id).audience_consent_required
+    assert store.consent_proposals() == []
+    assert store.shared_for_sync() == []
+    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
 
 
 def test_second_connection_cannot_decide_a_stale_proposal(tmp_path):

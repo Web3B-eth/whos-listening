@@ -329,7 +329,11 @@ def cmd_undo(store: Store, show_private: bool) -> str:
         if e.undone or e.action == "undo" or e.action in SYNC_ACTIONS:
             continue        # a change that arrived by sync isn't yours to undo here
         if e.action == "share_held":
-            return "A sharing proposal is waiting. Use /memories share to review it."
+            held = store.get(e.memory_id)
+            if held is not None and held.status == PENDING and held.audience_consent_required:
+                return "A sharing proposal is waiting. Use /memories share to review it."
+            store.mark_undone(e.id)
+            return "That sharing proposal is no longer waiting. Use /memories undo again for an earlier change."
         if e.action == "share_rejected":
             store.mark_undone(e.id)
             return "That sharing proposal was declined. Use /memories undo again for an earlier change."
