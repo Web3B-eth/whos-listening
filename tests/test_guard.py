@@ -156,3 +156,9 @@ def test_partial_legacy_review_result_is_withheld_on_shared_route():
 def test_unrelated_waiting_json_is_left_alone():
     unrelated = json.dumps({"ok": True, "waiting": [{"why": "The copper notebook"}]})
     assert guard.guard_request(chat(unrelated), "shared") is None
+
+
+def test_repeated_unclosed_private_tags_are_removed_from_shared_request():
+    text = "safe " + '<wl-private id="1">' * 200 + "hidden detail"
+    out = guard.guard_request(chat(text), "shared")
+    assert out is not None and "hidden detail" not in json.dumps(out)

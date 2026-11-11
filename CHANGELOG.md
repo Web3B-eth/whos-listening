@@ -4,6 +4,7 @@ What changed in whos-listening, newest first. Format follows [Keep a Changelog](
 
 ## [Unreleased]
 
+- Bounded Private-marker stripping (2026-11-10): the Shared request guard now strips matched, repeated, unfinished and orphan Private tags with a linear scan. A marker-bearing string over one million characters is withheld whole, so one malformed marker cannot make the guard spend unbounded time on that string.
 - Old review results in chat history (2026-11-10): on a Shared route the request guard now removes untagged reason fields from recognized review-tool results saved by earlier plugin versions. A cut-off result with that shape is withheld. Other chat text that repeats a Private memory remains outside the guard's reach.
 - Shared-route forget boundary (2026-11-10): the assistant's forget tool no longer changes a Private memory on a Shared route, and a Private number answers like a missing one. A direct `/memories forget N` command still works for the user.
 - Pending forgets after outside content (2026-11-10): the assistant's forget request now waits for approval even when the memory is still a pending save. It creates no tombstone before approval. Review shows the forget decision first; turning it down leaves the save pending. A pending forget also stops an in-flight Auto-review verdict from activating that save.

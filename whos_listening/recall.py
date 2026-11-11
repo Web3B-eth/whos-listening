@@ -19,13 +19,12 @@ BLOCK_OPEN = "<whos-listening-memory>"
 BLOCK_CLOSE = "</whos-listening-memory>"
 PRIVATE_OPEN = '<wl-private id="{id}">'
 PRIVATE_CLOSE = "</wl-private>"
-
-PRIVATE_SPAN_RE = re.compile(r"<wl-private\b[^>]*>.*?</wl-private>", re.DOTALL)
-# An opening tag with no closing tag (a cut-off reply, say): remove to the end.
-PRIVATE_UNCLOSED_RE = re.compile(r"<wl-private\b[^>]*>.*\Z", re.DOTALL)
-# A closing tag with no opening tag (the start was trimmed off, say): memory text is one line,
-# so remove from the start of that line to the closing tag.
-PRIVATE_ORPHAN_CLOSE_RE = re.compile(r"[^\n]*</wl-private>")
+PRIVATE_OPEN_HEAD = "<wl-private"
+PRIVATE_CLOSE_HEAD = "</wl-private"
+PRIVATE_WITHHELD = "[private memory withheld]"
+# A marker in an unusually large request string may hide text anywhere in it. Withhold the
+# whole string so a single malicious input cannot make the synchronous guard scan without bound.
+MAX_PRIVATE_SCAN_CHARS = 1_000_000
 BLOCK_RE = re.compile(r"<whos-listening-memory>.*?(?:</whos-listening-memory>|\Z)", re.DOTALL)
 
 SMALL_STORE = 30       # up to this many memories, prefetch carries all of them
@@ -87,10 +86,53 @@ def select_for_prefetch(store: Store, query: str, route_tier: str) -> list[Memor
 
 
 def strip_private(text: str) -> str:
-    """Remove every tagged Private span (and any cut-off one, at either end) from ``text``."""
-    text = PRIVATE_SPAN_RE.sub("[private memory withheld]", text)
-    text = PRIVATE_ORPHAN_CLOSE_RE.sub("[private memory withheld]", text)
-    return PRIVATE_UNCLOSED_RE.sub("[private memory withheld]", text)
+    """Remove tagged, cut-off and orphan Private markers in linear time."""
+    if "wl-private" not in text:
+        return text
+    if len(text) > MAX_PRIVATE_SCAN_CHARS:
+        return PRIVATE_WITHHELD
+
+    parts, pos = [], 0
+    while True:
+        start = text.find(PRIVATE_OPEN_HEAD, pos)
+        if start < 0:
+            parts.append(text[pos:])
+            break
+        after_head = start + len(PRIVATE_OPEN_HEAD)
+        if after_head < len(text) and (text[after_head].isalnum() or text[after_head] == "_"):
+            # Match the old tag boundary: <wl-private-other> is not our opening tag.
+            parts.append(text[pos:after_head])
+            pos = after_head
+            continue
+        parts.append(text[pos:start])
+        tag_end = text.find(">", after_head)
+        if tag_end < 0:
+            parts.append(PRIVATE_WITHHELD)
+            break
+        tag_body = text[after_head:tag_end]
+        if "<" in tag_body or "\n" in tag_body:
+            # A broken opening tag could swallow later markers. We cannot locate its safe
+            # boundary, so withhold this request string instead of keeping uncertain text.
+            return PRIVATE_WITHHELD
+        close = text.find(PRIVATE_CLOSE, tag_end + 1)
+        parts.append(PRIVATE_WITHHELD)
+        if close < 0:
+            break
+        pos = close + len(PRIVATE_CLOSE)
+
+    # A closing tag without its opening tag means the line may contain Private text. The
+    # old expression removed through the last closing tag on that line; keep that behavior.
+    lines = []
+    for line in "".join(parts).split("\n"):
+        close = line.rfind(PRIVATE_CLOSE)
+        partial = line.rfind(PRIVATE_CLOSE_HEAD)
+        if partial > close:
+            lines.append(PRIVATE_WITHHELD)  # a cut-off closing tag
+        elif close >= 0:
+            lines.append(PRIVATE_WITHHELD + line[close + len(PRIVATE_CLOSE):])
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def strip_blocks(text: str) -> str:
