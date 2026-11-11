@@ -16,7 +16,7 @@ over the candidates plus "none"; the answer counts only at a probability of at l
 For the default model: one chat request with the memories between markers, answered with JSON
 (``{"repeats": id or null}``). Either way an answer never counts when one memory is about another
 person (a brother, a friend…) and the other isn't: in tests the models sometimes took "Brother Sam
-lives in Denver" for "Lives in Denver". Any error, timeout or doubt saves normally. Nothing here
+lives in Seattle" for "Lives in Seattle". Any error, timeout or doubt saves normally. Nothing here
 imports Hermes; the provider passes in the key, the model call and the tiers.
 """
 
