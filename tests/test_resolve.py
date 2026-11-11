@@ -204,8 +204,11 @@ def test_the_tool_lists_and_hides_private_pairs_on_a_shared_route(store):
     out = review(store, "list")
     assert [w["kind"] for w in out["waiting"]] == ["duplicate", "save"]
     assert out["waiting"][0]["memories"][0]["line"].startswith(f"- #{private.id} <wl-private")   # tagged
+    assert f'answer with the memory\'s number (for example "keep {private.id}")' in out["note"]
     shared_view = review(store, "list", route=SHARED)
     assert [w["kind"] for w in shared_view["waiting"]] == ["save"] and "private_withheld" not in shared_view
+    held = shared_view["waiting"][0]["memory"]["id"]
+    assert f'"approve {held}"' in shared_view["note"]              # a waiting save is approved; a number this route sees
 
 
 def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
@@ -244,6 +247,12 @@ def test_the_tool_shows_everything_a_page_at_a_time(store):
     assert len(review(store, "all", page=2)["memories"]) == 11
     shared_only = review(store, "all", route=SHARED)
     assert shared_only["total"] == 60 and shared_only["private_withheld"] == 1
+    assert f'"forget {first["memories"][0]["id"]}"' in first["note"] and "can't be edited" in first["note"]
+
+
+def test_nothing_to_review_needs_no_number_hint(store):
+    assert "number" not in review(store, "list")["note"].split("let them choose.")[1]
+    assert "note" not in review(store, "all")
 
 
 def test_the_tool_exports_and_scans(store):
