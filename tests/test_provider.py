@@ -1045,3 +1045,29 @@ def test_the_judge_says_the_real_reason_it_isnt_running(plugin, provider, tmp_pa
     assert "not running: Jev is anonymized on Venice" in plugin._settings_command(tmp_path)
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
     assert "not running" not in plugin._settings_command(tmp_path)         # Clef runs
+
+
+def test_auto_review_is_logged_without_memory_text_or_the_models_words(plugin, provider, monkeypatch, auto_mode,
+                                                                        caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    see(plugin, "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw:
+                        '{"save": true, "approve": false, "reason": "You said you play the bassoon on Fridays."}')
+    provider.on_turn_start(1, "Remember: I play the bassoon on Fridays")
+    plugin._on_post_tool_call(tool_name="web_extract", session_id="sess-1")
+    out = tool(provider, "whos-listening_remember", {"text": "Plays the bassoon on Fridays"})
+    mid = out["pending"]["id"]
+    assert _wait_for(lambda: provider._store.get(mid).status == "active")
+    assert _wait_for(lambda: any(f"Auto-review for held save #{mid}: saved" in m for m in caplog.messages))
+    assert any(f"Auto-review is checking held save #{mid} (on m)" in m for m in caplog.messages)
+
+    old = provider._store.add("Bassoon practice every Friday", "private", plugin.Provenance())
+    provider._store.set_duplicate_of(mid, old.id)
+    provider.on_turn_start(2, "yes")
+    out = tool(provider, "whos-listening_review", {"action": "keep", "id": mid})
+    assert out["ok"] is False and "bassoon" in out["error"]                 # the model still hears the reason
+    assert any("Auto-review for a review choice (on m): not confirmed" in m for m in caplog.messages)
+    assert any(f"review choice keep #{mid} not applied: the chat read outside content (web_extract) and "
+               "Auto-review didn't confirm it" in m for m in caplog.messages)
+    assert not any("bassoon" in m.lower() for m in caplog.messages)       # no memory text, no model words

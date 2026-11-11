@@ -371,23 +371,28 @@ class WhosListeningProvider(MemoryProvider):
         reply and the user's newest messages. Returns (applies, reason). Runs only with Auto-review
         on, and only where the side call can't reach a less trusted model (a Shared route only
         reaches this for Shared memories: tools._choice_problem)."""
-        if self._review_mode() != "auto":
-            return False, "Auto-review is off, so a choice needs its number"
+        blocker = ""
         route, verdict = self._route()
-        if route is None:
-            return False, "the chat's route isn't known yet"
-        if verdict.tier == PRIVATE:
+        if self._review_mode() != "auto":
+            blocker = "Auto-review is off, so a choice needs its number"
+        elif route is None:
+            blocker = "the chat's route isn't known yet"
+        elif verdict.tier == PRIVATE:
             side = side_call_routes_private(_config(), _settings_or_none(self._dir))
-            if side.tier != PRIVATE:
-                return False, side.reason
-        if self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
-            return False, f"it checks at most {autoreview.CHECKS_PER_TURN} a turn"
+            blocker = side.reason if side.tier != PRIVATE else ""
+        if not blocker and self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            blocker = f"it checks at most {autoreview.CHECKS_PER_TURN} a turn"
+        if blocker:
+            logger.info("whos-listening: Auto-review didn't run for a review choice: %s", blocker)
+            return False, blocker
         self._checks_this_turn += 1
         found = autoreview.check_choice(
             change, self._own_words(),
             lambda prompt: _ask_chat_model(prompt, route.model, timeout=CHOICE_CHECK_TIMEOUT,
                                            purpose="whos-listening choice check"),
             self._last_reply)
+        logger.info("whos-listening: Auto-review for a review choice (on %s): %s", route.model,
+                    "the user asked for it" if found.save else "not confirmed")
         return found.save, found.reason
 
     def _start_auto_review(self, memory: Memory) -> bool:
@@ -397,6 +402,7 @@ class WhosListeningProvider(MemoryProvider):
             return False
         blocker, route = self._auto_review_blocker(memory)
         if blocker:
+            logger.info("whos-listening: Auto-review didn't run for held save #%d: %s", memory.id, blocker)
             self._store.set_status(memory.id, PENDING,
                                    pending_reason=f"{memory.pending_reason} Auto-review didn't run: {blocker}.")
             return False
@@ -405,6 +411,8 @@ class WhosListeningProvider(MemoryProvider):
         except Exception:
             return False
         self._checks_this_turn += 1
+        logger.info("whos-listening: Auto-review is checking held save #%d (on %s)", memory.id,
+                    route.model if route else "?")
         since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
                              args=(self._store, memory.id, memory.text, self._own_words(), since,
@@ -473,7 +481,11 @@ def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: l
     asker = ask or (lambda prompt: _ask_chat_model(prompt, expected_model))
     verdict = autoreview.check(text, user_messages, asker)
     try:
-        store.apply_review(memory_id, since_event, verdict.save, verdict.reason)
+        applied = store.apply_review(memory_id, since_event, verdict.save, verdict.reason)
+        # Fixed words only: the model's reason can quote the memory.
+        logger.info("whos-listening: Auto-review for held save #%d: %s", memory_id,
+                    ("saved" if verdict.save else "kept waiting for the user") if applied
+                    else "not applied (the memory changed meanwhile)")
     except Exception as exc:
         logger.warning("whos-listening: could not apply the auto-review verdict: %s", type(exc).__name__)
 

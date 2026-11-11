@@ -192,7 +192,6 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         return _err(problem)
     refused = _choice_refused(store, action, memory_id, user_message, outside_tool, choice_check)
     if refused:
-        logger.info("whos-listening: review choice %s #%d not applied: %s", action, memory_id, refused)
         return _err(refused)
     if action == "keep":
         kept, dropped = resolve.keep(store, memory_id, show_private=show_private, actor="assistant")
@@ -253,27 +252,36 @@ def _choice_refused(store: Store, action: str, memory_id: int, user_message: str
     - the chat read no outside content: it applies on their say-so, as a save or forget would;
     - otherwise Auto-review (``choice_check``) asks the chat's model whether the user's own
       messages asked for exactly this change; anything but a clear yes means asking for the number."""
+    # The log gets fixed words and numbers only: Auto-review's own reason can quote a memory.
     def passed(how: str) -> str:
         logger.info("whos-listening: review choice %s #%d applies: %s", action, memory_id, how)
         return ""
+
+    def held(why: str, message: str) -> str:
+        logger.info("whos-listening: review choice %s #%d not applied: %s", action, memory_id, why)
+        return message
 
     if names_number(user_message, memory_id):
         return passed("the user's message names its number")
     ask = f"Ask the user to confirm with the memory's number (such as \"{action.replace('_', ' ')} {memory_id}\")."
     if not str(user_message or "").strip():
-        return f"Nothing was changed: there's no message from the user in this turn. {ask}"
+        return held("no message from the user this turn",
+                    f"Nothing was changed: there's no message from the user in this turn. {ask}")
     if not outside_tool:
         return passed("the chat read no outside content")
     if choice_check is None:
-        return f"Nothing was changed: this chat read outside content ({outside_tool}), so a choice needs its number. {ask}"
+        return held(f"the chat read outside content ({outside_tool}) and nothing can check it",
+                    f"Nothing was changed: this chat read outside content ({outside_tool}), so a choice needs its "
+                    f"number. {ask}")
     try:
         ok, reason = choice_check(describe_choice(store, action, memory_id))
     except Exception as exc:
         ok, reason = False, f"the check could not run ({type(exc).__name__})"
     if ok:
         return passed("Auto-review confirmed the user asked for it")
-    return (f"Nothing was changed: this chat read outside content ({outside_tool}), and Auto-review couldn't "
-            f"confirm the user asked for this ({reason.rstrip('.')}). {ask}")
+    return held(f"the chat read outside content ({outside_tool}) and Auto-review didn't confirm it",
+                f"Nothing was changed: this chat read outside content ({outside_tool}), and Auto-review couldn't "
+                f"confirm the user asked for this ({reason.rstrip('.')}). {ask}")
 
 
 def _public(m: Memory) -> dict:
