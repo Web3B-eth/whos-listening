@@ -1,6 +1,6 @@
 # Draft: catalog PR to NousResearch/hermes-agent
 
-**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `4eb5ea8…` below with the final commit if main has moved, and re-run the checks under How to Test.
+**Not opened.** Opening it needs the owner's OK (see [`submission.md`](submission.md)). When approved, the owner (or an agent with the owner's OK) forks `NousResearch/hermes-agent`, adds `plugin-catalog/whos-listening.yaml` with the content of [`catalog-entry.yaml`](catalog-entry.yaml) (from `name:` on; the comment header is ours), and opens the PR with the title and body below. Before that, re-pin the entry and replace every `a498dd7…` below with the final commit if main has moved, and re-run the checks under How to Test.
 
 **Title:** `feat(plugin-catalog): add whos-listening plugin`
 
@@ -10,7 +10,7 @@
 
 ## What does this PR do?
 
-Adds Who's Listening to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `4eb5ea8f64362109c140dc3f2ce4c8eba0bf116c`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
+Adds Who's Listening? to the plugin catalog (`plugin-catalog/whos-listening.yaml`, category `memory`, tier `community`), pinned at `a498dd769c4196d0e911b713d4ad7363c8154ba1`. I own the plugin repo (Web3B-eth/whos-listening). It's my entry for the Hermes Agent Plugin Hackathon.
 
 Who's Listening is a memory provider that knows who is listening. Every memory is Private or Shared. A request carries Private memories only if all three layers that see it are Private:
 - **the gateway**, the machine running Hermes, which stores the memories. A hosted Hermes (a Fly.io machine or remote config, as on Hermes Cloud) is Shared by default and keeps Shared memories only;
@@ -28,7 +28,7 @@ It also:
 
 ## Disclosure (rule 13)
 
-The README has the same list under [What it sends, stores and runs](https://github.com/Web3B-eth/whos-listening/blob/4eb5ea8f64362109c140dc3f2ce4c8eba0bf116c/README.md#what-it-sends-stores-and-runs).
+The README has the same list under [What it sends, stores and runs](https://github.com/Web3B-eth/whos-listening/blob/a498dd769c4196d0e911b713d4ad7363c8154ba1/README.md#what-it-sends-stores-and-runs).
 
 - **Storage:** SQLite in the active Hermes home only (`$HERMES_HOME/whos-listening/`), including forgotten text until the user purges it. Also a cached copy of Venice's model list, a copy of the Desktop settings for the command line, and files from `/memories export`, which are plain text with mode 600. It stores no credentials.
 - **Network, third party:**
@@ -59,7 +59,7 @@ The README has the same list under [What it sends, stores and runs](https://gith
 
 ## How to Test
 
-Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `4eb5ea8f64362109c140dc3f2ce4c8eba0bf116c`:
+Tested with Hermes v0.23.0 in throwaway `HERMES_HOME`s, plugin at `a498dd769c4196d0e911b713d4ad7363c8154ba1`:
 - `python scripts/validate_plugin_catalog.py` on the entry with `removed.yaml`: OK, 2 files valid, no warnings.
 - `python scripts/scan_plugin_payloads.py <clean checkout>` (from hermes-agent `main`): exit 0.
 - `hermes plugins validate --install-deps <clean checkout>`: passed (security scan safe; no core override; declared tools, hooks and middleware match; no warnings).

@@ -5,7 +5,7 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 | Step | Who | Status |
 | --- | --- | --- |
 | Public repo with README, Install, Limits and license | done in this repo | ready |
-| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry re-pinned and checked at `4eb5ea8` (main after #45), with the short description. Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
+| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry re-pinned and checked at `a498dd7` (the "Who's Listening?" titles), with the short description. B OK'd opening the upstream PR after this. Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
 | Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
 
@@ -15,7 +15,7 @@ The catalog is the `plugin-catalog/` folder of `NousResearch/hermes-agent`: one 
 
 ## Before opening the catalog PR
 
-Done on 2026-11-11 for `4eb5ea8f64362109c140dc3f2ce4c8eba0bf116c` (main after #45, with B's README edits):
+Done on 2026-11-11 for `a498dd769c4196d0e911b713d4ad7363c8154ba1` (the commit that adds the "Who's Listening?" titles; its merge into main keeps it in main's history):
 
 1. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared tools, hooks and middleware match, no warnings) and `hermes plugins doctor --ci` passed.
 2. ✓ The catalog's own checks: `scripts/validate_plugin_catalog.py` on the entry with `removed.yaml` (OK, no warnings; the script is the same on `main` and in 0.23.0) and `scripts/scan_plugin_payloads.py` from `main` (exit 0).
