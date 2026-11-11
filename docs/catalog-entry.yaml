@@ -1,5 +1,6 @@
-# Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml, ready for the owner's OK.
-# Not submitted. Opening the catalog PR needs the owner's OK (see docs/submission.md).
+# Entry for NousResearch/hermes-agent plugin-catalog/whos-listening.yaml.
+# Submitted 2026-11-11 with the owner's OK: https://github.com/NousResearch/hermes-agent/pull/153867
+# A change while it's open = a new commit on Web3B-eth/hermes-agent branch add-whos-listening.
 # Pinned to a498dd7 (2026-11-11: main after #46 plus the "Who's Listening?" titles), where the checks in docs/catalog-pr.md passed.
 # Re-pin `sha` and `docs_url` to the final main commit before submitting (docs/submission.md says when).
 name: whos-listening

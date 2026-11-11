@@ -5,9 +5,9 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 | Step | Who | Status |
 | --- | --- | --- |
 | Public repo with README, Install, Limits and license | done in this repo | ready |
-| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry re-pinned and checked at `a498dd7` (the "Who's Listening?" titles), with the short description. B OK'd opening the upstream PR after this. Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
+| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | **opened 2026-11-11** as [NousResearch/hermes-agent#153867](https://github.com/NousResearch/hermes-agent/pull/153867), pinned at `a498dd7` (the "Who's Listening?" titles), with the short description. Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
-| Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
+| Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video; the catalog PR link is above |
 
 ## How the catalog works
 
@@ -31,7 +31,7 @@ Done on 2026-11-11 for `a498dd769c4196d0e911b713d4ad7363c8154ba1` (the commit th
 
 **If main moves again before submitting,** pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to the new main commit and re-run steps 1 to 4 on it. A code change that sends, stores or runs anything new also adds it to the disclosure in all three places.
 
-**Ask the owner.** Only then open the PR, from the owner's account or fork, with the text in [`catalog-pr.md`](catalog-pr.md).
+**Ask the owner.** Only then open the PR, from the owner's account or fork, with the text in [`catalog-pr.md`](catalog-pr.md). Done: B OK'd it, and it was opened on 2026-11-11 from `Web3B-eth/hermes-agent` branch `add-whos-listening` (one commit, one file). While it's open, a new pin or wording change is a new commit on that branch; after it merges, each update is a new PR.
 
 ## What a reviewer may ask about
 
