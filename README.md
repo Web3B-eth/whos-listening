@@ -6,7 +6,7 @@ A memory plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 
 Every memory is **Private** or **Shared**. Three things see a memory when it's used: the **gateway** (the machine running Hermes, which stores it), the **platform** you chat on (Desktop, Telegram, …) and the **model provider**. A Private memory is used only when all three are trusted: by default the gateway you installed it on, the local apps, and Venice's private models or models on your own machine or network. Otherwise it is left out of the request. You decide each layer in [Settings](#settings).
 
-**Built for the Hermes Agent Plugin Hackathon.** The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
+The Private rule is enforced on every main chat request, and you review what the assistant saves with `/memories`. Read [Limits](#limits) before trusting it with anything sensitive.
 
 ## Install
 
