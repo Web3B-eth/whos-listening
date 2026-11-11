@@ -1,8 +1,8 @@
 """The ``/memories`` commands, as plain functions over a `Store`. The slash command and the CLI
 both use them. Nothing here imports Hermes.
 
-Private text is only shown when ``show_private`` is true: in the terminal and the local apps,
-not in a chat app such as Telegram, whose servers would see the reply.
+Private text is only shown when ``show_private`` is true: on the terminal and platforms
+configured to see it, not on Shared platforms such as Telegram by default.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ HELP = """\
 /memories sync status     how sync is set up and how the last one went
 /memories settings        the settings in effect and where each one comes from"""
 
-HIDDEN = "(private: shown only in the terminal or the local app)"
+HIDDEN = "(private: shown only on a Private-capable platform)"
 
 
 
@@ -62,15 +62,15 @@ def _id(arg: str) -> int:
         raise StoreError("Give a memory number, like 3 or #3.") from None
 
 
-def _get(store: Store, arg: str) -> Memory:
+def _get(store: Store, arg: str, show_private: bool = True) -> Memory:
     m = store.get(_id(arg))
-    if m is None or m.audience_consent_required:
+    if m is None or m.audience_consent_required or (m.tier == PRIVATE and not show_private):
         raise StoreError(f"No memory #{arg.lstrip('#')}.")
     return m
 
 
 def cmd_share(store: SQLiteStore, raw_args: str) -> str:
-    """Direct local slash-command path for a Shared-audience proposal (never a model tool)."""
+    """Direct owner slash-command path for a Shared-audience proposal (never a model tool)."""
     parts = raw_args.split()
     if not parts:
         proposals = store.consent_proposals()
@@ -107,11 +107,13 @@ def _share_preview(store: SQLiteStore, m: Memory) -> str:
 
 
 def cmd_list(store: Store, show_private: bool) -> str:
-    memories = store.list(limit=200)
-    waiting = store.count(statuses=(PENDING,)) + len(store.forget_requests())
+    tiers = (PRIVATE, SHARED) if show_private else (SHARED,)
+    memories = store.list(tiers=tiers, limit=200)
+    waiting = sum(1 for it in resolve.items(store) if show_private or
+                  all(m.tier == SHARED for m in (it.memory, *it.others)))
     lines = [_line(m, show_private) for m in memories] or ["Nothing remembered yet."]
-    if waiting or store.flagged():
-        lines.append(f"\n{len(resolve.items(store))} waiting for you: /memories review")
+    if waiting:
+        lines.append(f"\n{waiting} waiting for you: /memories review")
     return "\n".join(lines)
 
 
@@ -121,7 +123,10 @@ def _from(m: Memory) -> str:
 
 
 def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
-    found = resolve.items(store)
+    found = [it for it in resolve.items(store) if show_private or
+             all(m.tier == SHARED for m in (it.memory, *it.others))]
+    if not show_private:
+        scan_note = ""     # a global scan count can include Private pairs
     if not found:
         lines = ["Nothing is waiting for you."]
     else:
@@ -160,17 +165,25 @@ def cmd_keep(store: Store, args: list[str], show_private: bool) -> str:
     rest = args[1:] if both else args
     if len(rest) != 1:
         raise StoreError("Say which one: /memories keep N, or /memories keep both N.")
-    if both:
-        kept = resolve.keep_both(store, _id(rest[0]), show_private=show_private)
-        return "Kept both:\n" + "\n".join(_line(m, show_private) for m in kept)
-    kept, dropped = resolve.keep(store, _id(rest[0]), show_private=show_private)
+    try:
+        if both:
+            kept = resolve.keep_both(store, _id(rest[0]), show_private=show_private)
+            return "Kept both:\n" + "\n".join(_line(m, show_private) for m in kept)
+        kept, dropped = resolve.keep(store, _id(rest[0]), show_private=show_private)
+    except StoreError:
+        if not show_private:
+            raise StoreError(f"#{_id(rest[0])} isn't an available duplicate here.") from None
+        raise
     gone = ", ".join(f"#{m.id}" for m in dropped)
     return f"Kept {_line(kept, show_private)}\nForgot {gone}. It can't be saved again from chat."
 
 
 def cmd_pending(store: Store, show_private: bool) -> str:
     lines = []
-    for m in store.list(statuses=(PENDING,), limit=200):
+    tiers = (PRIVATE, SHARED) if show_private else (SHARED,)
+    for m in store.list(statuses=(PENDING,), tiers=tiers, limit=200):
+        if not show_private and any(other.tier == PRIVATE for other in resolve.partners(store, m)):
+            continue
         why = m.pending_reason or (f"it may say what #{m.duplicate_of} says: /memories review" if m.duplicate_of
                                    else "needs your OK")
         line = f"save {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}"
@@ -179,7 +192,7 @@ def cmd_pending(store: Store, show_private: bool) -> str:
                      f"\n    /memories forget {m.id} forgets it instead.")
         lines.append(line)
     for m in store.forget_requests():
-        if m.status != PENDING:
+        if m.status != PENDING and (show_private or m.tier == SHARED):
             lines.append(f"forget {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, m.forget_reason, show_private)}")
     if not lines:
         return "Nothing is waiting for you."
@@ -187,11 +200,7 @@ def cmd_pending(store: Store, show_private: bool) -> str:
 
 
 def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
-    m = _get(store, arg)
-    if m.tier == PRIVATE and not show_private and (m.status == PENDING or m.forget_reason):
-        # Don't let anyone approve a Private memory they can't see here.
-        return (f"#{m.id} is private, so its text isn't shown here. Approve it in the terminal or the "
-                f"local app, where you can read it first.")
+    m = _get(store, arg, show_private)
     if m.status == PENDING:
         if m.forget_reason:
             store.clear_forget_request(m.id)
@@ -208,7 +217,7 @@ def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user")
 
 
 def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
-    m = _get(store, arg)
+    m = _get(store, arg, show_private)
     if m.status == PENDING:
         store.forget(m.id)
         store.log_event(m.id, "rejected", actor)
@@ -220,8 +229,8 @@ def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") 
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
 
-def cmd_forget(store: Store, arg: str) -> str:
-    m = _get(store, arg)
+def cmd_forget(store: Store, arg: str, show_private: bool = True) -> str:
+    m = _get(store, arg, show_private)
     if m.status == FORGOTTEN:
         raise StoreError(f"#{m.id} is already forgotten.")
     store.forget(m.id)
@@ -230,7 +239,7 @@ def cmd_forget(store: Store, arg: str) -> str:
 
 
 def cmd_restore(store: Store, arg: str, show_private: bool) -> str:
-    m = _get(store, arg)
+    m = _get(store, arg, show_private)
     store.restore(m.id)
     store.log_event(m.id, "restored", "user")
     return f"Restored {_line(store.get(m.id), show_private)}"
@@ -244,6 +253,8 @@ def cmd_add(store: Store, text: str, show_private: bool, via: str, private_refus
     tier, words = (SHARED if shared_only else PRIVATE), text.split(None, 1)
     if words and words[0].lower() in (PRIVATE, SHARED):
         tier, text = words[0].lower(), (words[1] if len(words) > 1 else "")
+    if tier == PRIVATE and not show_private:
+        return "Add Private memories on a Private-capable platform where you can read them."
     if tier == PRIVATE and private_refused:
         return f"{private_refused} Use `add shared TEXT` for a memory any model may see."
     m = store.add(text, tier, Provenance(written_by="user", via=via), allow_forgotten=True)
@@ -252,7 +263,7 @@ def cmd_add(store: Store, text: str, show_private: bool, via: str, private_refus
 
 
 def cmd_show(store: Store, arg: str, show_private: bool) -> str:
-    m = _get(store, arg)
+    m = _get(store, arg, show_private)
     p = m.provenance
     out = [
         _line(m, show_private),
@@ -303,6 +314,8 @@ def cmd_undo(store: Store, show_private: bool) -> str:
         current = store.get(e.memory_id)
         if current is not None and current.audience_consent_required:
             continue        # a hidden proposal is not an ordinary undo choice
+        if current is not None and current.tier == PRIVATE and not show_private:
+            continue
         if current is None:          # purged: nothing left to undo
             store.mark_undone(e.id)
             continue
@@ -355,7 +368,7 @@ def run(store: Store, raw_args: str, *, show_private: bool, via: str = "/memorie
         if cmd == "reject":
             return cmd_reject(store, one(), show_private)
         if cmd == "forget":
-            return cmd_forget(store, one())
+            return cmd_forget(store, one(), show_private)
         if cmd == "restore":
             return cmd_restore(store, one(), show_private)
         if cmd == "undo":

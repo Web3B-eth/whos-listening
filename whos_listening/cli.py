@@ -77,7 +77,8 @@ def purge(store: SQLiteStore, arg: str) -> str:
     except StoreError as exc:
         return str(exc)
     return (f"Purged #{memory_id}: its record was removed from SQLite. Old bytes may remain in the "
-            "database, WAL or backups. Its tombstone stays, so it can't be saved again from chat.")
+            "database, WAL or backups. If this memory had a tombstone, it stays. "
+            "A declined sharing proposal has no tombstone.")
 
 
 def main(argv: list[str] | None = None) -> int:

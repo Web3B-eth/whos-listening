@@ -178,7 +178,7 @@ def test_a_private_pair_isnt_chosen_where_private_text_is_hidden(store):
     private, new = _pair(store)
     with pytest.raises(Exception, match="private memory"):
         resolve.keep(store, new.id, show_private=False)
-    assert "(private: shown only" in commands.cmd_review(store, show_private=False)
+    assert "Nothing is waiting for you" in commands.cmd_review(store, show_private=False)
 
 
 def test_a_flag_whose_other_memory_is_gone_clears_itself(store):

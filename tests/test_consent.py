@@ -5,7 +5,7 @@ import json
 import pytest
 
 from test_sync import FakeFile
-from whos_listening import commands, sync, tools
+from whos_listening import cli, commands, sync, tools
 from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError
 
 
@@ -31,7 +31,7 @@ def test_proposal_is_uniform_and_hidden_before_private_checks(tmp_path, route, p
     out = propose(store, route, judge=lambda *_: judged.append(True), tier_duplicates="private",
                   outside_tool="read_file")
     assert out == {"ok": True, "pending": {"tier": SHARED},
-                   "note": "Sharing waits for your direct choice in the local app: /memories share."}
+                   "note": "Sharing waits for your direct choice on a Private-capable platform: /memories share."}
     assert not judged
     proposals = store.consent_proposals()
     assert len(proposals) == 1 and proposals[0].status == PENDING
@@ -95,6 +95,9 @@ def test_decline_has_no_tombstone_or_sync_record(store):
     assert not store.is_forgotten_text(FACT) and store.shared_for_sync() == []
     with pytest.raises(StoreError):
         store.restore(p.id)
+    assert "A declined sharing proposal has no tombstone" in cli.purge(store, str(p.id))
+    assert store.get(p.id) is None and store.shared_for_sync() == []
+    assert not store.is_forgotten_text(FACT)
 
 
 def test_proposal_is_absent_from_actual_sync_until_owner_approves(store):
@@ -162,7 +165,40 @@ def test_legacy_pending_shared_assistant_save_is_migrated(tmp_path):
     store.close()
     migrated = SQLiteStore(path)
     p = migrated.get(old.id)
-    assert p.audience_consent_required and p.updated_at != stamp
+    assert p.audience_consent_required and p.updated_at == stamp
     assert not migrated.apply_review(old.id, since, stamp, True, "")
     assert migrated.list(statuses=(PENDING,)) == []
     migrated.close()
+
+
+def test_max_timestamp_legacy_pending_proposal_migrates_without_advancing_date(tmp_path):
+    path = tmp_path / "max-date.sqlite"
+    old = SQLiteStore(path)
+    m = old.add(FACT, SHARED, ASSISTANT, status=PENDING, pending_reason="Outside content.")
+    old._db.execute("UPDATE memories SET updated_at = ? WHERE id = ?",
+                    ("9999-12-31T23:59:59+00:00", m.id))
+    old._db.commit()
+    since = old.last_event_id(m.id)
+    old._db.execute("PRAGMA user_version = 5")
+    old.close()
+    migrated = SQLiteStore(path)
+    try:
+        assert migrated.get(m.id).updated_at == "9999-12-31T23:59:59+00:00"
+        assert migrated.get(m.id).audience_consent_required
+        assert not migrated.apply_review(m.id, since, "9999-12-31T23:59:59+00:00", True, "")
+        assert migrated.get(m.id).status == PENDING
+    finally:
+        migrated.close()
+
+
+def test_shared_route_private_reply_is_uniform_with_visible_and_hidden_duplicate(tmp_path):
+    responses = []
+    for name, with_private in (("visible", False), ("hidden", True)):
+        s = SQLiteStore(tmp_path / f"{name}.sqlite")
+        s.add(FACT, SHARED, USER)
+        if with_private:
+            s.add(FACT, PRIVATE, USER)
+        responses.append(json.loads(tools.handle(s, tools.REMEMBER, {"text": FACT}, route_tier=SHARED,
+                                                provenance=lambda: ASSISTANT, outside_tool="read_file")))
+        s.close()
+    assert responses[0] == responses[1]

@@ -293,7 +293,17 @@ def test_memories_command_through_hermes_dispatch(plugin, tmp_path, monkeypatch)
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     out = invoke_plugin_command(plugin._memories_command, "add shared Likes jazz",
                                 source="cli", session_id="s", session_key="k", platform="cli")
-    assert out.startswith("Saved")
+    assert "Saved #1 [shared] Likes jazz" in out and out.startswith('<wl-private id="0">')
+
+
+def test_private_capable_command_reply_is_scrubbed_from_shared_replay(plugin, provider, monkeypatch):
+    home = Path(provider._store.path).parent.parent
+    monkeypatch.setattr(plugin, "_active_home", lambda: home)
+    provider._store.add("Keeps a blue notebook", "private", plugin.Provenance(written_by="user", via="test"))
+    owner_reply = plugin._memories_command("list", platform="desktop")
+    assert "Keeps a blue notebook" in owner_reply
+    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": owner_reply}]}, "shared")
+    assert cleaned is not None and "Keeps a blue notebook" not in cleaned["messages"][0]["content"]
 
 
 def test_outside_flag_follows_compression_and_branch(plugin, provider):
@@ -665,10 +675,10 @@ def test_sharing_proposal_uses_local_slash_and_is_scrubbed_on_shared_replay(plug
     see(plugin, "http://127.0.0.1:9/v1")
     result = tool(provider, "whos-listening_remember", {"text": "Likes <blue> puzzles", "tier": "shared"})
     assert result == {"ok": True, "pending": {"tier": "shared"},
-                      "note": "Sharing waits for your direct choice in the local app: /memories share."}
+                     "note": "Sharing waits for your direct choice on a Private-capable platform: /memories share."}
     proposal = provider._store.consent_proposals()[0]
     token = f"P{proposal.id}@{proposal.updated_at}"
-    assert "Private-capable local app" in plugin._memories_command("share", platform="telegram")
+    assert "Private-capable platform" in plugin._memories_command("share", platform="telegram")
     preview = plugin._memories_command("share", platform="desktop")
     assert "Likes ‹blue› puzzles" in preview and token in preview
     cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": preview}]}, "shared")
@@ -685,7 +695,7 @@ def test_sharing_approval_rechecks_gateway_settings(plugin, provider, monkeypatc
     p = provider._store.consent_proposals()[0]
     token = f"P{p.id}@{p.updated_at}"
     (home / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
-    assert "Private-capable local app" in plugin._memories_command(f"share approve {token}", platform="desktop")
+    assert "Private-capable platform" in plugin._memories_command(f"share approve {token}", platform="desktop")
     assert provider._store.get(p.id).audience_consent_required
 
 

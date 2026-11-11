@@ -494,18 +494,21 @@ class SQLiteStore(Store):
                 if not self._has_column("memories", name):
                     self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {definition}")
             # Old assistant Shared holds may otherwise be approved by a late side-call verdict.
-            for row in self._db.execute("SELECT id, updated_at FROM memories WHERE tier = 'shared' "
+            for row in self._db.execute("SELECT id FROM memories WHERE tier = 'shared' "
                                         "AND status = 'pending' AND written_by = 'assistant'").fetchall():
-                self._db.execute("UPDATE memories SET audience_consent_required = 1, pending_reason = ?, "
-                                 "updated_at = ? WHERE id = ?",
-                                 ("Approve sharing with any model in the local app.",
-                                  stamp_after(row["updated_at"]), row["id"]))
+                # The flag and new event invalidate old Auto-review verdicts. Keep the original
+                # timestamp: a legacy row may already have the largest representable date.
+                self._db.execute("UPDATE memories SET audience_consent_required = 1, pending_reason = ? WHERE id = ?",
+                                 ("Approve sharing with any model on a Private-capable platform.", row["id"]))
                 self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
                                  (row["id"], "share_held", "migration", now_iso()))
         if version < 7:
             for sql in self._V7:
                 self._db.execute(sql)
-            next_id = max(1, int(self._db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM memories").fetchone()[0]))
+            highest = self._db.execute("SELECT MAX(id) FROM memories").fetchone()[0]
+            # SQLite cannot store MAX(id) + 1 when the file already uses the last signed ID.
+            # Keep the existing file readable and mark the allocator exhausted instead.
+            next_id = min(2**63 - 1, int(highest or 0) + 1)
             self._db.execute("INSERT OR IGNORE INTO memory_id_state (singleton, next_id) VALUES (1, ?)",
                              (next_id,))
             self._db.execute("UPDATE memory_id_state SET next_id = MAX(next_id, ?) WHERE singleton = 1",
@@ -546,6 +549,8 @@ class SQLiteStore(Store):
 
     def claim_memory_id(self):
         with self._lock:
+            if self._db.in_transaction:
+                raise StoreError("A memory number must be claimed before starting a database change.")
             old_isolation = self._db.isolation_level
             self._db.isolation_level = None
             try:
@@ -604,7 +609,7 @@ class SQLiteStore(Store):
                        written_by, via, route, route_tier, session_id, turn, author, uid,
                        audience_consent_required)
                    VALUES (?,?,'shared','pending',?,?,?,?,?,?,?,?,?,?,?,1)""",
-                (memory_id, text, "Approve sharing with any model in the local app.", stamp, stamp,
+                (memory_id, text, "Approve sharing with any model on a Private-capable platform.", stamp, stamp,
                  p.written_by, p.via, p.route, p.route_tier, p.session_id, str(p.turn), p.author, new_uid()),
             )
             self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
@@ -809,8 +814,8 @@ class SQLiteStore(Store):
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            if m.audience_consent_required:
-                raise StoreError("That sharing proposal cannot be purged here.")
+            if m.audience_consent_required and m.status != FORGOTTEN:
+                raise StoreError("Decline that sharing proposal before purging it.")
             if m.status != FORGOTTEN:
                 raise StoreError(f"Forget memory #{m.id} before purging it.")
             self._db.execute("UPDATE tombstones SET memory_id = NULL WHERE memory_id = ?", (m.id,))

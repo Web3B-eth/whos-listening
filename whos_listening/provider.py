@@ -480,7 +480,7 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if words and words[0].lower() == "share":
         settings, _ = _load_settings(home)
         if settings is None or _shared_only(home) or not commands.shows_private(platform, settings):
-            return "Sharing proposals are available only in a Private-capable local app."
+            return "Sharing proposals are available only on a configured Private-capable platform."
         path = home / DATA_DIR / DB_FILE
         before = _stamp_at(path)
         store = SQLiteStore(path)
@@ -496,6 +496,9 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if words and words[0].lower() == "settings":
         return _with_setup_notes(_settings_command(home))
     if len(words) >= 2 and words[0].lower() == "review" and words[1].lower() == "scan":
+        settings, _ = _load_settings(home)
+        if settings is None or not commands.shows_private(platform, settings):
+            return "Review scans are available on a Private-capable platform."
         return start_scan(home)
     if words and words[0].lower() == "export":
         settings, _ = _load_settings(home)
@@ -504,14 +507,15 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     settings, _ = _load_settings(home)
     store_path = home / DATA_DIR / DB_FILE
     before = _stamp_at(store_path)
+    show_private = settings is not None and commands.shows_private(platform, settings)
     out = commands.open_and_run(lambda: SQLiteStore(store_path), raw_args,
-                                show_private=settings is not None and commands.shows_private(platform, settings),
+                                show_private=show_private,
                                 private_refused=_private_refused(home), shared_only=_shared_only(home))
     if _stamp_at(store_path) != before:
         maybe_sync(home, force=True)
     if not words or words[0].lower() in ("list", "pending"):
         out = _with_setup_notes(out)
-    return out
+    return recall.private_span(0, out) if show_private else out
 
 
 def _export_command(home: Path, show_private: bool, platform: str) -> str:

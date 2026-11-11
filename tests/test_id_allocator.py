@@ -79,6 +79,17 @@ def test_unused_claim_and_highest_row_purge_are_not_reused(tmp_path):
     reopened.close()
 
 
+def test_claim_rejects_open_transaction_without_committing_it(store):
+    store._db.execute("BEGIN")
+    store._db.execute("INSERT INTO meta (key, value) VALUES ('trial', 'temporary')")
+    with pytest.raises(Exception, match="before starting a database change"):
+        store.claim_memory_id()
+    assert store._db.in_transaction
+    store._db.execute("ROLLBACK")
+    assert store._db.execute("SELECT value FROM meta WHERE key = 'trial'").fetchone() is None
+    assert store.add("Likes tea", PRIVATE, USER).id == 1
+
+
 def test_failure_after_claim_and_failed_insert_keep_claim_consumed(store):
     old = store.add(FACT, PRIVATE, USER)
     store.forget(old.id)
@@ -128,6 +139,23 @@ def test_schema_six_migration_preserves_ids_events_and_duplicate_links(tmp_path)
         assert migrated.get(newer.id).duplicate_of == older.id
         assert migrated.events(memory_id=newer.id)[0].memory_id == newer.id
         assert migrated.add("Collects stamps", SHARED, USER).id == newer.id + 1
+    finally:
+        migrated.close()
+
+
+def test_schema_six_migration_with_maximum_id_remains_readable(tmp_path):
+    path = tmp_path / "max-id.sqlite"
+    old = SQLiteStore(path)
+    m = old.add("Likes tea", PRIVATE, USER, memory_id=2**63 - 1)
+    old._db.execute("DROP TABLE memory_id_state")
+    old._db.execute("PRAGMA user_version = 6")
+    old.close()
+    migrated = SQLiteStore(path)
+    try:
+        assert migrated.get(m.id).text == "Likes tea"
+        with pytest.raises(Exception, match="no more memory numbers"):
+            migrated.claim_memory_id()
+        assert migrated.count() == 1
     finally:
         migrated.close()
 

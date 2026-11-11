@@ -18,7 +18,7 @@ def test_list_hides_private_off_local_platforms(store):
     store.add("Likes jazz", "shared", assistant())
     assert "peanut" in run(store, "")
     out = run(store, "list", show_private=False)
-    assert "peanut" not in out and "jazz" in out and commands.HIDDEN in out
+    assert "peanut" not in out and "jazz" in out and "private" not in out.lower()
     assert commands.shows_private("cli") and not commands.shows_private("telegram")
 
 
@@ -44,10 +44,11 @@ def test_shared_views_hide_legacy_auto_review_reasons(store, tmp_path):
                        pending_reason="Outside content. Auto-review: The blue notebook is private")
     safe = store.add("Visits www.example.com", "shared", assistant(), status=PENDING,
                      pending_reason="It has a link or web address.")
-    for command in ("pending", "review", f"show {private.id}", f"show {shared.id}"):
+    for command in ("pending", "review", f"show {shared.id}"):
         out = run(store, command, show_private=False)
         assert "blue notebook" not in out
         assert "Needs your review" in out
+    assert "No memory" in run(store, f"show {private.id}", show_private=False)
     exported = resolve.export_markdown(store, tmp_path, show_private=False).read_text()
     assert "blue notebook" not in exported and "Likes tea" in exported
     assert "It has a link or web address." in exported
@@ -108,11 +109,12 @@ def test_add_forget_restore(store):
     assert "Saved" in run(store, "add shared likes jazz")
 
 
-def test_direct_user_command_can_forget_private_from_shared_view(store):
+def test_direct_user_command_cannot_guess_private_from_shared_view(store):
     m = store.add("Keeps a blue notebook", "private", assistant())
     out = run(store, f"forget {m.id}", show_private=False)
-    assert "Forgot" in out and "blue notebook" not in out
-    assert store.get(m.id).status == "forgotten"
+    assert "No memory" in out and "blue notebook" not in out
+    assert store.get(m.id).status == "active"
+    assert "Forgot" in run(store, f"forget {m.id}", show_private=True)
 
 
 def test_undo_walks_back(store):
@@ -187,7 +189,7 @@ def test_add_keeps_the_text_as_typed(store):
 def test_private_memories_are_approved_only_where_they_can_be_read(store):
     m = store.add("Has a peanut allergy", "private", assistant(), status=PENDING, pending_reason="r")
     out = run(store, f"approve {m.id}", show_private=False)
-    assert "terminal" in out and store.get(m.id).status == "pending"
+    assert "No memory" in out and store.get(m.id).status == "pending"
     assert "Saved" in run(store, f"approve {m.id}", show_private=True)
     assert not commands.shows_private("") and not commands.shows_private(None)
 
@@ -197,6 +199,29 @@ def test_platform_settings_decide_where_private_text_shows():
     s = RouteSettings.from_dict({"private_platforms": ["signal"], "shared_platforms": ["desktop"]})
     assert commands.shows_private("signal", s) and not commands.shows_private("desktop", s)
     assert commands.shows_private("cli", s) and not commands.shows_private("", s)
+
+
+def test_shared_platform_views_do_not_reveal_private_hold_or_duplicate(store):
+    visible = store.add("Likes jazz", "shared", assistant())
+    baseline = {cmd: run(store, cmd, show_private=False) for cmd in ("list", "pending", "review")}
+    private = store.add("Keeps a blue notebook", "private", assistant(), status=PENDING,
+                        pending_reason="Outside content.")
+    store.log_event(private.id, "held", "assistant")
+    assert {cmd: run(store, cmd, show_private=False) for cmd in baseline} == baseline
+    for cmd in ("show", "approve", "reject", "forget", "restore"):
+        assert run(store, f"{cmd} {private.id}", show_private=False) == run(store, f"{cmd} 99999", show_private=False).replace("99999", str(private.id))
+    assert "No memory" in run(store, f"show {private.id}", show_private=False)
+    assert store.get(private.id).status == PENDING
+    assert "Likes jazz" in run(store, f"show {visible.id}", show_private=False)
+
+
+def test_shared_pending_view_hides_private_duplicate_link(store):
+    private = store.add("Owns a blue mountain bike", "private", assistant())
+    shared = store.add("Owns a blue bike", "shared", assistant(), status=PENDING,
+                       duplicate_of=private.id)
+    assert str(private.id) not in run(store, "pending", show_private=False)
+    assert str(shared.id) not in run(store, "pending", show_private=False)
+    assert "Nothing is waiting" in run(store, "pending", show_private=False)
 
 
 def test_add_on_a_shared_gateway(store):

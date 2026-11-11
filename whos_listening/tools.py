@@ -167,6 +167,8 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         return _ok(file=path, note="Give the user this file." + ("" if show_private else
                                                                " On a shared route it has shared memories only."))
     if action == "scan":
+        if not show_private:
+            return _err("Review scans are available on a Private route.")
         if scan is None:
             return _err("Scanning isn't available here.")
         return _ok(note=scan())
@@ -287,16 +289,17 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             memory_id = store.claim_memory_id()    # every permitted attempt claims before Private-state checks
             if tier == SHARED and not shared_only:
                 store.propose_shared(screened, provenance(), memory_id=memory_id)
-                return _ok(pending={"tier": SHARED}, note="Sharing waits for your direct choice in the local app: /memories share.")
+                return _ok(pending={"tier": SHARED}, note="Sharing waits for your direct choice on a Private-capable platform: /memories share.")
             outside_hold = review.save_hold_reason(screened, outside_tool)
             same = repeat_of(store, screened, tier, judge) if duplicates != "keep" else None
             cross = same if same is not None and tier == SHARED and same.tier == PRIVATE else None
             if cross is not None and tier_duplicates != "private":
                 same = None         # saved below: flagged for the user, or replacing the Private one
             if same is not None:
-                if route_tier != PRIVATE and same.tier == PRIVATE:
-                    # Don't tell a Shared route that a Private memory says this: answer exactly
-                    # like a save, as for a forgotten Private fact.
+                if route_tier != PRIVATE and (tier == PRIVATE or same.tier == PRIVATE):
+                    # A Private save on a Shared route has one reply whether the nearest match
+                    # is visible Shared, hidden Private, or absent. Shared saves also hide a
+                    # Private match, as for a forgotten Private fact.
                     return _shared_route_saved(tier, outside_hold)
                 return _ok(duplicate=_public(same),
                            note=f"Already remembered as #{same.id}, so nothing new was saved.")
