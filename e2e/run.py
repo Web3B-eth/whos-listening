@@ -392,7 +392,7 @@ def main() -> int:
         try:
             proposals = proposal_store.consent_proposals()
             proposal = next((m for m in proposals if m.text == "Keeps a vegetarian diet on all weekdays"), None)
-            token = f"P{proposal.id}@{proposal.updated_at}" if proposal else ""
+            token = f"P{proposal.id}@{proposal.order_key}" if proposal else ""
         finally:
             proposal_store.close()
         run.check("shared audience: proposal is held without a Private-match reply",

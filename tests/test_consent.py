@@ -50,14 +50,14 @@ def test_only_direct_local_share_choice_activates_a_proposal(store):
     out = propose(store)
     proposal = store.consent_proposals()[0]
     assert "id" not in json.dumps(out)
-    token = f"P{proposal.id}@{proposal.updated_at}"
+    token = f"P{proposal.id}@{proposal.order_key}"
     with pytest.raises(StoreError, match="No memory"):
         commands.cmd_approve(store, str(proposal.id), True)
     with pytest.raises(StoreError):
         store.set_status(proposal.id, ACTIVE)
     with pytest.raises(StoreError):
         store.forget(proposal.id)
-    assert not store.apply_review(proposal.id, store.last_event_id(proposal.id), proposal.updated_at, True, "")
+    assert not store.apply_review(proposal.id, store.last_event_id(proposal.id), proposal.order_key, True, "")
     preview = commands.cmd_share(store, "")
     assert FACT in preview and old.text in preview and "Shared: any model may see it" in preview
     assert "keep-both" in preview and "<wl-private id=" in preview
@@ -90,7 +90,7 @@ def test_guessed_proposal_number_answers_like_missing_one(store):
 def test_decline_has_no_tombstone_or_sync_record(store):
     propose(store)
     p = store.consent_proposals()[0]
-    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{p.updated_at}")
+    assert "Declined" in commands.cmd_share(store, f"reject P{p.id}@{p.order_key}")
     assert store.get(p.id).status == FORGOTTEN and store.get(p.id).audience_consent_required
     assert not store.is_forgotten_text(FACT) and store.shared_for_sync() == []
     with pytest.raises(StoreError):
@@ -106,7 +106,7 @@ def test_proposal_is_absent_from_actual_sync_until_owner_approves(store):
     p = store.consent_proposals()[0]
     sync.sync_once(store, file, "local")
     assert FACT not in (file.raw or b"").decode()
-    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.updated_at}")
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
     sync.sync_once(store, file, "local")
     assert FACT in file.raw.decode()
 
@@ -118,9 +118,9 @@ def test_second_connection_cannot_decide_a_stale_proposal(tmp_path):
     try:
         propose(first)
         p = first.consent_proposals()[0]
-        second.decide_shared_proposal(p.id, p.updated_at, approve=False)
+        second.decide_shared_proposal(p.id, p.order_key, approve=False)
         with pytest.raises(StoreError, match="changed"):
-            first.decide_shared_proposal(p.id, p.updated_at, approve=True)
+            first.decide_shared_proposal(p.id, p.order_key, approve=True)
         assert first.shared_for_sync() == []
     finally:
         first.close()
@@ -132,7 +132,7 @@ def test_private_tombstone_needs_explicit_owner_restore_or_add(store):
     store.forget(old.id)
     propose(store)
     p = store.consent_proposals()[0]
-    assert "forgotten" in commands.cmd_share(store, f"approve P{p.id}@{p.updated_at}")
+    assert "forgotten" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
     assert store.get(p.id).status == PENDING
     assert store.is_forgotten_text(FACT)
 
@@ -166,7 +166,7 @@ def test_legacy_pending_shared_assistant_save_is_migrated(tmp_path):
     migrated = SQLiteStore(path)
     p = migrated.get(old.id)
     assert p.audience_consent_required and p.updated_at == stamp
-    assert not migrated.apply_review(old.id, since, stamp, True, "")
+    assert not migrated.apply_review(old.id, since, old.order_key, True, "")
     assert migrated.list(statuses=(PENDING,)) == []
     migrated.close()
 
@@ -185,7 +185,7 @@ def test_max_timestamp_legacy_pending_proposal_migrates_without_advancing_date(t
     try:
         assert migrated.get(m.id).updated_at == "9999-12-31T23:59:59+00:00"
         assert migrated.get(m.id).audience_consent_required
-        assert not migrated.apply_review(m.id, since, "9999-12-31T23:59:59+00:00", True, "")
+        assert not migrated.apply_review(m.id, since, migrated.get(m.id).order_key, True, "")
         assert migrated.get(m.id).status == PENDING
     finally:
         migrated.close()

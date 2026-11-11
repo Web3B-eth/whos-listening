@@ -1,7 +1,9 @@
+import sqlite3
+
 import pytest
 
 from whos_listening.store import (
-    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError, fts_query,
+    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, Provenance, SQLiteStore, StoreError, fingerprint, fts_query,
 )
 
 
@@ -136,7 +138,7 @@ def test_migrates_v1_and_backfills_tombstones(tmp_path):
             route TEXT NOT NULL DEFAULT '', route_tier TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
             turn TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '');
         INSERT INTO memories (text, tier, status, created_at, updated_at)
-            VALUES ('Likes jazz', 'shared', 'forgotten', 'x', 'x');
+            VALUES ('Likes jazz', 'shared', 'forgotten', '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00');
         PRAGMA user_version = 1;
     """)
     db.close()
@@ -173,20 +175,86 @@ def test_pending_forget_transition_invalidates_in_flight_auto_review(store, prov
     try:
         other.request_forget(m.id, "outside content")
         # The caller has not logged forget_requested yet: the row change alone must win.
-        assert not store.apply_review(m.id, since, m.updated_at, True, "")
+        assert not store.apply_review(m.id, since, m.order_key, True, "")
         assert store.get(m.id).status == PENDING
         other.clear_forget_request(m.id)
-        assert not store.apply_review(m.id, since, m.updated_at, True, "")
+        assert not store.apply_review(m.id, since, m.order_key, True, "")
         assert store.get(m.id).status == PENDING
     finally:
         other.close()
+
+
+def test_logical_version_blocks_stale_review_when_display_time_repeats(store, prov, monkeypatch):
+    import whos_listening.store as store_mod
+    from whos_listening import order
+
+    m = store.add("Likes puzzles", "shared", prov, status=PENDING, pending_reason="outside content")
+    maximum = "9999-12-31T23:59:59+00:00"
+    store._db.execute("UPDATE memories SET updated_at = ?, order_key = ? WHERE id = ?",
+                      (maximum, order.from_iso(maximum), m.id))
+    store._db.commit()
+    store.log_event(m.id, "held", "assistant")
+    since = store.last_event_id(m.id)
+    other = SQLiteStore(store.path)
+    monkeypatch.setattr(store_mod, "now_iso", lambda: "2026-01-01T00:00:00+00:00")
+    try:
+        other.request_forget(m.id, "outside content")
+        first = other.get(m.id)
+        other.clear_forget_request(m.id)
+        second = other.get(m.id)
+        assert first.updated_at == second.updated_at
+        assert first.order_key != second.order_key
+        assert not store.apply_review(m.id, since, first.order_key, True, "")
+        assert store.get(m.id).status == PENDING
+    finally:
+        other.close()
+
+
+def test_v7_order_migration_preserves_fractional_and_offset_instants(tmp_path, prov):
+    from whos_listening import order
+
+    path = tmp_path / "legacy-order.sqlite"
+    old = SQLiteStore(path)
+    m = old.add("Likes jazz", "shared", prov)
+    old.forget(m.id)
+    row_time = "2026-01-01T00:00:00.123456+00:00"
+    tomb_time = "2025-12-31T19:00:00.123456-05:00"
+    old._db.execute("UPDATE memories SET updated_at = ?, order_key = '' WHERE id = ?", (row_time, m.id))
+    old._db.execute("UPDATE tombstones SET created_at = ?, order_key = ''", (tomb_time,))
+    old._db.commit()
+    old._db.execute("PRAGMA user_version = 7")
+    old.close()
+    migrated = SQLiteStore(path)
+    try:
+        assert migrated.get(m.id).order_key == order.from_iso(row_time)
+        assert migrated.tombstone_order(fingerprint("Likes jazz")) == order.from_iso(tomb_time)
+    finally:
+        migrated.close()
+
+
+def test_v7_migration_rejects_invalid_timestamp_without_partial_write(tmp_path, prov):
+    path = tmp_path / "bad-order.sqlite"
+    old = SQLiteStore(path)
+    m = old.add("Likes jazz", "shared", prov)
+    old._db.execute("UPDATE memories SET updated_at = 'invalid', order_key = '' WHERE id = ?", (m.id,))
+    old._db.commit()
+    old._db.execute("PRAGMA user_version = 7")
+    old.close()
+    with pytest.raises(Exception, match="invalid change time"):
+        SQLiteStore(path)
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("SELECT updated_at FROM memories WHERE id = ?", (m.id,)).fetchone()[0] == "invalid"
+    finally:
+        connection.close()
 
 
 def test_auto_review_then_pending_forget_still_holds_for_user(store, prov):
     m = store.add("Likes puzzles", "shared", prov, status=PENDING, pending_reason="outside content")
     store.log_event(m.id, "held", "assistant")
     since = store.last_event_id(m.id)
-    assert store.apply_review(m.id, since, m.updated_at, True, "")
+    assert store.apply_review(m.id, since, m.order_key, True, "")
     store.request_forget(m.id, "outside content")
     assert store.get(m.id).status == "active" and store.get(m.id).forget_reason
 
@@ -205,7 +273,8 @@ def _old_v1_file(path):
             updated_at TEXT NOT NULL, written_by TEXT NOT NULL DEFAULT 'unknown', via TEXT NOT NULL DEFAULT '',
             route TEXT NOT NULL DEFAULT '', route_tier TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '',
             turn TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '');
-        INSERT INTO memories (text, tier, status, created_at, updated_at) VALUES ('Likes jazz', 'shared', 'active', 'x', 'x');
+        INSERT INTO memories (text, tier, status, created_at, updated_at)
+            VALUES ('Likes jazz', 'shared', 'active', '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00');
         PRAGMA user_version = 1;
     """)
     db.close()

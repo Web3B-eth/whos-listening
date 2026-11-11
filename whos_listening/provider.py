@@ -380,7 +380,7 @@ class WhosListeningProvider(MemoryProvider):
         self._checks_this_turn += 1
         since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
-                             args=(self._store, memory.id, memory.text, self._own_words(), since, memory.updated_at,
+                             args=(self._store, memory.id, memory.text, self._own_words(), since, memory.order_key,
                                    route.model if route else "")).start()
         return True
 
@@ -437,13 +437,13 @@ def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 
 
 
 def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: list[str],
-                 since_event: int, expected_updated_at: str, expected_model: str = "", ask: Any = None) -> None:
+                 since_event: int, expected_order_key: str, expected_model: str = "", ask: Any = None) -> None:
     """Run in a background thread. The verdict applies only if nothing happened to the memory
     since the check started (the user's decision always wins)."""
     asker = ask or (lambda prompt: _ask_chat_model(prompt, expected_model))
     verdict = autoreview.check(text, user_messages, asker)
     try:
-        store.apply_review(memory_id, since_event, expected_updated_at, verdict.save, verdict.reason)
+        store.apply_review(memory_id, since_event, expected_order_key, verdict.save, verdict.reason)
     except Exception as exc:
         logger.warning("whos-listening: could not apply the auto-review verdict: %s", type(exc).__name__)
 
@@ -734,7 +734,9 @@ def _sync_token() -> str:
 
 def _shared_stamp(store: SQLiteStore) -> tuple:
     rows = store.shared_for_sync()
-    return (len(rows), sum(1 for m in rows if m.status == "active"), max((m.updated_at for m in rows), default=""))
+    withdrawals = store.withdrawals_for_sync()
+    return (tuple((m.uid, m.status, m.order_key) for m in rows),
+            tuple((w.uid, w.order_key) for w in withdrawals))
 
 
 def _stamp_at(path: Path) -> tuple:

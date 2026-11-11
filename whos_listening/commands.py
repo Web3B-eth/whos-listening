@@ -98,7 +98,7 @@ def cmd_share(store: SQLiteStore, raw_args: str) -> str:
 
 
 def _share_preview(store: SQLiteStore, m: Memory) -> str:
-    token = f"P{m.id}@{m.updated_at}"
+    token = f"P{m.id}@{m.order_key}"
     match = duplicates.find(store, m.text, SHARED, tiers=(PRIVATE,))
     note = f"\nPossible Private match: {_line(match, True)}" if match else ""
     choice = "keep-both" if match else "approve"
@@ -298,7 +298,10 @@ def _undo(store: Store, e: Event, show_private: bool) -> str:
         raise StoreError("That memory was purged, so the last change can't be undone.")
     if e.action in ("saved", "held", "restored", "approved"):
         if e.action == "approved":
-            store.set_status(m.id, PENDING, pending_reason=m.pending_reason or "You undid the approval.")
+            if m.tier == SHARED and m.status == ACTIVE:
+                store.withdraw_approval(m.id, m.pending_reason or "You undid the approval.")
+            else:
+                store.set_status(m.id, PENDING, pending_reason=m.pending_reason or "You undid the approval.")
             return f"#{m.id} is waiting for you again."
         store.forget(m.id)
         return f"Undid it: forgot #{m.id}."

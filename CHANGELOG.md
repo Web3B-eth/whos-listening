@@ -5,6 +5,7 @@ What changed in whos-listening, newest first. Format follows [Keep a Changelog](
 ## [Unreleased]
 
 - Scan-status replay guard (2026-11-10): Private-capable /memories review scan replies and Private-route review-tool scan notes carry the Private marker, including an in-progress scan's global counts. The request guard can remove those notes from a later Shared-route replay.
+- Sync order and approval Undo (2026-11-10): version-2 sync records carry a bounded numeric order separate from the display time. Schema 8 migrates old memory and tombstone timestamps exactly, keeps observed UID heads, and lets an owner change outrank a year-9999 legacy record. Undo of an approved Shared save now publishes a text-free UID-only withdrawal; peers stop recalling that ID after sync, while a different ID with the same words remains. Reapproval publishes a newer active record. Old version-1 writers must be upgraded before version 2 is published; malformed or oversized order values stop the whole sync file. The finite order budget and offline/history limits are documented.
 
 - Fixed Shared-route omission notes (2026-11-10): recall, list-all and Shared-platform exports now say Private memories are omitted by route policy, regardless of whether any exist. They no longer query or report a Private-presence count. A Shared model gets less detail about whether the owner has Private memories; no new approval step is added.
 

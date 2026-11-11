@@ -389,13 +389,13 @@ def test_auto_review_leaves_a_users_decision_alone(plugin, provider):
     since = store.last_event_id(m.id)
     store.set_status(m.id, "active")                    # the user approved it meanwhile
     store.log_event(m.id, "approved", "user")
-    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.updated_at,
+    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.order_key,
                         ask=lambda p: '{"save": false}')
     assert store.get(m.id).status == "active"
     # approve, then undo back to pending: a late yes still doesn't apply (an event happened)
     store.set_status(m.id, "pending", pending_reason="again")
     store.log_event(m.id, "undo", "user")
-    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.updated_at,
+    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.order_key,
                         ask=lambda p: '{"save": true}')
     assert store.get(m.id).status == "pending"
 
@@ -663,10 +663,24 @@ def test_only_a_shared_change_forces_a_sync(plugin, provider, monkeypatch):
     assert calls == []                              # a proposal is not published
     monkeypatch.setattr(plugin, "_active_home", lambda: Path(provider._store.path).parent.parent)
     proposal = provider._store.consent_proposals()[0]
-    token = f"P{proposal.id}@{proposal.updated_at}"
+    token = f"P{proposal.id}@{proposal.order_key}"
     assert "Likes jazz" in plugin._memories_command("share", platform="desktop")
     assert "Approved Shared" in plugin._memories_command(f"share approve {token}", platform="desktop")
     assert calls == [True]
+
+
+def test_undo_approved_shared_save_forces_withdrawal_sync(plugin, provider, monkeypatch):
+    home = Path(provider._store.path).parent.parent
+    monkeypatch.setattr(plugin, "_active_home", lambda: home)
+    calls = []
+    monkeypatch.setattr(plugin, "maybe_sync", lambda _home, force=False: calls.append(force))
+    m = provider._store.add("Likes jazz", "shared", plugin.Provenance(written_by="user"),
+                            status="pending", pending_reason="Review first.")
+    provider._store.log_event(m.id, "held", "assistant")
+    assert "Saved" in plugin._memories_command(f"approve {m.id}", platform="cli")
+    assert "waiting for you again" in plugin._memories_command("undo", platform="cli")
+    assert provider._store.withdrawal(m.uid) is not None
+    assert calls == [False, True, False, True]
 
 
 def test_sharing_proposal_uses_local_slash_and_is_scrubbed_on_shared_replay(plugin, provider, monkeypatch):
@@ -677,7 +691,7 @@ def test_sharing_proposal_uses_local_slash_and_is_scrubbed_on_shared_replay(plug
     assert result == {"ok": True, "pending": {"tier": "shared"},
                      "note": "Sharing waits for your direct choice on a Private-capable platform: /memories share."}
     proposal = provider._store.consent_proposals()[0]
-    token = f"P{proposal.id}@{proposal.updated_at}"
+    token = f"P{proposal.id}@{proposal.order_key}"
     assert "Private-capable platform" in plugin._memories_command("share", platform="telegram")
     preview = plugin._memories_command("share", platform="desktop")
     assert "Likes ‹blue› puzzles" in preview and token in preview
@@ -693,7 +707,7 @@ def test_sharing_approval_rechecks_gateway_settings(plugin, provider, monkeypatc
     see(plugin, "http://127.0.0.1:9/v1")
     tool(provider, "whos-listening_remember", {"text": "Likes jazz", "tier": "shared"})
     p = provider._store.consent_proposals()[0]
-    token = f"P{p.id}@{p.updated_at}"
+    token = f"P{p.id}@{p.order_key}"
     (home / "whos-listening" / "settings.json").write_text('{"gateway": "shared"}')
     assert "Private-capable platform" in plugin._memories_command(f"share approve {token}", platform="desktop")
     assert provider._store.get(p.id).audience_consent_required
