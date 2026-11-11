@@ -176,6 +176,21 @@ def test_already_withdrawn_share_approval_does_not_undo_older_action(store):
     assert store.get(old.id).status == ACTIVE
 
 
+def test_remote_forget_overtakes_unmarked_share_approval(store):
+    propose(store)
+    p = store.consent_proposals()[0]
+    assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
+    store.withdraw_approval(p.id, require_sharing_choice=True)
+    withdrawal = store.withdrawal(p.uid)
+    forgotten = {"status": FORGOTTEN, "fingerprint": sync.fingerprint(FACT),
+                 "updated_at": "2026-01-01T00:00:00+00:00", "order": withdrawal.order_key}
+    file = FakeFile()
+    file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                            "memories": {p.uid: forgotten}}) + "\n").encode()
+    sync.sync_once(store, file, "peer")
+    assert "overtaken by a change from another gateway" in commands.cmd_undo(store, True)
+
+
 def test_terminal_share_undo_can_still_be_declined_and_purged(store):
     propose(store)
     p = store.consent_proposals()[0]

@@ -334,20 +334,20 @@ def cmd_undo(store: Store, show_private: bool) -> str:
             store.mark_undone(e.id)
             return "That sharing proposal was declined. Use /memories undo again for an earlier change."
         current = store.get(e.memory_id)
-        if e.action == "share_approved" and current is not None and current.audience_consent_required:
-            store.mark_undone(e.id)
-            return "That sharing approval is already waiting for a fresh /memories share choice."
-        if current is not None and current.audience_consent_required:
-            continue        # a hidden proposal is not an ordinary undo choice
-        if current is not None and current.tier == PRIVATE and not show_private:
-            continue
         if current is None:          # purged: nothing left to undo
             store.mark_undone(e.id)
+            continue
+        if current.tier == PRIVATE and not show_private:
             continue
         if any(x.id > e.id and x.action in SYNC_ACTIONS for x in store.events(memory_id=e.memory_id, limit=50)):
             store.mark_undone(e.id)
             return (f"Your last change to #{e.memory_id} was overtaken by a change from another gateway "
                     "(sync), so it can't be undone here.")
+        if e.action == "share_approved" and current.audience_consent_required:
+            store.mark_undone(e.id)
+            return "That sharing approval is already waiting for a fresh /memories share choice."
+        if current.audience_consent_required:
+            continue        # a hidden proposal is not an ordinary undo choice
         try:
             msg = _undo(store, e, show_private)
         except StoreError as exc:
