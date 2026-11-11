@@ -374,12 +374,14 @@ def test_auto_review_leaves_a_users_decision_alone(plugin, provider):
     since = store.last_event_id(m.id)
     store.set_status(m.id, "active")                    # the user approved it meanwhile
     store.log_event(m.id, "approved", "user")
-    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, ask=lambda p: '{"save": false}')
+    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.updated_at,
+                        ask=lambda p: '{"save": false}')
     assert store.get(m.id).status == "active"
     # approve, then undo back to pending: a late yes still doesn't apply (an event happened)
     store.set_status(m.id, "pending", pending_reason="again")
     store.log_event(m.id, "undo", "user")
-    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, ask=lambda p: '{"save": true}')
+    plugin._auto_review(store, m.id, m.text, ["I prefer tea"], since, m.updated_at,
+                        ask=lambda p: '{"save": true}')
     assert store.get(m.id).status == "pending"
 
 

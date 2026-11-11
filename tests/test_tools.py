@@ -107,6 +107,17 @@ def test_forget_after_outside_content_waits(store):
     assert store.get(m.id).status == "active" and store.get(m.id).forget_reason
 
 
+def test_pending_forget_after_outside_content_waits_without_tombstone(store):
+    for tier, route in ((PRIVATE, PRIVATE), (SHARED, SHARED)):
+        m = store.add(f"Likes {tier} puzzles", tier, Provenance(), status="pending",
+                      pending_reason="This save waits for review.")
+        out = json.loads(tools.handle(store, tools.FORGET, {"id": m.id}, route_tier=route,
+                                      provenance=lambda: Provenance(), outside_tool="read_file"))
+        assert out["forget_requested"] == {"id": m.id}
+        assert store.get(m.id).status == "pending" and store.get(m.id).forget_reason
+        assert not store.is_forgotten_text(m.text)
+
+
 def test_shared_route_pending_looks_the_same_for_tombstones(store):
     m = store.add("Has a peanut allergy", "private", Provenance())
     store.forget(m.id)

@@ -350,7 +350,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             if m is None or m.status == FORGOTTEN:
                 return _err(f"No memory #{memory_id}.")
             hold = review.forget_hold_reason(outside_tool)
-            if hold and m.status != PENDING:
+            if hold:
                 store.request_forget(memory_id, hold)
                 store.log_event(memory_id, "forget_requested", "assistant")
                 return _ok(forget_requested={"id": memory_id},

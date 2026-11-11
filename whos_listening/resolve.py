@@ -64,13 +64,14 @@ def items(store: Store) -> list[Item]:
     for m in store.flagged():
         other = store.get(m.duplicate_of)
         if _live(other):
-            groups.setdefault(other.id, []).append(m)
+            if not m.forget_reason and not other.forget_reason:
+                groups.setdefault(other.id, []).append(m)
         else:
             store.set_duplicate_of(m.id, 0)
     out = [Item("duplicate", store.get(old), tuple(news)) for old, news in sorted(groups.items())]
-    flagged = {m.id for news in groups.values() for m in news}
+    flagged = {m.id for m in store.flagged()}
     for m in sorted(store.list(statuses=(PENDING,), limit=500), key=lambda x: x.id):
-        if m.id not in flagged:
+        if m.id not in flagged and not m.forget_reason:
             out.append(Item("save", m))
     for m in store.forget_requests():
         out.append(Item("forget", m))
@@ -81,6 +82,11 @@ def _check_visible(ms: list[Memory], show_private: bool) -> None:
     if not show_private and any(m.tier == PRIVATE for m in ms):
         raise StoreError("That pair has a private memory, so it isn't shown here. Choose in the terminal or "
                          "the local app, where you can read it first.")
+
+
+def _check_no_forget_request(ms: list[Memory]) -> None:
+    if any(m.forget_reason for m in ms):
+        raise StoreError("Decide the forget request first, then choose which memories to keep.")
 
 
 def _drop(store: Store, m: Memory, actor: str) -> None:
@@ -116,6 +122,7 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
     if not others:
         raise StoreError(not_flagged(m.id) + (f" To approve it: /memories approve {m.id}." if m.status == PENDING else ""))
     siblings = [x for x in store.flagged() if m.duplicate_of and x.duplicate_of == m.duplicate_of and x.id != m.id]
+    _check_no_forget_request([m, *others, *siblings])
     _check_visible([m, *others, *siblings], show_private)
     for other in others:
         _drop(store, other, actor)
@@ -133,6 +140,7 @@ def keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str = 
     others = partners(store, m)
     if not others:
         raise StoreError(not_flagged(m.id))
+    _check_no_forget_request([m, *others])
     _check_visible([m, *others], show_private)
     kept = _kept_both(store)
     for other in others:

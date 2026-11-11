@@ -218,7 +218,7 @@ class Store(ABC):
 
     @abstractmethod
     def request_forget(self, memory_id: int, reason: str) -> Memory:
-        """The assistant asked to forget a memory; it stays active until the user decides."""
+        """The assistant asked to forget a memory; it keeps its status until the user decides."""
 
     @abstractmethod
     def clear_forget_request(self, memory_id: int) -> Memory: ...
@@ -241,9 +241,11 @@ class Store(ABC):
         """The newest event id for this memory (0 if none)."""
 
     @abstractmethod
-    def apply_review(self, memory_id: int, since_event: int, save: bool, reason: str) -> bool:
+    def apply_review(self, memory_id: int, since_event: int, expected_updated_at: str,
+                     save: bool, reason: str) -> bool:
         """Apply an Auto-review verdict in one step, and only if the memory is still pending and
-        nothing has happened to it since ``since_event``. Returns whether it applied."""
+        nothing has happened to it since ``since_event`` and ``expected_updated_at``.
+        Returns whether it applied."""
 
     @abstractmethod
     def mark_outside(self, session_id: str, tool: str) -> None:
@@ -687,7 +689,8 @@ class SQLiteStore(Store):
             m = self.get(memory_id)
             if m is None:
                 raise StoreError(f"No memory #{memory_id}.")
-            self._db.execute("UPDATE memories SET forget_reason = '' WHERE id = ?", (m.id,))
+            self._db.execute("UPDATE memories SET forget_reason = '', updated_at = ? WHERE id = ?",
+                             (stamp_after(m.updated_at), m.id))
             return self.get(m.id)
 
     def forget_requests(self):
@@ -722,7 +725,7 @@ class SQLiteStore(Store):
             row = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?", (int(memory_id),)).fetchone()
         return int(row[0] or 0)
 
-    def apply_review(self, memory_id, since_event, save, reason):
+    def apply_review(self, memory_id, since_event, expected_updated_at, save, reason):
         with self._lock:
             old_isolation = self._db.isolation_level
             self._db.isolation_level = None
@@ -731,11 +734,13 @@ class SQLiteStore(Store):
                 # memory between our check and our write.
                 self._db.execute("BEGIN IMMEDIATE")
                 try:
-                    row = self._db.execute("SELECT status, pending_reason, updated_at FROM memories WHERE id = ?",
+                    row = self._db.execute("SELECT status, pending_reason, forget_reason, updated_at "
+                                           "FROM memories WHERE id = ?",
                                            (int(memory_id),)).fetchone()
                     latest = self._db.execute("SELECT MAX(id) FROM events WHERE memory_id = ?",
                                               (int(memory_id),)).fetchone()[0] or 0
-                    if row is None or row["status"] != PENDING or latest != since_event:
+                    if (row is None or row["status"] != PENDING or row["forget_reason"]
+                            or row["updated_at"] != expected_updated_at or latest != since_event):
                         self._db.execute("ROLLBACK")
                         return False
                     stamp = stamp_after(row["updated_at"])
