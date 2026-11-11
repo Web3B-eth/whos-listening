@@ -4,6 +4,8 @@ What changed in whos-listening, newest first. Format follows [Keep a Changelog](
 
 ## [Unreleased]
 
+- Scan-status replay guard (2026-11-10): Private-capable /memories review scan replies and Private-route review-tool scan notes carry the Private marker, including an in-progress scan's global counts. The request guard can remove those notes from a later Shared-route replay.
+
 - Fixed Shared-route omission notes (2026-11-10): recall, list-all and Shared-platform exports now say Private memories are omitted by route policy, regardless of whether any exist. They no longer query or report a Private-presence count. A Shared model gets less detail about whether the owner has Private memories; no new approval step is added.
 
 - Consent and Private-view follow-ups (2026-11-10): the terminal can purge a declined sharing proposal without creating a tombstone. Shared-platform `/memories` views omit Private rows and waiting counts; most guessed Private-number actions answer like missing ones. A direct owner `/memories forget N` still forgets a Private row there, with the same outward reply as a missing number. Private-capable slash replies are marked for later Shared-route replay filtering. Shared-route Private save replies now agree when a visible Shared copy and a newer hidden Private copy match. Migration of old pending Shared saves no longer advances their timestamp, so a maximal legacy date does not prevent opening the store. The memory ID allocator rejects nested transaction claims, and a legacy store at SQLite's maximum ID opens with an exhausted allocator.

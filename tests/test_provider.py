@@ -1067,6 +1067,16 @@ def test_slash_export_and_scan(plugin, provider, tmp_path, monkeypatch):
     assert "These may say the same thing" in out and "Last scan" in out
 
 
+def test_running_scan_status_is_marked_for_shared_replay(plugin, provider, monkeypatch):
+    home = Path(provider._store.path).parent.parent
+    monkeypatch.setattr(plugin, "_active_home", lambda: home)
+    monkeypatch.setattr(plugin, "start_scan", lambda _: "Scanning 2 possible Private pairs.")
+    reply = plugin._memories_command("review scan", platform="desktop")
+    assert "2 possible Private pairs" in reply and reply.startswith('<wl-private id="0">')
+    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": reply}]}, "shared")
+    assert cleaned is not None and "2 possible Private pairs" not in cleaned["messages"][0]["content"]
+
+
 def test_the_judge_says_the_real_reason_it_isnt_running(plugin, provider, tmp_path, monkeypatch):
     """A fresh gateway (Hermes Cloud after a restart) has no Venice list yet: the reason must name
     the judge picked, and a missing key comes first."""

@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 from . import commands, resolve
 from . import duplicates as dupes
 from . import review
-from .recall import allowed_tiers, format_line
+from .recall import allowed_tiers, format_line, private_span
 from .store import (
     FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
     check_tier, clean_text,
@@ -171,7 +171,7 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
             return _err("Review scans are available on a Private route.")
         if scan is None:
             return _err("Scanning isn't available here.")
-        return _ok(note=scan())
+        return _ok(note=private_span(0, scan()))
     if action not in REVIEW_CHOICES:
         return _err(f"Unknown action {action!r}.")
     try:

@@ -499,7 +499,7 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
         settings, _ = _load_settings(home)
         if settings is None or not commands.shows_private(platform, settings):
             return "Review scans are available on a Private-capable platform."
-        return start_scan(home)
+        return recall.private_span(0, start_scan(home))
     if words and words[0].lower() == "export":
         settings, _ = _load_settings(home)
         return _export_command(home, settings is not None and commands.shows_private(platform, settings), platform)

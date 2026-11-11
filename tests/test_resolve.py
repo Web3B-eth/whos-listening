@@ -283,7 +283,7 @@ def test_shared_export_note_does_not_count_private_rows(tmp_path):
 
 def test_the_tool_exports_and_scans(store):
     assert review(store, "export")["file"] == "/tmp/x.md"
-    assert review(store, "scan")["note"] == "started"
+    assert "started" in review(store, "scan")["note"]
     assert review(store, "fly")["ok"] is False
 
 

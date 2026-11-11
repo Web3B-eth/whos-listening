@@ -54,6 +54,14 @@ def test_shared_recall_and_all_have_no_private_presence_signal(tmp_path):
     assert results[0][0]["private_omitted"] is True
 
 
+def test_private_scan_note_is_marked_for_shared_replay(store):
+    result = tools.handle(store, tools.REVIEW, {"action": "scan"}, route_tier=PRIVATE,
+                          provenance=lambda: Provenance(), scan=lambda: "Scanning 2 possible Private pairs.")
+    assert "2 possible Private pairs" in result
+    cleaned = guard.guard_request({"messages": [{"role": "tool", "content": result}]}, SHARED)
+    assert cleaned is not None and "2 possible Private pairs" not in cleaned["messages"][0]["content"]
+
+
 def test_private_review_reason_is_removed_from_shared_replay(store):
     store.add("Keeps a blue notebook", PRIVATE, Provenance(), status="pending",
               pending_reason="Outside content. Auto-review: Keeps a blue notebook")
