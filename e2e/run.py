@@ -393,6 +393,42 @@ def main() -> int:
                   bool(flagged) and flagged[0].status == "forgotten" and has(reqs, "kept"),
                   flagged[0].status if flagged else "no memory")
 
+        # 8c. A choice in plain words, without the memory's number (the scripted call reads its
+        #     arguments from a file, so the user's message names no number). In a chat that read no
+        #     outside content it applies on the user's word; after outside content Auto-review checks
+        #     it first, and only a "yes" from the user lets it through.
+        def pair(text: str) -> int:
+            run.chat(f'Remember this, any model may see it. [[call whos-listening_remember '
+                     f'{{"text": "{text}", "tier": "shared"}}]]', provider="private-sim", model="private-model")
+            return next(m.id for m in memories_in(data) if m.text == text)
+
+        choice_file = home / "choice.json"
+        sid = pair("Keeps a strict vegetarian diet on weekdays")
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        run.chat("Keep my private one, please. [[call whos-listening_review file:" + str(choice_file) + "]]",
+                 provider="private-sim", model="private-model")
+        gone = [m for m in memories_in(data) if m.id == sid]
+        run.check("plain words: with no outside content, a choice applies without a number",
+                  bool(gone) and gone[0].status == "forgotten", gone[0].status if gone else "no memory")
+        sid = pair("Keeps a vegetarian diet during weekdays")
+        choice_file.write_text(json.dumps({"action": "keep", "id": private_id}))
+        script = f'[[call read_file {{"path": "{notes}"}}]] [[call whos-listening_review file:{choice_file}]]'
+        _, reqs = run.chat(f"Read my notes, then keep my private one. {script}", provider="private-sim",
+                           model="private-model")
+        still = [m for m in memories_in(data) if m.id == sid]
+        run.check("plain words: after outside content, Auto-review holds a choice the user didn't OK",
+                  bool(still) and still[0].status == "active" and has(reqs, "You check one change"),
+                  still[0].status if still else "no memory")
+        _, reqs = run.chat(f"Yes, read my notes and keep my private one. {script}", provider="private-sim",
+                           model="private-model")
+        gone = [m for m in memories_in(data) if m.id == sid]
+        run.check("plain words: after outside content, Auto-review lets the user's yes through",
+                  bool(gone) and gone[0].status == "forgotten", gone[0].status if gone else "no memory")
+        check_reqs = [r for r in reqs if "You check one change" in r["text"]]
+        run.check("plain words: the choice check never saw the file and ran on the chat's model",
+                  bool(check_reqs) and not any("Note to the assistant" in r["text"] for r in check_reqs)
+                  and all(r["model"] == "private-model" for r in check_reqs))
+
         # 9. Sync between gateways: a second gateway (B) and a fake GitHub. Only Shared memories
         #    and forgets travel; an arrival passes the rule screen; a Shared change pushes by itself.
         gh_port = free_port()

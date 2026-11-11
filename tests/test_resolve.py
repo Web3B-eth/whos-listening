@@ -19,10 +19,11 @@ def save(store, text, *, tier=PRIVATE, route=PRIVATE, setting="ask", judge=None,
                                    outside_tool=outside))
 
 
-def review(store, action, *, id=None, said="", route=PRIVATE, **kw):
+def review(store, action, *, id=None, said="", route=PRIVATE, outside="", check=None, **kw):
     args = {"action": action, **({"id": id} if id is not None else {}), **kw}
     return json.loads(tools.handle(store, tools.REVIEW, args, route_tier=route, provenance=lambda: Provenance(),
-                                   user_message=said, export=lambda show: "/tmp/x.md", scan=lambda: "started"))
+                                   user_message=said, export=lambda show: "/tmp/x.md", scan=lambda: "started",
+                                   outside_tool=outside, choice_check=check))
 
 
 BIKE = "Owns a Santa Cruz Hightower mountain bike"
@@ -183,12 +184,61 @@ def test_the_review_command(store):
 
 # -- the review tool: plain language -------------------------------------------------------------
 
-def test_a_choice_needs_the_number_in_the_users_own_message(store):
+def test_with_no_outside_content_a_choice_applies_on_the_users_word(store):
     private, new = _pair(store)
     out = review(store, "keep", id=new.id, said="keep the new one")
-    assert out["ok"] is False and "doesn't name" in out["error"] and store.get(private.id).status == ACTIVE
-    out = review(store, "keep", id=new.id, said=f"ok let's keep new {new.id} and remove old number {private.id}")
     assert out["ok"] and out["forgotten"] == [private.id] and store.get(new.id).status == ACTIVE
+
+
+def test_a_choice_needs_a_message_from_the_user_this_turn(store):
+    private, new = _pair(store)
+    out = review(store, "keep", id=new.id, said="")
+    assert out["ok"] is False and f'"keep {new.id}"' in out["error"] and store.get(private.id).status == ACTIVE
+
+
+def test_after_outside_content_a_choice_needs_the_number_or_auto_review(store):
+    private, new = _pair(store)
+    out = review(store, "keep", id=new.id, said="keep the new one", outside="read_file")      # Auto-review off
+    assert out["ok"] is False and "read outside content (read_file)" in out["error"]
+    assert f'"keep {new.id}"' in out["error"] and store.get(private.id).status == ACTIVE
+    seen = []
+    out = review(store, "keep", id=new.id, said="yes", outside="read_file",
+                 check=lambda change: seen.append(change) or (False, "The user didn't ask for this."))
+    assert out["ok"] is False and "Auto-review couldn't confirm" in out["error"] and "didn't ask for this" in out["error"]
+    assert seen == [f'Keep the newer memory #{new.id} ("{BIKE2}") and forget #{private.id} ("{BIKE}"), '
+                    "which may say the same thing."]
+    out = review(store, "keep", id=new.id, said="yes", outside="read_file", check=lambda change: 1 / 0)
+    assert out["ok"] is False and "could not run (ZeroDivisionError)" in out["error"]
+    assert store.get(private.id).status == ACTIVE                                       # nothing changed yet
+    out = review(store, "keep", id=new.id, said="yes, keep the newer one", outside="read_file",
+                 check=lambda change: (True, "The user agreed."))
+    assert out["ok"] and out["forgotten"] == [private.id]
+
+
+def test_after_outside_content_the_number_still_works_without_a_check(store):
+    private, new = _pair(store)
+    called = []
+    out = review(store, "keep", id=new.id, said=f"ok let's keep new {new.id} and remove old number {private.id}",
+                 outside="web_extract", check=lambda change: called.append(1) or (False, "no"))
+    assert out["ok"] and out["forgotten"] == [private.id] and called == []
+
+
+def test_a_shared_route_never_sends_a_private_pair_to_the_check(store):
+    private, new = _pair(store)
+    called = []
+    out = review(store, "keep", id=new.id, said="yes", route=SHARED, outside="read_file",
+                 check=lambda change: called.append(change) or (True, ""))
+    assert out["ok"] is False and out["error"] == f"#{new.id} isn't marked as a possible duplicate." and called == []
+    assert store.get(private.id).status == ACTIVE
+
+
+def test_describe_choice_says_what_each_choice_does(store):
+    private, new = _pair(store)
+    assert tools.describe_choice(store, "keep", private.id).startswith(f'Keep the older memory #{private.id}')
+    assert tools.describe_choice(store, "keep_both", new.id).startswith(f"Keep all of #{new.id}")
+    held = store.add("Likes jazz", SHARED, USER, status=PENDING, pending_reason="r")
+    assert tools.describe_choice(store, "approve", held.id) == f'Save the waiting memory #{held.id} ("Likes jazz").'
+    assert tools.describe_choice(store, "reject", held.id).startswith(f"Turn down the waiting memory #{held.id}")
 
 
 def test_names_number():
@@ -204,7 +254,7 @@ def test_the_tool_lists_and_hides_private_pairs_on_a_shared_route(store):
     out = review(store, "list")
     assert [w["kind"] for w in out["waiting"]] == ["duplicate", "save"]
     assert out["waiting"][0]["memories"][0]["line"].startswith(f"- #{private.id} <wl-private")   # tagged
-    assert f'answer with the memory\'s number (for example "keep {private.id}")' in out["note"]
+    assert f'in their own words or by number (for example "keep {private.id}")' in out["note"]
     shared_view = review(store, "list", route=SHARED)
     assert [w["kind"] for w in shared_view["waiting"]] == ["save"] and "private_withheld" not in shared_view
     held = shared_view["waiting"][0]["memory"]["id"]
@@ -229,8 +279,11 @@ def test_a_shared_route_cant_tell_its_save_matched_a_private_memory(tmp_path):
 
 def test_the_tool_approves_and_rejects_with_the_number(store):
     held = store.add("Likes jazz", SHARED, USER, status=PENDING, pending_reason="r")
-    assert review(store, "approve", id=held.id, said="yes")["ok"] is False
-    assert review(store, "approve", id=held.id, said=f"yes, save {held.id}")["status"] == ACTIVE
+    assert review(store, "approve", id=held.id, said="yes", outside="read_file")["ok"] is False
+    assert review(store, "approve", id=held.id, said=f"yes, save {held.id}", outside="read_file")["status"] == ACTIVE
+    assert review(store, "approve", id=held.id, said="yes")["ok"] is False          # no longer waiting
+    other = store.add("Likes tea a lot", SHARED, USER, status=PENDING, pending_reason="r")
+    assert review(store, "approve", id=other.id, said="yes, save that one")["status"] == ACTIVE
     p = store.add("Likes tea", PRIVATE, USER, status=PENDING, pending_reason="r")
     for action in ("approve", "reject"):
         out = review(store, action, id=p.id, said=f"{action} {p.id}", route=SHARED)

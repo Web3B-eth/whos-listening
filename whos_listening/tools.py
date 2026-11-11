@@ -17,7 +17,7 @@ from . import duplicates as dupes
 from . import review
 from .recall import allowed_tiers, format_line
 from .store import (
-    FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
+    ACTIVE, FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
     clean_text,
 )
 
@@ -87,8 +87,9 @@ SCHEMAS = (
         "Review the user's memories with them. list: what waits for their choice (possible duplicates, "
         "saves and forgets to approve). all: every memory, a page at a time. export: write them all to a "
         "file. scan: look for repeats saved earlier, in the background. keep / keep_both / approve / reject: "
-        "carry out a choice the user made; these only work when the user's own message names that memory "
-        "number, so ask them for it if they didn't. It's always in your tool list: call it directly, not "
+        "carry out a choice the user made in their own words (by number or not). In a chat that read outside "
+        "content, a choice without the number in the user's message is checked first and may need the number. "
+        "It's always in your tool list: call it directly, not "
         "through tool_call.",
         {"action": {"type": "string", "enum": ["list", "all", "export", "scan", *REVIEW_CHOICES],
                     "description": "keep: keep #id and forget the memory it may repeat. keep_both: keep both."},
@@ -130,7 +131,8 @@ def names_number(message: str, memory_id: int) -> bool:
 
 
 def _review(store: Store, args: dict, route_tier: str, user_message: str,
-            export: Optional[Callable[[bool], str]], scan: Optional[Callable[[], str]]) -> str:
+            export: Optional[Callable[[bool], str]], scan: Optional[Callable[[], str]],
+            outside_tool: str = "", choice_check: Optional[Callable[[str], tuple[bool, str]]] = None) -> str:
     action = str(args.get("action") or "list").strip().lower()
     show_private = route_tier == PRIVATE
     if action == "list":
@@ -151,8 +153,8 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
                    note="A duplicate group lists memories that may say the same thing: the user keeps one (keep: the "
                         "others are forgotten) or all (keep_both). A waiting save or forget they approve or reject. "
                         "Show the memories with their numbers and let them choose."
-                        + (f" Tell the user to answer with the memory's number (for example \"{example}\"): a "
-                           "choice only applies when their own message names it." if example else "")
+                        + (f" Tell the user they can choose in their own words or by number (for example "
+                           f"\"{example}\")." if example else "")
                         + ("" if show_private else " On a shared route, anything involving private memories isn't "
                                                    "shown: the user sees everything with /memories review in the local app."))
     if action == "all":
@@ -163,9 +165,9 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         tiers = (PRIVATE, SHARED) if show_private else (SHARED,)
         everything = sorted(store.list(tiers=tiers, limit=5000), key=lambda m: m.id)
         part = everything[(page - 1) * ALL_PAGE: page * ALL_PAGE]
-        hint = ({"note": f"Show the numbers, and tell the user to name a memory by its number to forget or change "
-                         f"it (for example \"forget {part[0].id}\"). Memories can't be edited: to change one, forget "
-                         "it and save the new version."} if part else {})
+        hint = ({"note": f"Show the numbers, and tell the user they can say which memory to forget or change in "
+                         f"their own words or by number (for example \"forget {part[0].id}\"). Memories can't be "
+                         "edited: to change one, forget it and save the new version."} if part else {})
         return _ok(memories=[_public(m) for m in part], page=page,
                    pages=max(1, -(-len(everything) // ALL_PAGE)), total=len(everything),
                    private_withheld=not show_private and store.count(tiers=(PRIVATE,)) > 0, **hint)
@@ -185,16 +187,13 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         memory_id = int(args.get("id"))
     except (TypeError, ValueError):
         return _err("Give the memory number (id).")
-    if not names_number(user_message, memory_id):
-        return _err(f"Nothing was changed: the user's own message doesn't name #{memory_id}. Ask them to "
-                    f"say which memory, with its number (such as \"keep {memory_id}\").")
-    target = store.get(memory_id)
-    if not show_private and target is not None and (
-            target.tier == PRIVATE or any(p.tier == PRIVATE for p in resolve.partners(store, target))):
-        # On a Shared route, a Private memory, or a pair with one, answers like a memory with no choice
-        # to make, so the route learns nothing about it.
-        return _err(resolve.not_flagged(memory_id) if action in ("keep", "keep_both")
-                    else f"#{memory_id} isn't waiting for the user.")
+    problem = _choice_problem(store, action, memory_id, show_private)
+    if problem:
+        return _err(problem)
+    refused = _choice_refused(store, action, memory_id, user_message, outside_tool, choice_check)
+    if refused:
+        logger.info("whos-listening: review choice %s #%d not applied: %s", action, memory_id, refused)
+        return _err(refused)
     if action == "keep":
         kept, dropped = resolve.keep(store, memory_id, show_private=show_private, actor="assistant")
         return _ok(kept=_public(kept), forgotten=[m.id for m in dropped])
@@ -205,6 +204,76 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
     fn(store, str(memory_id), show_private, actor="assistant")
     m = store.get(memory_id)
     return _ok(memory=_public(m) if m else None, status=m.status if m else None)
+
+
+def _choice_problem(store: Store, action: str, memory_id: int, show_private: bool) -> str:
+    """Why there's no such choice to make ("" if there is). On a Shared route a Private memory, or a
+    pair with one, answers exactly like a memory with no choice to make, so the route learns nothing
+    about it; this runs before any check, so the answer can't depend on one either."""
+    m = store.get(memory_id)
+    if action in ("keep", "keep_both"):
+        none = resolve.not_flagged(memory_id)
+        if m is None or m.status not in (ACTIVE, PENDING):
+            return none
+        partners = resolve.partners(store, m)
+        if not partners or (not show_private and (m.tier == PRIVATE or any(p.tier == PRIVATE for p in partners))):
+            return none
+        return ""
+    waiting = m is not None and m.status != FORGOTTEN and (m.status == PENDING or bool(m.forget_reason))
+    if not waiting or (not show_private and m.tier == PRIVATE):
+        return f"#{memory_id} isn't waiting for the user."
+    return ""
+
+
+def describe_choice(store: Store, action: str, memory_id: int) -> str:
+    """The change a review choice makes, in plain words, for Auto-review to check."""
+    m = store.get(memory_id)
+
+    def said(x: Memory) -> str:
+        return f'#{x.id} ("{x.text}")'
+
+    if action in ("keep", "keep_both"):
+        others = resolve.partners(store, m)
+        if action == "keep_both":
+            return "Keep all of " + ", ".join(said(x) for x in [m, *others]) + ": they are not duplicates."
+        age = "newer" if all(m.id > o.id for o in others) else "older"
+        return (f"Keep the {age} memory {said(m)} and forget " + ", ".join(said(o) for o in others)
+                + ", which may say the same thing.")
+    if m.status == PENDING:
+        return (f"Save the waiting memory {said(m)}." if action == "approve"
+                else f"Turn down the waiting memory {said(m)}, so it isn't saved.")
+    return (f"Forget memory {said(m)}, as the assistant asked earlier." if action == "approve"
+            else f"Keep memory {said(m)} instead of forgetting it.")
+
+
+def _choice_refused(store: Store, action: str, memory_id: int, user_message: str, outside_tool: str,
+                    choice_check: Optional[Callable[[str], tuple[bool, str]]]) -> str:
+    """Why a review choice may not apply yet ("" if it may). The user's own words decide:
+    - their message this turn names the memory's number: it applies;
+    - the chat read no outside content: it applies on their say-so, as a save or forget would;
+    - otherwise Auto-review (``choice_check``) asks the chat's model whether the user's own
+      messages asked for exactly this change; anything but a clear yes means asking for the number."""
+    def passed(how: str) -> str:
+        logger.info("whos-listening: review choice %s #%d applies: %s", action, memory_id, how)
+        return ""
+
+    if names_number(user_message, memory_id):
+        return passed("the user's message names its number")
+    ask = f"Ask the user to confirm with the memory's number (such as \"{action.replace('_', ' ')} {memory_id}\")."
+    if not str(user_message or "").strip():
+        return f"Nothing was changed: there's no message from the user in this turn. {ask}"
+    if not outside_tool:
+        return passed("the chat read no outside content")
+    if choice_check is None:
+        return f"Nothing was changed: this chat read outside content ({outside_tool}), so a choice needs its number. {ask}"
+    try:
+        ok, reason = choice_check(describe_choice(store, action, memory_id))
+    except Exception as exc:
+        ok, reason = False, f"the check could not run ({type(exc).__name__})"
+    if ok:
+        return passed("Auto-review confirmed the user asked for it")
+    return (f"Nothing was changed: this chat read outside content ({outside_tool}), and Auto-review couldn't "
+            f"confirm the user asked for this ({reason.rstrip('.')}). {ask}")
 
 
 def _public(m: Memory) -> dict:
@@ -265,7 +334,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
            duplicates: str = "skip",
            judge: Optional[Callable[..., Optional[Memory]]] = None, tier_duplicates: str = "ask",
            user_message: str = "", export: Optional[Callable[[bool], str]] = None,
-           scan: Optional[Callable[[], str]] = None, shared_only: bool = False) -> str:
+           scan: Optional[Callable[[], str]] = None, shared_only: bool = False,
+           choice_check: Optional[Callable[[str], tuple[bool, str]]] = None) -> str:
     """Run one tool call. Always returns a JSON string; never raises.
 
     ``private_refused`` says why this gateway may not keep a Private memory ("" if it may).
@@ -281,7 +351,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
     word check finds nothing; it returns the memory the save repeats, or None.
     ``tier_duplicates``: a Shared save that says what a Private memory says: "ask" (it waits for the
     user, flagged), "shared" (saved; the Private one is forgotten) or "private" (not saved).
-    ``user_message``: the user's own message this turn; a review choice must name its number there.
+    ``user_message``: the user's own message this turn. A review choice applies when it names the
+    memory's number, or when the chat read no outside content; otherwise ``choice_check(change) ->
+    (ok, reason)`` (Auto-review) must confirm the user asked for it.
     ``export(show_private) -> path`` and ``scan() -> note`` run those review actions."""
     args = args if isinstance(args, dict) else {}
     try:
@@ -351,7 +423,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             return _ok(saved=_public(m), note="")
 
         if name == REVIEW:
-            return _review(store, args, route_tier, user_message, export, scan)
+            return _review(store, args, route_tier, user_message, export, scan, outside_tool, choice_check)
 
         if name == RECALL:
             tiers = allowed_tiers(route_tier)

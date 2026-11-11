@@ -947,7 +947,7 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
     assert out["saved"] and "duplicate" not in out
 
 
-def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin, provider, monkeypatch):
+def test_review_by_plain_language(plugin, provider, monkeypatch, auto_mode):
     see(plugin, "http://127.0.0.1:9/v1")
     private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
     out = tool(provider, "whos-listening_remember",
@@ -955,13 +955,39 @@ def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin,
     new_id = out["saved"]["id"]
     provider.on_turn_start(1, "let's review your memories")
     assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
-    assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False
-    provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {private.id}")
-    provider.on_turn_start(3, {"image": "made-up"})                 # not words: the last turn's don't count
-    assert "doesn't name" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
-    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {private.id}")
+    provider.sync_turn("let's review your memories", f"#{private.id} and #{new_id} may say the same thing. Keep the newer one?")
+    provider.on_turn_start(2, {"image": "made-up"})                 # not words: the last turn's don't count
+    assert "no message from the user" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
+
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")      # now the chat read outside content
+    seen = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: seen.append(prompt) or
+                        '{"approve": false, "reason": "Not clearly asked."}')
+    provider.on_turn_start(3, "yes")
+    out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
+    assert out["ok"] is False and "Not clearly asked" in out["error"]
+    assert "Keep the newer one?" in seen[0] and "- yes" in seen[0] and f"forget #{private.id}" in seen[0]
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: '{"approve": true, "reason": "Agreed."}')
     out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
     assert out["ok"] and out["forgotten"] == [private.id]
+
+
+def test_a_choice_check_needs_auto_review_and_trusted_fallbacks(plugin, provider, monkeypatch, auto_mode, tmp_path):
+    calls = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: calls.append(1) or '{"approve": true}')
+    see(plugin, "http://127.0.0.1:9/v1")
+    held = provider._store.add("Likes jazz", "private", plugin.Provenance(), status="pending", pending_reason="r")
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")
+    provider.on_turn_start(1, "yes, save it")
+    monkeypatch.setattr(plugin, "_config", lambda: {
+        "model": {"provider": "local-sim", "default": "m"},
+        "fallback_providers": [{"provider": "openrouter", "model": "x", "base_url": "https://openrouter.ai/api/v1"}]})
+    out = tool(provider, "whos-listening_review", {"action": "approve", "id": held.id})
+    assert out["ok"] is False and "fallback provider is shared" in out["error"] and calls == []
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "ask"}')
+    out = tool(provider, "whos-listening_review", {"action": "approve", "id": held.id})
+    assert out["ok"] is False and "Auto-review is off" in out["error"] and calls == []
+    assert provider._store.get(held.id).status == "pending"
 
 
 def test_review_tool_exports_into_the_profile(plugin, provider, tmp_path):

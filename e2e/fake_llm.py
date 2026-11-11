@@ -5,7 +5,8 @@
 - Answers with a fixed sentence, or, when the newest user message holds lines like
   ``[[call whos-listening_remember {"text": "Likes spicy food", "tier": "shared"}]]``, asks for those tool
   calls in order, one per step, and answers after the last result comes back. That lets a check drive the
-  memory tools without a real model.
+  memory tools without a real model. ``[[call NAME file:PATH]]`` reads the arguments from a JSON file
+  instead, so a scripted choice needn't put a memory number in the user's message.
 
 Usage: python fake_llm.py PORT LOGFILE
 """
@@ -18,7 +19,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-CALL_RE = re.compile(r"\[\[call ([\w-]+) (\{.*?\})\]\]", re.DOTALL)
+CALL_RE = re.compile(r"\[\[call ([\w-]+) (\{.*?\}|file:\S+?)\]\]", re.DOTALL)
 ANSWER = "Hello from the fake model."
 MODELS = ("private-model", "shared-model")
 
@@ -43,12 +44,16 @@ def plan_reply(messages: list) -> dict:
     done = sum(1 for m in messages[last_user + 1:] if m.get("role") == "tool")
     if done < len(calls):
         name, args = calls[done]
+        if args.startswith("file:"):
+            with open(args[5:], encoding="utf-8") as f:
+                args = f.read().strip()
         return {"tool": name, "args": args}
     if done:
         return {"text": "Done. " + _text(messages[-1].get("content"))[:300]}
     return {"text": ANSWER}
 
 
+CHOICE_RE = re.compile(r"<<user-messages>>\n(.*?)\n<</user-messages>>", re.DOTALL)
 CHECK_RE = re.compile(r"<<memory>>\n(.*?)\n<</memory>>.*?<<user-messages>>\n(.*?)\n<</user-messages>>", re.DOTALL)
 
 
@@ -62,6 +67,11 @@ def side_reply(messages: list) -> str:
         if memory and memory in users:
             return '{"save": true, "reason": "You said this yourself."}'
         return '{"save": false, "reason": "You never said this."}'
+    choice = CHOICE_RE.search(text)
+    if "You check one change" in text and choice:
+        if "yes" in CALL_RE.sub("", choice.group(1)).lower():          # the fake check: a "yes" from the user
+            return '{"approve": true, "reason": "The user agreed."}'
+        return '{"approve": false, "reason": "The user did not ask for this."}'
     return ANSWER
 
 

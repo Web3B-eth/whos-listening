@@ -166,6 +166,7 @@ class WhosListeningProvider(MemoryProvider):
         self._author = ""
         self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
         self._turn_message = ""
+        self._last_reply = ""          # the assistant's last reply: what a "yes" in the next turn answers
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
 
@@ -199,6 +200,7 @@ class WhosListeningProvider(MemoryProvider):
         parent = str(kwargs.get("parent_session_id") or old or "")
         if kwargs.get("reset"):
             self._user_messages = []      # a new chat: the old chat's words don't count
+            self._last_reply = ""
         if kwargs.get("reset") or not new_session_id or parent == new_session_id:
             return
         # Compression, /branch and /resume keep the transcript (and any outside content in it)
@@ -300,7 +302,7 @@ class WhosListeningProvider(MemoryProvider):
                            on_outside_hold=self._start_auto_review, duplicates=self._duplicates_mode(),
                            judge=self._duplicate_judge(route, verdict) if tool_name == tools.REMEMBER else None,
                            tier_duplicates=self._tier_duplicates(),
-                           user_message=self._turn_message,
+                           user_message=self._turn_message, choice_check=self._choice_check,
                            export=self._export, scan=self._scan)
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
@@ -363,6 +365,31 @@ class WhosListeningProvider(MemoryProvider):
             return f"it checks at most {autoreview.CHECKS_PER_TURN} saves a turn", route
         return "", route
 
+    def _choice_check(self, change: str) -> tuple[bool, str]:
+        """Auto-review for a review choice made without a memory number in a chat that read outside
+        content: one request on the chat's own model, which sees the change, the assistant's last
+        reply and the user's newest messages. Returns (applies, reason). Runs only with Auto-review
+        on, and only where the side call can't reach a less trusted model (a Shared route only
+        reaches this for Shared memories: tools._choice_problem)."""
+        if self._review_mode() != "auto":
+            return False, "Auto-review is off, so a choice needs its number"
+        route, verdict = self._route()
+        if route is None:
+            return False, "the chat's route isn't known yet"
+        if verdict.tier == PRIVATE:
+            side = side_call_routes_private(_config(), _settings_or_none(self._dir))
+            if side.tier != PRIVATE:
+                return False, side.reason
+        if self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            return False, f"it checks at most {autoreview.CHECKS_PER_TURN} a turn"
+        self._checks_this_turn += 1
+        found = autoreview.check_choice(
+            change, self._own_words(),
+            lambda prompt: _ask_chat_model(prompt, route.model, timeout=CHOICE_CHECK_TIMEOUT,
+                                           purpose="whos-listening choice check"),
+            self._last_reply)
+        return found.save, found.reason
+
     def _start_auto_review(self, memory: Memory) -> bool:
         """Check a held save in the background, on the chat's own model. Returns True if started;
         otherwise, in Auto-review mode, the memory's reason says why it didn't run."""
@@ -402,6 +429,8 @@ class WhosListeningProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **kwargs) -> None:
         # Only a small local write: persist the outside-content flag for this chat.
+        if isinstance(assistant_content, str):
+            self._last_reply = assistant_content[-autoreview.LAST_REPLY_MAX_CHARS:]
         try:
             self._outside_tool(session_id)
         except Exception as exc:
@@ -415,6 +444,7 @@ def _on_pre_llm_call(**kwargs: Any) -> None:
 
 
 AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keeps waiting
+CHOICE_CHECK_TIMEOUT = 20.0    # seconds; the user waits for this one, so with no answer the choice needs its number
 
 
 def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
