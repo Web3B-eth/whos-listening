@@ -112,6 +112,16 @@ def _err(message: str) -> str:
     return json.dumps({"ok": False, "error": message}, ensure_ascii=False)
 
 
+def _example_choice(waiting: list[dict]) -> str:
+    """An example answer for the first item shown in a review list ("" if none): "keep N" for a
+    possible duplicate, "approve N" for a waiting save or forget."""
+    for entry in waiting:
+        shown = entry.get("memories") or [entry.get("memory") or {}]
+        if shown and shown[0].get("id"):
+            return f"{'keep' if entry.get('kind') == 'duplicate' else 'approve'} {int(shown[0]['id'])}"
+    return ""
+
+
 def names_number(message: str, memory_id: int) -> bool:
     """Whether the user's own message names memory ``memory_id`` ("keep 41", "#41", "number 41")."""
     return re.search(rf"(?<![\d.,]){int(memory_id)}(?![\d]|[.,]\d)", str(message or "")) is not None
@@ -134,10 +144,13 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
                 entry = {"kind": it.kind, "memory": _public(it.memory),
                          "why": it.memory.pending_reason or it.memory.forget_reason or "needs the user's OK"}
             out.append(entry)
+        example = _example_choice(out)
         return _ok(waiting=out,
                    note="A duplicate group lists memories that may say the same thing: the user keeps one (keep: the "
                         "others are forgotten) or all (keep_both). A waiting save or forget they approve or reject. "
                         "Show the memories with their numbers and let them choose."
+                        + (f" Tell the user to answer with the memory's number (for example \"{example}\"): a "
+                           "choice only applies when their own message names it." if example else "")
                         + ("" if show_private else " On a shared route, anything involving private memories isn't "
                                                    "shown: the user sees everything with /memories review in the local app."))
     if action == "all":
@@ -148,9 +161,12 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
         tiers = (PRIVATE, SHARED) if show_private else (SHARED,)
         everything = sorted(store.list(tiers=tiers, limit=5000), key=lambda m: m.id)
         part = everything[(page - 1) * ALL_PAGE: page * ALL_PAGE]
+        hint = ({"note": f"Show the numbers, and tell the user to name a memory by its number to forget or change "
+                         f"it (for example \"forget {part[0].id}\"). Memories can't be edited: to change one, forget "
+                         "it and save the new version."} if part else {})
         return _ok(memories=[_public(m) for m in part], page=page,
                    pages=max(1, -(-len(everything) // ALL_PAGE)), total=len(everything),
-                   private_withheld=not show_private and store.count(tiers=(PRIVATE,)) > 0)
+                   private_withheld=not show_private and store.count(tiers=(PRIVATE,)) > 0, **hint)
     if action == "export":
         if export is None:
             return _err("Export isn't available here.")
