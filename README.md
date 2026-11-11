@@ -1,4 +1,4 @@
-# Who's Listening
+# Who's Listening?
 
 _Plugin ID: `whos-listening`. Commands, settings, menus and tool names use the ID, since they can't contain an apostrophe._
 
