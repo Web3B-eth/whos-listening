@@ -17,7 +17,7 @@ from . import review
 from .recall import allowed_tiers, format_line
 from .store import (
     FORGOTTEN, PENDING, PRIVATE, SHARED, ForgottenError, Memory, Provenance, Store, StoreError,
-    clean_text,
+    check_tier, clean_text,
 )
 
 REMEMBER = "whos-listening_remember"
@@ -274,6 +274,7 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
         if name == REMEMBER:
             tier = str(args.get("tier") or (SHARED if shared_only else PRIVATE)).strip().lower()
             text = args.get("text", "")
+            tier = check_tier(tier)
             if tier == PRIVATE and private_refused:
                 return _err(private_refused + SHARED_ONLY_HINT)
             try:
@@ -283,7 +284,9 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             if tier == SHARED and not shared_only:
                 if private_refused:
                     return _err("Settings can't be read; no Shared memory was proposed.")
-                store.propose_shared(screened, provenance())
+            memory_id = store.claim_memory_id()    # every permitted attempt claims before Private-state checks
+            if tier == SHARED and not shared_only:
+                store.propose_shared(screened, provenance(), memory_id=memory_id)
                 return _ok(pending={"tier": SHARED}, note="Sharing waits for your direct choice in the local app: /memories share.")
             outside_hold = review.save_hold_reason(screened, outside_tool)
             same = repeat_of(store, screened, tier, judge) if duplicates != "keep" else None
@@ -305,7 +308,8 @@ def handle(store: Store, name: str, args: dict, *, route_tier: str,
             flag = cross is not None and (tier_duplicates == "ask" or bool(outside_hold))
             try:
                 m = store.add(text, tier, provenance(), status=PENDING if hold else "active",
-                              pending_reason=hold or "", duplicate_of=cross.id if flag else 0)
+                              pending_reason=hold or "", duplicate_of=cross.id if flag else 0,
+                              memory_id=memory_id)
             except ForgottenError as exc:
                 if route_tier == PRIVATE or exc.tier == SHARED:
                     raise

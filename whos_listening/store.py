@@ -28,7 +28,7 @@ STATUSES = (ACTIVE, PENDING, FORGOTTEN)
 
 MAX_TEXT = 500  # a memory is a short fact, not a document
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def now_iso() -> str:
@@ -164,7 +164,7 @@ class Store(ABC):
     @abstractmethod
     def add(self, text: str, tier: str, provenance: Provenance, *,
             status: str = ACTIVE, pending_reason: str = "", allow_forgotten: bool = False,
-            duplicate_of: int = 0) -> Memory:
+            duplicate_of: int = 0, memory_id: Optional[int] = None) -> Memory:
         """Save a memory. Raises ``ForgottenError`` if a tombstone matches the text, unless
         ``allow_forgotten`` (only for the user's own commands), which also lifts the tombstone.
         ``duplicate_of`` flags it as possibly saying what that memory says (see resolve.py)."""
@@ -187,8 +187,12 @@ class Store(ABC):
     def set_status(self, memory_id: int, status: str, *, pending_reason: str = "") -> Memory: ...
 
     @abstractmethod
-    def propose_shared(self, text: str, provenance: Provenance) -> Memory:
+    def propose_shared(self, text: str, provenance: Provenance, *, memory_id: Optional[int] = None) -> Memory:
         """Hold a Shared suggestion before any Private-dependent lookup."""
+
+    @abstractmethod
+    def claim_memory_id(self) -> int:
+        """Commit one ID claim independently of a later memory insert or suppression."""
 
     @abstractmethod
     def consent_proposals(self) -> list[Memory]: ...
@@ -415,6 +419,8 @@ class SQLiteStore(Store):
     # Version 5: a flag for a possible duplicate, for the user to choose which to keep.
     _V5_COLUMNS = (("duplicate_of", "INTEGER NOT NULL DEFAULT 0"),)
     _V6_COLUMNS = (("audience_consent_required", "INTEGER NOT NULL DEFAULT 0"),)
+    _V7 = ("CREATE TABLE IF NOT EXISTS memory_id_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
+           "next_id INTEGER NOT NULL)",)
     # Columns added in version 3: (name, definition).
     _V3_COLUMNS = (
         ("forget_reason", "TEXT NOT NULL DEFAULT ''"),
@@ -496,6 +502,14 @@ class SQLiteStore(Store):
                                   stamp_after(row["updated_at"]), row["id"]))
                 self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
                                  (row["id"], "share_held", "migration", now_iso()))
+        if version < 7:
+            for sql in self._V7:
+                self._db.execute(sql)
+            next_id = max(1, int(self._db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM memories").fetchone()[0]))
+            self._db.execute("INSERT OR IGNORE INTO memory_id_state (singleton, next_id) VALUES (1, ?)",
+                             (next_id,))
+            self._db.execute("UPDATE memory_id_state SET next_id = MAX(next_id, ?) WHERE singleton = 1",
+                             (next_id,))
         if self._fts and not self._db.execute(
                 "SELECT 1 FROM sqlite_master WHERE name = 'memories_fts'").fetchone():
             # A file made where FTS5 was missing, or damaged: build the search index now.
@@ -530,12 +544,34 @@ class SQLiteStore(Store):
 
     # -- Store -------------------------------------------------------------
 
+    def claim_memory_id(self):
+        with self._lock:
+            old_isolation = self._db.isolation_level
+            self._db.isolation_level = None
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    row = self._db.execute("SELECT next_id FROM memory_id_state WHERE singleton = 1").fetchone()
+                    if row is None or row["next_id"] >= 2**63 - 1:
+                        raise StoreError("This store has no more memory numbers available.")
+                    memory_id = int(row["next_id"])
+                    self._db.execute("UPDATE memory_id_state SET next_id = ? WHERE singleton = 1",
+                                     (memory_id + 1,))
+                    self._db.execute("COMMIT")
+                    return memory_id
+                except BaseException:
+                    self._db.execute("ROLLBACK")
+                    raise
+            finally:
+                self._db.isolation_level = old_isolation
+
     def add(self, text, tier, provenance, *, status=ACTIVE, pending_reason="", allow_forgotten=False,
-            duplicate_of=0):
+            duplicate_of=0, memory_id=None):
         text = clean_text(text)
         tier = check_tier(tier)
         if status not in (ACTIVE, PENDING):
             raise StoreError("A new memory is either active or pending.")
+        memory_id = self.claim_memory_id() if memory_id is None else int(memory_id)
         stamp = now_iso()
         p = provenance
         fp = fingerprint(text)
@@ -548,26 +584,27 @@ class SQLiteStore(Store):
                         tier=tomb["tier"])
                 self._db.execute("DELETE FROM tombstones WHERE fingerprint = ?", (fp,))
             cur = self._db.execute(
-                """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
+                """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at,
                        written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (text, tier, status, pending_reason, stamp, stamp, p.written_by, p.via, p.route,
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (memory_id, text, tier, status, pending_reason, stamp, stamp, p.written_by, p.via, p.route,
                  p.route_tier, p.session_id, str(p.turn), p.author, new_uid(), int(duplicate_of or 0)),
             )
             return self.get(cur.lastrowid)
 
-    def propose_shared(self, text, provenance):
+    def propose_shared(self, text, provenance, *, memory_id=None):
         """Hold an assistant's Shared suggestion before any Private match or tombstone check."""
         text = clean_text(text)
+        memory_id = self.claim_memory_id() if memory_id is None else int(memory_id)
         p = provenance
         stamp = now_iso()
         with self._lock, self._db:
             cur = self._db.execute(
-                """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
+                """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at,
                        written_by, via, route, route_tier, session_id, turn, author, uid,
                        audience_consent_required)
-                   VALUES (?,'shared','pending',?,?,?,?,?,?,?,?,?,?,?,1)""",
-                (text, "Approve sharing with any model in the local app.", stamp, stamp,
+                   VALUES (?,?,'shared','pending',?,?,?,?,?,?,?,?,?,?,?,1)""",
+                (memory_id, text, "Approve sharing with any model in the local app.", stamp, stamp,
                  p.written_by, p.via, p.route, p.route_tier, p.session_id, str(p.turn), p.author, new_uid()),
             )
             self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
@@ -908,6 +945,7 @@ class SQLiteStore(Store):
         text = clean_text(text)
         if status not in (ACTIVE, PENDING):
             raise StoreError("A memory arriving by sync is either active or pending.")
+        memory_id = self.claim_memory_id()
         p = provenance
         with self._lock, self._db:
             if self._db.execute("SELECT 1 FROM memories WHERE uid = ?", (str(uid),)).fetchone():
@@ -915,10 +953,10 @@ class SQLiteStore(Store):
             self._db.execute("DELETE FROM tombstones WHERE fingerprint = ? AND tier = 'shared'",
                              (fingerprint(text),))
             cur = self._db.execute(
-                """INSERT INTO memories (text, tier, status, pending_reason, created_at, updated_at,
+                """INSERT INTO memories (id, text, tier, status, pending_reason, created_at, updated_at,
                        written_by, via, route, route_tier, session_id, turn, author, uid, duplicate_of)
-                   VALUES (?,'shared',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (text, status, pending_reason, created_at, updated_at, p.written_by, p.via, p.route,
+                   VALUES (?,?,'shared',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (memory_id, text, status, pending_reason, created_at, updated_at, p.written_by, p.via, p.route,
                  p.route_tier, p.session_id, str(p.turn), p.author, str(uid), int(duplicate_of or 0)),
             )
             return self.get(cur.lastrowid)
