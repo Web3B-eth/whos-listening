@@ -25,6 +25,25 @@ def review(store, action, *, id=None, said="", route=PRIVATE, **kw):
                                    user_message=said, export=lambda show: "/tmp/x.md", scan=lambda: "started"))
 
 
+def test_review_approve_pending_save_keeps_save_when_forget_is_requested(store):
+    held = store.add("Likes puzzles", SHARED, USER, status=PENDING, pending_reason="Outside content.")
+    store.request_forget(held.id, "A forget was suggested.")
+    waiting = review(store, "list")["waiting"]
+    assert len(waiting) == 1 and waiting[0]["kind"] == "save"
+    assert waiting[0]["forget_requested"] is True
+    out = review(store, "approve", id=held.id, said=f"Approve the pending save {held.id}")
+    assert out["ok"] and out["status"] == ACTIVE
+    assert not store.get(held.id).forget_reason and not store.is_forgotten_text(held.text)
+
+
+def test_review_reject_pending_save_rejects_save_when_forget_is_requested(store):
+    held = store.add("Likes puzzles", SHARED, USER, status=PENDING, pending_reason="Outside content.")
+    store.request_forget(held.id, "A forget was suggested.")
+    out = review(store, "reject", id=held.id, said=f"Reject the pending save {held.id}")
+    assert out["ok"] and out["status"] == FORGOTTEN
+    assert store.is_forgotten_text(held.text)
+
+
 BIKE = "Owns a Santa Cruz Hightower mountain bike"
 BIKE2 = "Bought a Santa Cruz Hightower mountain bike"
 

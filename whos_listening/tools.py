@@ -135,13 +135,17 @@ def _review(store: Store, args: dict, route_tier: str, user_message: str,
             else:
                 entry = {"kind": it.kind, "memory": _public(it.memory),
                          "why": review.shown_reason(it.memory,
-                                                    it.memory.pending_reason or it.memory.forget_reason,
+                                                    it.memory.pending_reason if it.kind == "save"
+                                                    else it.memory.forget_reason,
                                                     show_private, replayable=True)}
+                if it.kind == "save" and it.memory.forget_reason:
+                    entry["forget_requested"] = True
             out.append(entry)
         return _ok(waiting=out,
                    note="A duplicate group lists memories that may say the same thing: the user keeps one (keep: the "
                         "others are forgotten) or all (keep_both). A waiting save or forget they approve or reject. "
-                        "Show the memories with their numbers and let them choose."
+                        "Show the memories with their numbers and let them choose. A waiting save with "
+                        "forget_requested may be approved or rejected as a save; /memories forget N forgets it."
                         + ("" if show_private else " On a shared route, anything involving private memories isn't "
                                                    "shown: the user sees everything with /memories review in the local app."))
     if action == "all":

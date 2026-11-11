@@ -104,6 +104,9 @@ def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
                 lines += [f"\n{n}. A save waiting for your OK:", f"   {_line(m, show_private)}{_from(m)}",
                           f"   why: {review.shown_reason(m, m.pending_reason, show_private)}",
                           f"   /memories approve {m.id}  ·  /memories reject {m.id}"]
+                if m.forget_reason:
+                    lines += [f"   Forget was also requested: {review.shown_reason(m, m.forget_reason, show_private)}",
+                              f"   /memories forget {m.id} forgets it instead."]
             else:
                 lines += [f"\n{n}. A forget waiting for your OK:", f"   {_line(m, show_private)}",
                           f"   why: {review.shown_reason(m, m.forget_reason, show_private)}",
@@ -130,13 +133,16 @@ def cmd_keep(store: Store, args: list[str], show_private: bool) -> str:
 def cmd_pending(store: Store, show_private: bool) -> str:
     lines = []
     for m in store.list(statuses=(PENDING,), limit=200):
-        if m.forget_reason:
-            continue   # decide the forget request first; the save still waits if it is rejected
         why = m.pending_reason or (f"it may say what #{m.duplicate_of} says: /memories review" if m.duplicate_of
                                    else "needs your OK")
-        lines.append(f"save {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}")
+        line = f"save {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, why, show_private)}"
+        if m.forget_reason:
+            line += (f"\n    Forget was also requested: {review.shown_reason(m, m.forget_reason, show_private)}"
+                     f"\n    /memories forget {m.id} forgets it instead.")
+        lines.append(line)
     for m in store.forget_requests():
-        lines.append(f"forget {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, m.forget_reason, show_private)}")
+        if m.status != PENDING:
+            lines.append(f"forget {_line(m, show_private)}\n    why it waits: {review.shown_reason(m, m.forget_reason, show_private)}")
     if not lines:
         return "Nothing is waiting for you."
     return "\n".join(lines) + "\n\n/memories approve N or /memories reject N"
@@ -148,31 +154,31 @@ def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user")
         # Don't let anyone approve a Private memory they can't see here.
         return (f"#{m.id} is private, so its text isn't shown here. Approve it in the terminal or the "
                 f"local app, where you can read it first.")
-    if m.forget_reason and m.status != FORGOTTEN:
-        store.forget(m.id)
-        store.log_event(m.id, "approved_forget", actor)
-        return f"Forgot #{m.id}. It can't be saved again from chat."
     if m.status == PENDING:
+        if m.forget_reason:
+            store.clear_forget_request(m.id)
         store.set_status(m.id, ACTIVE)
         if m.duplicate_of:
             store.set_duplicate_of(m.id, 0)         # approving a possible duplicate keeps both
         store.log_event(m.id, "approved", actor)
         return f"Saved {_line(store.get(m.id), show_private)}"
+    if m.forget_reason and m.status != FORGOTTEN:
+        store.forget(m.id)
+        store.log_event(m.id, "approved_forget", actor)
+        return f"Forgot #{m.id}. It can't be saved again from chat."
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
 
 def cmd_reject(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg)
-    if m.forget_reason and m.status != FORGOTTEN:
-        store.clear_forget_request(m.id)
-        store.log_event(m.id, "rejected_forget", actor)
-        if m.status == PENDING:
-            return f"The forget request is gone. Save #{m.id} still waits for your OK."
-        return f"Kept {_line(m, show_private)}"
     if m.status == PENDING:
         store.forget(m.id)
         store.log_event(m.id, "rejected", actor)
         return f"Turned down #{m.id}. It can't be saved again from chat."
+    if m.forget_reason and m.status != FORGOTTEN:
+        store.clear_forget_request(m.id)
+        store.log_event(m.id, "rejected_forget", actor)
+        return f"Kept {_line(m, show_private)}"
     raise StoreError(f"#{m.id} isn't waiting for you.")
 
 

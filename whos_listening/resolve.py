@@ -71,10 +71,11 @@ def items(store: Store) -> list[Item]:
     out = [Item("duplicate", store.get(old), tuple(news)) for old, news in sorted(groups.items())]
     flagged = {m.id for m in store.flagged()}
     for m in sorted(store.list(statuses=(PENDING,), limit=500), key=lambda x: x.id):
-        if m.id not in flagged and not m.forget_reason:
+        if m.id not in flagged or m.forget_reason:
             out.append(Item("save", m))
     for m in store.forget_requests():
-        out.append(Item("forget", m))
+        if m.status != PENDING:
+            out.append(Item("forget", m))
     return out
 
 

@@ -1,7 +1,7 @@
 """The /memories commands over a real store. All data is made up."""
 
 from whos_listening import commands, resolve
-from whos_listening.store import PENDING, Provenance
+from whos_listening.store import ACTIVE, FORGOTTEN, PENDING, Provenance
 
 
 def run(store, args, show_private=True):
@@ -69,16 +69,18 @@ def test_pending_save_with_forget_request_has_one_current_choice(store):
     m = store.add("Likes puzzles", "shared", assistant(), status=PENDING, pending_reason="Outside content.")
     store.request_forget(m.id, "This chat read outside content, so a forget waits for you.")
     pending = run(store, "pending")
-    assert pending.count(f"#{m.id}") == 1 and "forget #" in pending
+    assert pending.count(f"#{m.id}") == 1 and "save #" in pending
     review = run(store, "review")
-    assert "A forget waiting" in review and "A save waiting" not in review
-    assert "still waits" in run(store, f"reject {m.id}")
-    assert store.get(m.id).status == PENDING and not store.get(m.id).forget_reason
+    assert "A save waiting" in review and "A forget waiting" not in review
+    assert f"/memories forget {m.id}" in review
+    assert "Saved" in run(store, f"approve {m.id}")
+    assert store.get(m.id).status == ACTIVE and not store.get(m.id).forget_reason
     assert not store.is_forgotten_text(m.text)
-    assert "A save waiting" in run(store, "review")
-    store.request_forget(m.id, "Try again.")
-    assert "Forgot" in run(store, f"approve {m.id}")
-    assert store.get(m.id).status == "forgotten" and store.is_forgotten_text(m.text)
+
+    another = store.add("Likes chess", "shared", assistant(), status=PENDING, pending_reason="Outside content.")
+    store.request_forget(another.id, "Try again.")
+    assert "Turned down" in run(store, f"reject {another.id}")
+    assert store.get(another.id).status == FORGOTTEN and store.is_forgotten_text(another.text)
 
 
 def test_duplicate_choice_waits_for_pending_forget_decision(store):
@@ -86,12 +88,13 @@ def test_duplicate_choice_waits_for_pending_forget_decision(store):
     newer = store.add("Enjoys puzzles", "shared", assistant(), status=PENDING,
                       pending_reason="Outside content.", duplicate_of=older.id)
     store.request_forget(newer.id, "Forget waits for you.")
-    assert "A forget waiting" in run(store, "review")
+    assert "A save waiting" in run(store, "review")
     assert "These may say the same thing" not in run(store, "review")
     assert "decide the forget" in run(store, f"keep {newer.id}").lower()
     assert store.get(newer.id).status == PENDING
-    run(store, f"reject {newer.id}")
-    assert "These may say the same thing" in run(store, "review")
+    assert "Saved" in run(store, f"approve {newer.id}")
+    assert store.get(newer.id).status == ACTIVE
+    assert not store.get(newer.id).forget_reason
 
 
 def test_add_forget_restore(store):
