@@ -202,8 +202,6 @@ def cmd_pending(store: Store, show_private: bool) -> str:
 def cmd_approve(store: Store, arg: str, show_private: bool, actor: str = "user") -> str:
     m = _get(store, arg, show_private)
     if m.status == PENDING:
-        if m.forget_reason:
-            store.clear_forget_request(m.id)
         store.set_status(m.id, ACTIVE)
         if m.duplicate_of:
             store.set_duplicate_of(m.id, 0)         # approving a possible duplicate keeps both

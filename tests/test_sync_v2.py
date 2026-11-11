@@ -113,6 +113,124 @@ def test_invalid_v2_order_refuses_entire_file_without_mutation(tmp_path):
         s.close()
 
 
+@pytest.mark.parametrize("damage", [
+    {"uid": "bad uid"},
+    {"entry": []},
+    {"status": "pending"},
+    {"updated_at": "not a date"},
+    {"text": 123},
+    {"text": "  Extra spaces  "},
+    {"fingerprint": "0" * 64},
+    {"forgotten": True, "fingerprint": "bad"},
+    {"forgotten": True, "fingerprint": int("1" * 64)},
+    {"forgotten": True, "text": FACT},
+])
+def test_malformed_v2_record_refuses_all_imports_and_preserves_file(tmp_path, damage):
+    s, file = SQLiteStore(tmp_path / "strict.sqlite"), FakeFile()
+    try:
+        good_uid, bad_uid = "a" * 32, "b" * 32
+        base = {"status": ACTIVE, "text": FACT, "fingerprint": fingerprint(FACT),
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "order": order.from_iso("2026-01-01T00:00:00+00:00")}
+        bad = dict(base)
+        uid = damage.get("uid", bad_uid)
+        if damage.get("forgotten"):
+            bad = {"status": FORGOTTEN, "fingerprint": fingerprint(FACT),
+                   "updated_at": base["updated_at"], "order": base["order"]}
+        bad.update({k: v for k, v in damage.items() if k not in ("uid", "forgotten", "entry")})
+        raw = {"format": sync.FORMAT, "version": 2, "memories": {
+            good_uid: {**base, "text": "Collects stamps", "fingerprint": fingerprint("Collects stamps")},
+            uid: damage.get("entry", bad)}}
+        file.raw = (json.dumps(raw) + "\n").encode()
+        before = file.raw
+        with pytest.raises(sync.SyncError):
+            sync.sync_once(s, file, "strict")
+        assert s.by_uid(good_uid) is None and s.by_uid(uid) is None
+        assert file.raw == before
+    finally:
+        s.close()
+
+
+def test_v2_non_map_memories_refuses_file(tmp_path):
+    s, file = SQLiteStore(tmp_path / "non-map.sqlite"), FakeFile()
+    try:
+        raw = {"format": sync.FORMAT, "version": 2, "memories": []}
+        file.raw = (json.dumps(raw) + "\n").encode()
+        with pytest.raises(sync.SyncError, match="memories map"):
+            sync.sync_once(s, file, "strict")
+        assert file.doc() == raw
+    finally:
+        s.close()
+
+
+def test_genuine_forget_after_equal_key_withdrawal_installs_global_tombstone(tmp_path):
+    s, file = SQLiteStore(tmp_path / "withdrawn.sqlite"), FakeFile()
+    try:
+        m = s.add(FACT, SHARED, USER)
+        other = s.add(FACT, SHARED, USER)
+        terminal = str(order.MAX_VALUE)
+        s._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (terminal, m.id))
+        s._db.commit()
+        s.apply_withdrawal(m.uid, fingerprint(FACT), "2026-01-01T00:00:00+00:00",
+                           m.created_at, "other", terminal)
+        assert s.by_uid(m.uid).status == FORGOTTEN
+        assert s.tombstone(fingerprint(FACT)) is None
+        forgotten = {"status": FORGOTTEN, "fingerprint": fingerprint(FACT),
+                     "updated_at": "2026-01-01T00:00:00+00:00", "order": terminal}
+        file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                                "memories": {m.uid: forgotten}}) + "\n").encode()
+        sync.sync_once(s, file, "peer")
+        assert file.doc()["memories"][m.uid]["status"] == FORGOTTEN
+        assert s.tombstone(fingerprint(FACT))[2] is True
+        assert s.tombstone_order(fingerprint(FACT)) == terminal
+        assert s.get(other.id).status == FORGOTTEN
+    finally:
+        s.close()
+
+
+def test_older_same_words_tombstone_does_not_reclassify_withdrawal(tmp_path):
+    s, file = SQLiteStore(tmp_path / "older-tombstone.sqlite"), FakeFile()
+    try:
+        m = s.add(FACT, SHARED, USER)
+        s._db.execute("UPDATE memories SET order_key = '90' WHERE id = ?", (m.id,))
+        s._db.commit()
+        s.add_tombstone(fingerprint(FACT), SHARED, "2026-01-01T00:00:00+00:00", "50")
+        s.apply_withdrawal(m.uid, fingerprint(FACT), "2026-01-01T00:00:00+00:00",
+                           m.created_at, "other", "100")
+        active = {"status": ACTIVE, "text": FACT, "fingerprint": fingerprint(FACT),
+                  "updated_at": "2026-01-01T00:00:00+00:00", "order": "90"}
+        file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                                "memories": {m.uid: active}}) + "\n").encode()
+        sync.sync_once(s, file, "peer")
+        assert file.doc()["memories"][m.uid]["status"] == sync.WITHDRAWN
+        assert s.tombstone_order(fingerprint(FACT)) == "50"
+    finally:
+        s.close()
+
+
+def test_terminal_v2_active_can_be_forgotten_and_converges(tmp_path):
+    a, b, file = SQLiteStore(tmp_path / "terminal-a.sqlite"), SQLiteStore(tmp_path / "terminal-b.sqlite"), FakeFile()
+    try:
+        uid = "c" * 32
+        terminal = str(order.MAX_VALUE)
+        active = {"status": ACTIVE, "text": FACT, "fingerprint": fingerprint(FACT),
+                  "updated_at": "2026-01-01T00:00:00+00:00", "order": terminal}
+        file.raw = (json.dumps({"format": sync.FORMAT, "version": 2,
+                                "memories": {uid: active}}) + "\n").encode()
+        sync.sync_once(a, file, "a")
+        sync.sync_once(b, file, "b")
+        a.forget(a.by_uid(uid).id)
+        assert a.by_uid(uid).order_key == terminal
+        sync.sync_once(a, file, "a")
+        assert file.doc()["memories"][uid]["status"] == FORGOTTEN
+        sync.sync_once(b, file, "b")
+        assert b.by_uid(uid).status == FORGOTTEN
+        assert b.tombstone_order(fingerprint(FACT)) == terminal
+    finally:
+        a.close()
+        b.close()
+
+
 def test_max_legacy_pending_approval_and_forget_restore(tmp_path):
     s, file = SQLiteStore(tmp_path / "pending.sqlite"), FakeFile()
     try:
@@ -204,7 +322,7 @@ def test_unknown_uid_withdrawal_does_not_touch_same_text_and_rejects_bad_shape(t
         assert s.by_uid(uid) is None and s.get(same.id).status == ACTIVE
         bad = {**doc, "memories": {uid: {**row, "text": FACT}}}
         file.raw = (json.dumps(bad) + "\n").encode()
-        with pytest.raises(sync.SyncError, match="invalid withdrawal"):
+        with pytest.raises(sync.SyncError, match="invalid forget or withdrawal"):
             sync.sync_once(s, file, "peer")
         assert s.get(same.id).status == ACTIVE
     finally:

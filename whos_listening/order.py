@@ -12,8 +12,7 @@ from datetime import datetime, timedelta, timezone
 EPOCH = datetime(1, 1, 1, tzinfo=timezone.utc)
 MICROS = 1_000_000
 MAX_DIGITS = 64
-# Reserve one million whole-second successors before the 64-digit storage ceiling.
-MAX_VALUE = 10**MAX_DIGITS - 1 - 1_000_000 * MICROS
+MAX_VALUE = 10**MAX_DIGITS - 1
 
 
 class OrderError(ValueError):
@@ -25,8 +24,6 @@ def parse(value: str) -> int:
             or not value.isascii() or not value.isdecimal() or (len(value) > 1 and value[0] == "0")):
         raise OrderError("The sync order value is invalid or too long.")
     number = int(value)
-    if number > MAX_VALUE:
-        raise OrderError("The sync order value has no supported successor headroom.")
     return number
 
 
@@ -53,6 +50,8 @@ def next_key(previous: str, now: str) -> str:
     # Keep legacy stamp_after behavior: use the current whole second if later; otherwise the
     # next whole second after the observed value, including fractional legacy instants.
     next_value = wall if wall > prior else (prior // MICROS + 1) * MICROS
+    if next_value > MAX_VALUE and prior < MAX_VALUE:
+        next_value = prior + 1       # use the remaining microseconds near the finite ceiling
     return key(next_value)
 
 

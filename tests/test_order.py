@@ -30,8 +30,7 @@ def test_successor_keeps_legacy_whole_second_granularity():
     assert int(next_value) == int(old) + 500_000
 
 
-@pytest.mark.parametrize("bad", ["", "00", "01", "-1", "+1", "1.0", "1e3", "９", "9" * 65,
-                                  "9" * 64])
+@pytest.mark.parametrize("bad", ["", "00", "01", "-1", "+1", "1.0", "1e3", "９", "9" * 65])
 def test_malformed_or_budget_exhausting_order_is_rejected(bad):
     with pytest.raises(order.OrderError):
         order.parse(bad)
@@ -42,7 +41,7 @@ def test_boundary_fails_without_wrapping():
         order.next_key(str(order.MAX_VALUE), "2026-01-01T00:00:00+00:00")
 
 
-def test_store_change_at_order_budget_fails_without_mutation(tmp_path):
+def test_terminal_order_allows_genuine_forget_but_blocks_restore(tmp_path):
     from whos_listening.store import Provenance, SQLiteStore, StoreError, fingerprint
 
     s = SQLiteStore(tmp_path / "budget.sqlite")
@@ -50,9 +49,30 @@ def test_store_change_at_order_budget_fails_without_mutation(tmp_path):
         m = s.add("Likes jazz", "shared", Provenance(written_by="user"))
         s._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (str(order.MAX_VALUE), m.id))
         s._db.commit()
-        before = s.get(m.id)
+        s.forget(m.id)
+        assert s.get(m.id).status == "forgotten"
+        assert s.tombstone_order(fingerprint("Likes jazz")) == str(order.MAX_VALUE)
         with pytest.raises(StoreError, match="order limit"):
-            s.forget(m.id)
-        assert s.get(m.id) == before and s.tombstone_order(fingerprint("Likes jazz")) is None
+            s.restore(m.id)
+        assert s.get(m.id).status == "forgotten"
+    finally:
+        s.close()
+
+
+def test_terminal_pending_approval_preserves_forget_request(tmp_path):
+    from whos_listening import commands
+    from whos_listening.store import PENDING, Provenance, SQLiteStore, SHARED, StoreError
+
+    s = SQLiteStore(tmp_path / "pending-terminal.sqlite")
+    try:
+        m = s.add("Likes jazz", SHARED, Provenance(written_by="user"), status=PENDING)
+        s.request_forget(m.id, "Review this forget.")
+        s._db.execute("UPDATE memories SET order_key = ? WHERE id = ?", (str(order.MAX_VALUE), m.id))
+        s._db.commit()
+        with pytest.raises(StoreError, match="order limit"):
+            commands.cmd_approve(s, str(m.id), True)
+        assert s.get(m.id).status == PENDING
+        assert s.get(m.id).forget_reason == "Review this forget."
+        assert not s.is_forgotten_text("Likes jazz")
     finally:
         s.close()

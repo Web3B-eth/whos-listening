@@ -171,8 +171,7 @@ def _ts(stamp: str) -> datetime:
 
 
 def parse(raw: Optional[bytes]) -> dict[str, Record]:
-    """The records in a sync file. Entries that aren't well formed are dropped (and so are gone
-    from the file after our next write). A file from a newer format raises."""
+    """Read v1 permissively for compatibility; reject any malformed v2 record as a whole file."""
     if not raw:
         return {}
     try:
@@ -185,14 +184,19 @@ def parse(raw: Optional[bytes]) -> dict[str, Record]:
         raise SyncError("The sync file was written by a newer Who's Listening; update this one first.")
     out: dict[str, Record] = {}
     memories = doc.get("memories")
+    if doc["version"] == VERSION and not isinstance(memories, Mapping):
+        raise SyncError("The version-2 sync file has no valid memories map; no changes were applied.")
     for uid, entry in (memories.items() if isinstance(memories, Mapping) else ()):
-        rec = _record(str(uid), entry, doc["version"])
+        rec = _record(uid, entry, doc["version"])
         if rec is not None:
             out[rec.uid] = rec
     return out
 
 
 def _record(uid: str, entry: Any, version: int = 1) -> Optional[Record]:
+    strict = version == VERSION
+    if strict and (not isinstance(uid, str) or not _UID.fullmatch(uid) or not isinstance(entry, Mapping)):
+        raise SyncError("The version-2 sync file has a malformed record; no changes were applied.")
     if version == 2:
         try:
             order_key = sync_order.key(sync_order.parse(entry.get("order"))) if isinstance(entry, Mapping) else ""
@@ -204,11 +208,14 @@ def _record(uid: str, entry: Any, version: int = 1) -> Optional[Record]:
         order_key = ""
     if not _UID.match(uid) or not isinstance(entry, Mapping):
         return None
-    status, updated = entry.get("status"), str(entry.get("updated_at") or "")
+    status, raw_updated = entry.get("status"), entry.get("updated_at")
+    if strict and not isinstance(raw_updated, str):
+        raise SyncError("The version-2 sync file has a malformed timestamp; no changes were applied.")
+    updated = str(raw_updated or "")
     allowed = (ACTIVE, FORGOTTEN, WITHDRAWN) if version == 2 else (ACTIVE, FORGOTTEN)
     if status not in allowed or _ts(updated).year < 2000:
-        if version == 2 and status == WITHDRAWN:
-            raise SyncError("The sync file has an invalid withdrawal; no changes were applied.")
+        if strict:
+            raise SyncError("The version-2 sync file has an invalid status or timestamp; no changes were applied.")
         return None
     if version == 1:
         try:
@@ -218,16 +225,24 @@ def _record(uid: str, entry: Any, version: int = 1) -> Optional[Record]:
     origin = _NAME.sub("", str(entry.get("origin") or "")).strip()[:40]
     created = str(entry.get("created_at") or "")
     if status == ACTIVE:
+        if strict and not isinstance(entry.get("text"), str):
+            raise SyncError("The version-2 sync file has invalid active text; no changes were applied.")
         try:
             text = clean_text(entry.get("text"))
-        except StoreError:
+        except StoreError as exc:
+            if strict:
+                raise SyncError("The version-2 sync file has invalid active text; no changes were applied.") from exc
             return None
+        if strict and (text != entry["text"] or entry.get("fingerprint") != fingerprint(text)):
+            raise SyncError("The version-2 sync file has invalid active text or hash; no changes were applied.")
         # The hash always comes from the words themselves, never from the file.
         return Record(uid, ACTIVE, fingerprint(text), updated, created, text, origin, order_key)
+    if strict and not isinstance(entry.get("fingerprint"), str):
+        raise SyncError("The version-2 sync file has an invalid forget or withdrawal; no changes were applied.")
     fp = str(entry.get("fingerprint") or "")
-    if not _HASH.match(fp) or (status == WITHDRAWN and "text" in entry):
-        if version == 2 and status == WITHDRAWN:
-            raise SyncError("The sync file has an invalid withdrawal; no changes were applied.")
+    if not _HASH.fullmatch(fp) or (strict and "text" in entry):
+        if strict:
+            raise SyncError("The version-2 sync file has an invalid forget or withdrawal; no changes were applied.")
         return None
     return Record(uid, status, fp, updated, created, None, origin, order_key)   # no text on forget/withdraw
 
@@ -469,12 +484,31 @@ def _forget_travels(store: Store, m) -> bool:
     """Whether a forgotten memory's tombstone says other gateways should forget it too (a Shared
     arrival the user chose against while it waited: resolve.py)."""
     tomb = store.tombstone(fingerprint(m.text))
-    return bool(tomb and tomb[1] == SHARED and tomb[2])
+    tomb_order = store.tombstone_order(fingerprint(m.text))
+    return bool(tomb and tomb[1] == SHARED and tomb[2] and tomb_order is not None
+                and sync_order.parse(tomb_order) >= sync_order.parse(m.order_key))
 
 
 def _still_here(store: Store, memory_id: int) -> bool:
     m = store.get(memory_id)
     return m is not None and m.status in (ACTIVE, PENDING)
+
+
+def _apply_global_forget(store: Store, r: Record, result: SyncResult) -> None:
+    """A genuine forget applies by fingerprint, even when this UID was already withdrawn."""
+    for same in store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
+        if sync_order.parse(same.order_key) <= sync_order.parse(r.order_key):
+            store.forget(same.id, at=r.updated_at, order_key=r.order_key, travels=True)
+            _log(store, same.id, "synced_forget")
+            result.forgotten += 1
+    if not store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
+        existing_tomb = store.tombstone(r.fingerprint)
+        existing_order = store.tombstone_order(r.fingerprint)
+        if existing_tomb is None or (
+                existing_tomb[1] == SHARED and existing_tomb[2]
+                and existing_order is not None
+                and sync_order.parse(r.order_key) > sync_order.parse(existing_order)):
+            store.add_tombstone(r.fingerprint, SHARED, r.updated_at, r.order_key)
 
 
 @dataclass
@@ -499,7 +533,8 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
         if m.status == FORGOTTEN and m.forgotten_from == PENDING and not _forget_travels(store, m):
             continue            # never active here: a turn-down is local, a synced forget is already out
         withdrawal = store.withdrawal(m.uid)
-        if withdrawal and sync_order.parse(withdrawal.order_key) >= sync_order.parse(m.order_key):
+        if (withdrawal and sync_order.parse(withdrawal.order_key) >= sync_order.parse(m.order_key)
+                and not (m.status == FORGOTTEN and _forget_travels(store, m))):
             continue            # a withdrawn row must never become a global fingerprint forget
         theirs = remote.get(m.uid)
         ours = local_record(m, theirs.origin if theirs and theirs.origin else name)
@@ -524,12 +559,21 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
                 result.withdrawn += 1 if m is not None and m.status == ACTIVE else 0
             continue
         if m is not None:
-            if m.tier != SHARED or not newer(r, local_record(m, name)):
+            if m.tier != SHARED:
+                continue
+            local_head = local_record(m, name)
+            withdrawal = store.withdrawal(uid)
+            if (withdrawal and sync_order.parse(withdrawal.order_key) >= sync_order.parse(m.order_key)
+                    and not (m.status == FORGOTTEN and _forget_travels(store, m))):
+                local_head = withdrawal_record(withdrawal, name)
+            if not newer(r, local_head):
                 continue        # never touch a Private memory
             if r.status == FORGOTTEN:
+                was_global = _forget_travels(store, m)
                 store.forget(m.id, at=r.updated_at, order_key=r.order_key, travels=True)   # a held one too
                 _log(store, m.id, "synced_forget")
-                result.forgotten += 1 if m.status != FORGOTTEN else 0
+                result.forgotten += 1 if m.status != FORGOTTEN or (not was_global and _forget_travels(store, m)) else 0
+                _apply_global_forget(store, r, result)
             elif m.status == FORGOTTEN and not _turned_down_here(store, m):
                 store.restore(m.id, at=r.updated_at, order_key=r.order_key)   # one that was held comes back waiting
                 _log(store, m.id, "synced_restore")
@@ -542,19 +586,7 @@ def _merge_and_apply(store: Store, remote: dict[str, Record], name: str,
         if r.status == FORGOTTEN:
             # Forgotten elsewhere: the same words here (saved separately) go too, unless they
             # changed here after that forget. And they can't come back from chat.
-            for same in store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
-                if sync_order.parse(same.order_key) <= sync_order.parse(r.order_key):
-                    store.forget(same.id, at=r.updated_at, order_key=r.order_key, travels=True)
-                    _log(store, same.id, "synced_forget")
-                    result.forgotten += 1
-            if not store.shared_with_fingerprint(r.fingerprint, (ACTIVE, PENDING)):
-                existing_tomb = store.tombstone(r.fingerprint)
-                existing_order = store.tombstone_order(r.fingerprint)
-                if existing_tomb is None or (
-                        existing_tomb[1] == SHARED and existing_tomb[2]
-                        and existing_order is not None
-                        and sync_order.parse(r.order_key) > sync_order.parse(existing_order)):
-                    store.add_tombstone(r.fingerprint, SHARED, r.updated_at, r.order_key)
+            _apply_global_forget(store, r, result)
             continue
 
         # An active memory this gateway hasn't seen.

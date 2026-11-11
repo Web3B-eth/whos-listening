@@ -199,6 +199,7 @@ class Store(ABC):
 
     @abstractmethod
     def set_status(self, memory_id: int, status: str, *, pending_reason: str = "") -> Memory: ...
+    def ensure_change_possible(self, memory_id: int) -> None: ...
 
     @abstractmethod
     def propose_shared(self, text: str, provenance: Provenance, *, memory_id: Optional[int] = None) -> Memory:
@@ -621,7 +622,8 @@ class SQLiteStore(Store):
                 self._db.execute("INSERT OR REPLACE INTO sync_seen (uid, order_key) VALUES (?, ?)",
                                  (uid, sync_order.key(observed)))
 
-    def _change(self, m: Memory, *, at: Optional[str] = None, order_key: Optional[str] = None) -> tuple[str, str]:
+    def _change(self, m: Memory, *, at: Optional[str] = None, order_key: Optional[str] = None,
+                terminal_tie: bool = False) -> tuple[str, str]:
         """A remote change keeps its order; a local change advances beyond every observed head."""
         if order_key is not None:
             value = sync_order.key(sync_order.parse(order_key))
@@ -639,6 +641,9 @@ class SQLiteStore(Store):
         try:
             value = sync_order.next_key(sync_order.key(prior), now_iso())
         except sync_order.OrderError as exc:
+            if terminal_tie and prior == sync_order.MAX_VALUE:
+                # A genuine forget or UID withdrawal wins an active tie at the last key.
+                return now_iso(), sync_order.key(prior)
             raise StoreError("The sync order limit was reached; this change was not made.") from exc
         return sync_order.display(value, now_iso()), value
 
@@ -837,12 +842,22 @@ class SQLiteStore(Store):
                 raise StoreError("That sharing proposal needs the direct local share command.")
             stamp, order_key = self._change(m)
             self._db.execute(
-                "UPDATE memories SET status = ?, pending_reason = ?, updated_at = ?, order_key = ? WHERE id = ?",
-                (status, pending_reason if status == PENDING else "", stamp, order_key, m.id),
+                "UPDATE memories SET status = ?, pending_reason = ?, "
+                "forget_reason = CASE WHEN ? = 'active' THEN '' ELSE forget_reason END, "
+                "updated_at = ?, order_key = ? WHERE id = ?",
+                (status, pending_reason if status == PENDING else "", status, stamp, order_key, m.id),
             )
             if status == ACTIVE:
                 self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (m.uid,))
             return self.get(m.id)
+
+    def ensure_change_possible(self, memory_id):
+        """Check the next local order before a multi-memory owner choice changes other rows."""
+        with self._lock:
+            m = self.get(memory_id)
+            if m is None:
+                raise StoreError(f"No memory #{memory_id}.")
+            self._change(m)
 
     def forget(self, memory_id, *, at=None, order_key=None, travels=None, everywhere=False):
         with self._lock, self._db:
@@ -852,14 +867,22 @@ class SQLiteStore(Store):
             if m.audience_consent_required:
                 raise StoreError("That sharing proposal needs the direct local share command.")
             if m.status == FORGOTTEN:
-                if order_key is not None and sync_order.parse(order_key) > sync_order.parse(m.order_key):
+                tomb = self.tombstone(fingerprint(m.text))
+                tomb_order = self.tombstone_order(fingerprint(m.text))
+                needs_global = (order_key is not None and travels is True and (
+                    tomb is None or tomb[1] != SHARED or not tomb[2] or
+                    tomb_order is None or sync_order.parse(tomb_order) < sync_order.parse(order_key)))
+                if order_key is not None and (
+                        sync_order.parse(order_key) > sync_order.parse(m.order_key) or
+                        (sync_order.parse(order_key) == sync_order.parse(m.order_key) and needs_global)):
                     stamp, change_order = self._change(m, at=at, order_key=order_key)
                     self._db.execute("UPDATE memories SET updated_at = ?, order_key = ? WHERE id = ?",
                                      (stamp, change_order, m.id))
                     self._tombstone(m.text, m.id, m.tier, stamp, travels=True, order_key=change_order)
                     return self.get(m.id)
                 return m
-            stamp, change_order = self._change(m, at=at, order_key=order_key)
+            stamp, change_order = self._change(m, at=at, order_key=order_key,
+                                                terminal_tie=at is None and order_key is None)
             self._db.execute("UPDATE memories SET status = 'forgotten', forgotten_from = ?, duplicate_of = 0, "
                              "forget_reason = '', updated_at = ?, order_key = ? WHERE id = ?",
                              (m.status, stamp, change_order, m.id))
@@ -930,7 +953,7 @@ class SQLiteStore(Store):
             m = self.get(memory_id)
             if m is None or m.tier != SHARED or m.status != ACTIVE or m.audience_consent_required:
                 raise StoreError(f"No active Shared memory #{memory_id} to withdraw.")
-            stamp, order_key = self._change(m)
+            stamp, order_key = self._change(m, terminal_tie=True)
             self._db.execute("UPDATE memories SET status = 'pending', pending_reason = ?, "
                              "updated_at = ?, order_key = ? WHERE id = ?", (reason, stamp, order_key, m.id))
             self._db.execute("INSERT OR REPLACE INTO withdrawals "

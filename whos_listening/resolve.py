@@ -125,6 +125,8 @@ def keep(store: Store, memory_id: int, *, show_private: bool, actor: str = "user
     siblings = [x for x in store.flagged() if m.duplicate_of and x.duplicate_of == m.duplicate_of and x.id != m.id]
     _check_no_forget_request([m, *others, *siblings])
     _check_visible([m, *others, *siblings], show_private)
+    if m.status == PENDING:
+        store.ensure_change_possible(m.id)
     for other in others:
         _drop(store, other, actor)
     _activate(store, m, actor)
@@ -143,6 +145,9 @@ def keep_both(store: Store, memory_id: int, *, show_private: bool, actor: str = 
         raise StoreError(not_flagged(m.id))
     _check_no_forget_request([m, *others])
     _check_visible([m, *others], show_private)
+    for one in (m, *others):
+        if one.status == PENDING:
+            store.ensure_change_possible(one.id)
     kept = _kept_both(store)
     for other in others:
         kept.add(_pair_key(m, other))
