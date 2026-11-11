@@ -978,6 +978,9 @@ class SQLiteStore(Store):
             back = PENDING if m.forgotten_from == PENDING else ACTIVE
             self._db.execute("UPDATE memories SET status = ?, forgotten_from = '', updated_at = ?, order_key = ? WHERE id = ?",
                              (back, stamp, change_order, m.id))
+            if back == PENDING and m.audience_consent_required:
+                self._db.execute("INSERT INTO events (memory_id, action, actor, at) VALUES (?,?,?,?)",
+                                 (m.id, "share_held", "sync", now_iso()))
             if back == ACTIVE:
                 self._db.execute("DELETE FROM withdrawals WHERE uid = ?", (m.uid,))
             return self.get(m.id)

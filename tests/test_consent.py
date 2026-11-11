@@ -213,6 +213,8 @@ def test_terminal_share_undo_can_still_be_declined_and_purged(store):
 
 
 def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
+    older = store.add("Likes jazz", PRIVATE, USER)
+    store.log_event(older.id, "saved", "user")
     propose(store)
     p = store.consent_proposals()[0]
     assert "Approved Shared" in commands.cmd_share(store, f"approve P{p.id}@{p.order_key}")
@@ -228,6 +230,8 @@ def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
     hidden = store.get(p.id)
     assert hidden.status == FORGOTTEN and hidden.audience_consent_required
     assert store.tombstone(sync.fingerprint(FACT))[2] is True
+    assert "no longer waiting" in commands.cmd_undo(store, True)
+    assert store.get(older.id).status == ACTIVE
     newer = order.next_key(withdrawal.order_key, stamp)
     active = {"status": ACTIVE, "text": FACT, "fingerprint": sync.fingerprint(FACT),
               "updated_at": stamp, "order": newer}
@@ -238,6 +242,9 @@ def test_remote_forget_and_later_active_leave_undone_share_hidden(store):
     assert waiting.status == PENDING and waiting.audience_consent_required
     assert store.consent_proposals()[0].id == p.id
     assert store.shared_for_sync() == []
+    assert any(e.action == "share_held" and e.actor == "sync" for e in store.events(memory_id=p.id))
+    assert "sharing proposal is waiting" in commands.cmd_undo(store, True)
+    assert store.get(older.id).status == ACTIVE
     with pytest.raises(StoreError, match="No memory"):
         commands.cmd_approve(store, str(p.id), True)
 
