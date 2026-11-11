@@ -111,10 +111,10 @@ class Run:
             requests = [json.loads(line) for line in f if line.strip()]
         return session, requests
 
-    def command(self, line: str) -> str:
-        """A slash command in a one-off chat; returns what Hermes printed."""
-        out = subprocess.run([self.hermes, "chat", "-Q", "-q", line, "--provider", "private-sim",
-                              "-m", "private-model"], env=self.env(), cwd=self.home,
+    def command(self, line: str, *, resume: str = "") -> str:
+        """A slash command in a one-off chat (or in chat ``resume``); returns what Hermes printed."""
+        route = ["--resume", resume] if resume else ["--provider", "private-sim", "-m", "private-model"]
+        out = subprocess.run([self.hermes, "chat", "-Q", "-q", line, *route], env=self.env(), cwd=self.home,
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
         return out.stdout + out.stderr
 
@@ -292,6 +292,19 @@ def main() -> int:
         run.check("private route: request sent", bool(main), f"{len(reqs)} requests")
         run.check("private route: carries the Private memory", has(main, PRIVATE_WORD))
         run.check("private route: carries the Shared memory", has(main, SHARED_WORD))
+
+        # 1b. A /memories reply is shown to the user and never kept in the chat's history, so it
+        #     carries no Private tag (Desktop would show the tag as text). If a Hermes version starts
+        #     replaying slash replies to the model, the second check fails.
+        sid_list, _ = run.chat(QUESTION, provider="private-sim", model="private-model")
+        listed = run.command("/memories", resume=sid_list)
+        run.check("slash reply: the owner sees the Private memory, untagged",
+                  f"[private] {PRIVATE_TEXT}" in listed and "<wl-private" not in listed, listed[-200:])
+        run.chat("/model shared-model --provider shared-sim", resume=sid_list)
+        _, reqs = run.chat("What did that list say?", resume=sid_list)
+        run.check("slash reply: never reaches a later request",
+                  bool(main_requests(reqs)) and not has(reqs, "[private]") and not has(reqs, PRIVATE_WORD),
+                  f"{len(reqs)} requests")
 
         # 2. Same chat, switched to a Shared route. Turn 1's memory block is replayed from
         #    history; the guard must take the Private memory out of every request.

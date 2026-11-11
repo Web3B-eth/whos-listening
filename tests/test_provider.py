@@ -295,17 +295,17 @@ def test_memories_command_through_hermes_dispatch(plugin, tmp_path, monkeypatch)
     monkeypatch.setattr(plugin, "_active_home", lambda: tmp_path)
     out = invoke_plugin_command(plugin._memories_command, "add shared Likes jazz",
                                 source="cli", session_id="s", session_key="k", platform="cli")
-    assert "Saved S1 [shared] Likes jazz" in out and out.startswith('<wl-private id="0">')
+    assert "Saved S1 [shared] Likes jazz" in out and "<wl-private" not in out     # shown as-is, never replayed
 
 
-def test_private_capable_command_reply_is_scrubbed_from_shared_replay(plugin, provider, monkeypatch):
+def test_private_capable_command_reply_shows_private_rows_and_shared_platform_omits_them(plugin, provider,
+                                                                                         monkeypatch):
     home = Path(provider._store.path).parent.parent
     monkeypatch.setattr(plugin, "_active_home", lambda: home)
     provider._store.add("Keeps a blue notebook", "private", plugin.Provenance(written_by="user", via="test"))
     owner_reply = plugin._memories_command("list", platform="desktop")
-    assert "Keeps a blue notebook" in owner_reply
-    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": owner_reply}]}, "shared")
-    assert cleaned is not None and "Keeps a blue notebook" not in cleaned["messages"][0]["content"]
+    assert "Keeps a blue notebook" in owner_reply and "<wl-private" not in owner_reply
+    assert "Keeps a blue notebook" not in plugin._memories_command("list", platform="telegram")
 
 
 def test_outside_flag_follows_compression_and_branch(plugin, provider):
@@ -791,7 +791,7 @@ def test_undo_approved_shared_save_forces_withdrawal_sync(plugin, provider, monk
     assert calls == [False, True, False, True]
 
 
-def test_private_sharing_review_is_scrubbed_on_shared_replay(plugin, provider, monkeypatch):
+def test_private_sharing_review_shows_locally_and_approves(plugin, provider, monkeypatch):
     home = Path(provider._store.path).parent.parent
     monkeypatch.setattr(plugin, "_active_home", lambda: home)
     see(plugin, "http://127.0.0.1:9/v1")
@@ -800,9 +800,7 @@ def test_private_sharing_review_is_scrubbed_on_shared_replay(plugin, provider, m
     pending = provider._store.list(statuses=("active",), tiers=("private",))[0]
     assert "puzzles" not in plugin._memories_command("review", platform="telegram")
     preview = plugin._memories_command("review", platform="desktop")
-    assert "Likes ‹blue› puzzles" in preview and display_ref(pending) in preview
-    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": preview}]}, "shared")
-    assert cleaned is not None and "puzzles" not in cleaned["messages"][0]["content"]
+    assert "Likes <blue> puzzles" in preview and display_ref(pending) in preview     # as typed, untagged
     assert "Approved sharing" in plugin._memories_command(f"approve {display_ref(pending)}", platform="desktop")
     assert provider._store.search("puzzles", tiers=("shared",))
 
@@ -1215,14 +1213,25 @@ def test_slash_export_and_scan(plugin, provider, tmp_path, monkeypatch):
     assert "These may say the same thing" in out and "Last scan" in out
 
 
-def test_running_scan_status_is_marked_for_shared_replay(plugin, provider, monkeypatch):
+def test_slash_replies_show_without_private_tags(plugin, provider, monkeypatch):
+    """Hermes shows a slash reply and keeps it out of the chat's history (e2e/run.py checks a later
+    request never carries it), so it needs no tag, and Desktop would show the tag as text."""
     home = Path(provider._store.path).parent.parent
     monkeypatch.setattr(plugin, "_active_home", lambda: home)
     monkeypatch.setattr(plugin, "start_scan", lambda _: "Scanning 2 possible Private pairs.")
-    reply = plugin._memories_command("review scan", platform="desktop")
-    assert "2 possible Private pairs" in reply and reply.startswith('<wl-private id="0">')
-    cleaned = plugin.guard.guard_request({"messages": [{"role": "tool", "content": reply}]}, "shared")
-    assert cleaned is not None and "2 possible Private pairs" not in cleaned["messages"][0]["content"]
+    provider._store.add("Prefers aisle seats", "private", plugin.Provenance())
+    for args in ("review scan", "", "pending", "review"):
+        reply = plugin._memories_command(args, platform="desktop")
+        assert "<wl-private" not in reply, args
+    assert "Prefers aisle seats" in plugin._memories_command("", platform="desktop")
+
+
+def test_the_review_tools_scan_note_stays_tagged_for_shared_replay(plugin, provider, monkeypatch):
+    """Unlike a slash reply, a tool result is replayed to later requests: it keeps its tag."""
+    see(plugin, "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(plugin, "start_scan", lambda _: "Scanning 2 possible Private pairs.")
+    note = tool(provider, "whos-listening_review", {"action": "scan"})["note"]
+    assert note.startswith('<wl-private id="0">') and "2 possible Private pairs" in note
 
 
 def test_the_judge_says_the_real_reason_it_isnt_running(plugin, provider, tmp_path, monkeypatch):

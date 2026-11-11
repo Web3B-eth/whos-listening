@@ -653,7 +653,7 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
         settings, _ = _load_settings(home)
         if settings is None or not commands.shows_private(platform, settings):
             return "Review scans are available on a Private-capable platform."
-        return recall.private_span(0, start_scan(home))
+        return start_scan(home)
     if words and words[0].lower() == "export":
         settings, _ = _load_settings(home)
         return _export_command(home, settings is not None and commands.shows_private(platform, settings), platform)
@@ -670,7 +670,9 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
         maybe_sync(home, force=True)
     if not words or words[0].lower() in ("list", "pending"):
         out = _with_setup_notes(out)
-    return recall.private_span(0, out) if show_private else out
+    # No Private tag: Hermes shows a slash reply to the user and keeps it out of the chat's history
+    # (e2e/run.py checks a later request never carries it), and Desktop shows tags as text.
+    return out
 
 
 def _export_command(home: Path, show_private: bool, platform: str) -> str:

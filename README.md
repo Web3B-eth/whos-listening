@@ -147,7 +147,7 @@ You don't need slash commands for this: say "let's review your memories" and the
 
 `/memories`, `/memories pending` and `/memories settings` end with a note when Who's Listening isn't Hermes' memory provider, or Hermes' built-in memory is still on, saying where to fix it. Every `/memories` command first syncs with your other gateways if a sync is due (at most once per `interval`), waiting up to a few seconds, so what you see is current.
 
-Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). Shared-platform slash commands omit Private memories and their numbers; a waiting Private memory can only be approved where you can read it first. Replies from a Private-capable slash command are marked so the request guard can remove them if Hermes later replays them to a Shared route.
+Private text is shown only on platforms that may see Private memories (the terminal and the local apps by default, plus any in `private_platforms`). Shared-platform slash commands omit Private memories and their numbers; a waiting Private memory can only be approved where you can read it first. Slash command replies are shown to you and never kept in the chat's history, so no model sees them, and they carry no Private tag (Desktop would show it as text). The end-to-end checks confirm a later request never carries a `/memories` reply.
 
 The same commands work from a terminal, plus `purge N`, which removes a forgotten memory's SQLite row and keeps its tombstone. It does not securely erase old bytes (see [Limits](#limits)):
 
@@ -248,7 +248,7 @@ python -m pytest
 
 Run Hermes for testing with a scratch `HERMES_HOME`, never your real one. See [`AGENTS.md`](AGENTS.md).
 
-End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in a fresh scratch home under `.scratch/`, with made-up memories. The fake model makes scripted tool calls. The checks cover recall on Private and Shared routes, a checked Shared save with explicit permission and a near Private match, a chat that switches from Private to Shared (the guard strips replayed Private memory), forget plus a blocked re-save, a planted "remember…" line in a file (the save waits), the rule screen, `/memories pending` in a chat, and approving from the CLI. They take about two minutes:
+End-to-end checks run real Hermes against a fake model server on `127.0.0.1`, in a fresh scratch home under `.scratch/`, with made-up memories. The fake model makes scripted tool calls. The checks cover recall on Private and Shared routes, a checked Shared save with explicit permission and a near Private match, a chat that switches from Private to Shared (the guard strips replayed Private memory, and a `/memories` reply is never replayed), forget plus a blocked re-save, a planted "remember…" line in a file (the save waits), the rule screen, `/memories pending` in a chat, and approving from the CLI. They take about two minutes:
 
 ```bash
 .local/venv-023/bin/python e2e/run.py
