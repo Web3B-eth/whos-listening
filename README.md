@@ -59,7 +59,7 @@ To stop using it, run `hermes memory off` (and `hermes plugins remove whos-liste
 
 ## How it works
 
-- **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Nothing leaves your machine except what goes into a model request, and, if you set up [sync](#sync-between-gateways), your Shared memories.
+- **Store.** Memories live in SQLite (with full-text search) at `$HERMES_HOME/whos-listening/memories.sqlite`, one file per Hermes profile. Everything that leaves your machine, and when, is listed under [What it sends, stores and runs](#what-it-sends-stores-and-runs).
 - **Three layers, all must be Private.** A request may carry Private memories only if every layer is Private. Each is your call in [Settings](#settings):
   - **Gateway:** the machine running Hermes, which stores the memories and builds every prompt. Private by default. Set it to Shared where you don't trust the machine (for example Hermes Cloud, or a server someone else runs); a Shared gateway also keeps no Private memories. There the model is told that every memory it saves is Shared, so it saves without asking which tier, and `/memories add TEXT` saves Shared too. A save that asks for Private is refused. If the settings can't be read, a save with no tier is refused rather than made Shared. See [Where the backend runs](#where-the-backend-runs).
   - **Platform:** where you chat. The terminal, the Hermes TUI, Desktop and `hermes chat` (Hermes platforms `cli`, `tui`, `desktop` and `local`) are Private by default. Every other platform is Shared: chat apps such as Telegram, Signal, Slack and WhatsApp, whose servers see the replies, and also the API server, the dashboard's web chat, scheduled jobs and subagents. The Hermes Webapp (Desktop's interface in a browser, for example on your phone) counts as `desktop` too.
@@ -265,6 +265,30 @@ HERMES_HOME="$PWD/.scratch/hermes-home" hermes plugins doctor --ci "$CLEAN"
 `plugin.yaml` declares the hooks and middleware `register()` adds, which is what `hermes plugins validate` checks against. `register()` also adds the memory provider and the `/memories` command. The four memory tools come from the provider's `get_tool_schemas()`, so `provides_tools` stays empty.
 
 `plugin.yaml` says `kind: standalone`, not `exclusive`, which makes Who's Listening a "dual-kind" plugin in Hermes' terms. General plugin discovery loads it when Hermes starts, so `/memories` works from the first message. The memory loader then loads it again for the provider, and Hermes keeps one set of hooks. The two copies share their in-memory books (routes and outside content) through `_process_wide()` in `provider.py`. With `kind: exclusive`, Hermes only ran `register()` once a chat built an agent, so on a fresh gateway (each time Desktop starts one) `/memories` was an unknown command until the first normal message.
+
+## What it sends, stores and runs
+
+Everything Who's Listening does beyond adding memories to the requests Hermes already makes, so you can decide before you install it. Each item links to where it's explained.
+
+**Network requests.** Only these, and only from the gateway:
+
+| What | Where to | What it carries | When |
+| --- | --- | --- | --- |
+| Venice's model list | `GET https://api.venice.ai/api/v1/models?type=all` | Nothing about you, and no key | At most once a day, in the background ([routes](#how-it-works)) |
+| Duplicate judge: Clef or Jev | `POST https://api.venice.ai/api/v1/decisions`, with the Venice key Hermes already has | The new memory and up to 20 others, Private ones included | On by default (Clef) whenever Hermes has a Venice key: once for each save the word check lets through, each memory arriving by sync, and each memory in a `/memories review scan`. `duplicate_judge: off` stops it ([near-duplicates](#how-it-works)) |
+| Duplicate judge: `model` | Your default model, through Hermes (a side call) | The same memories | Only if you choose `model`, only in a chat on a Private route, and only if every fallback is Private |
+| Auto-review | The chat's own model, through Hermes (a side call) | For a held save: the memory and your three newest messages. For a review choice: the exact change ("keep #41, forget #12"), the assistant's last message and your three newest messages. Never the outside content | On by default, only after the chat read outside content: once for each held save, and once for each review choice (keep, keep both, approve, reject) your message makes without the memory's number. At most 3 a turn in all, and only where Hermes can't retry it somewhere less trusted. A held save's check runs in the background (up to 45 s); a choice's check waits up to 20 s. `review: ask` stops it ([Auto-review](#how-it-works), [reviewing](#reviewing-your-memories)) |
+| Sync | `https://api.github.com`, your own private repository, with your token | The text of every Shared memory (forgotten ones only as a hash), which gateway saved it, and when. Never a Private memory | Only if you set up [sync](#sync-between-gateways) |
+
+**Files,** all in `$HERMES_HOME/whos-listening/`: `memories.sqlite` (your memories, and forgotten text until you purge it), `settings.json` (yours, if you make one), `hermes-settings.json` (a copy of the settings from Desktop's form, for the command line), `venice-models.json` (Venice's model list) and `exports/` (files from `/memories export`, readable only by you). It writes nowhere else.
+
+**What it reads from Hermes.** The model, provider addresses and fallbacks from `config.yaml`, through Hermes' read-only config loader (never keys). Two secrets, only through Hermes' secrets (`get_secret`), never from a file: the sync token (`WHOS_LISTENING_SYNC_TOKEN`), and the Venice key Hermes uses for its own Venice provider (`VENICE_API_KEY`, or a custom endpoint's key on `api.venice.ai`), which goes only to Venice.
+
+**Background threads.** Short ones only, started by chat activity: a sync, a refresh of Venice's list, an Auto-review check of a held save, and a review scan you start. A check or a sync opens its own connection to `memories.sqlite`, so it can finish after the chat closes. Nothing runs between chats, and there's no server or long-running process.
+
+**Logs.** INFO lines in Hermes' log (`agent.log`, or `hermes logs`): each duplicate check and each Auto-review run (whether it ran, on which model, its verdict), and each sync's counts. Only memory numbers, odds and fixed words: never a memory's text or a model's own reason.
+
+**Not at all:** telemetry, usage reporting, self-updating, shell commands or Python dependencies. It reads no other credential.
 
 ## Limits
 
