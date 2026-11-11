@@ -27,7 +27,7 @@ from .routes import (
     Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
     private_storage_refusal, shared_only_gateway, side_call_routes_private,
 )
-from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore
+from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore, display_ref
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,7 @@ class WhosListeningProvider(MemoryProvider):
         self._author = ""
         self._user_messages: list[tuple[str, str]] = []   # (author id, text): newest user messages
         self._turn_message = ""
+        self._last_reply = ""          # the assistant's last reply: what a "yes" in the next turn answers
         self._checks_this_turn = 0
         self._recalls_this_turn = 0
 
@@ -278,6 +279,7 @@ class WhosListeningProvider(MemoryProvider):
         parent = str(kwargs.get("parent_session_id") or old or "")
         if kwargs.get("reset"):
             self._user_messages = []      # a new chat: the old chat's words don't count
+            self._last_reply = ""
         if kwargs.get("reset") or not new_session_id or parent == new_session_id:
             return
         # Compression, /branch and /resume keep the transcript (and any outside content in it)
@@ -381,7 +383,7 @@ class WhosListeningProvider(MemoryProvider):
                            check_sharing=self._check_sharing if tool_name == tools.REMEMBER else None,
                            judge=self._duplicate_judge(route, verdict) if tool_name == tools.REMEMBER else None,
                            tier_duplicates=self._tier_duplicates(),
-                           user_message=self._turn_message,
+                           user_message=self._turn_message, choice_check=self._choice_check,
                            export=self._export, scan=self._scan)
         if before is not None and self._dir is not None and _shared_stamp(self._store) != before:
             maybe_sync(self._dir.parent, force=True)      # a Shared memory changed: tell the others
@@ -475,6 +477,36 @@ class WhosListeningProvider(MemoryProvider):
                                                                 purpose="whos-listening sharing check"),
                                 target_tier=SHARED)
 
+    def _choice_check(self, change: str) -> tuple[bool, str]:
+        """Auto-review for a review choice made without a memory number in a chat that read outside
+        content: one request on the chat's own model, which sees the change, the assistant's last
+        reply and the user's newest messages. Returns (applies, reason). Runs only with Auto-review
+        on, and only where the side call can't reach a less trusted model (a Shared route only
+        reaches this for Shared memories: tools._choice_problem)."""
+        blocker = ""
+        route, verdict = self._route()
+        if self._review_mode() != "auto":
+            blocker = "Auto-review is off, so a choice needs its number"
+        elif route is None:
+            blocker = "the chat's route isn't known yet"
+        elif verdict.tier == PRIVATE:
+            side = side_call_routes_private(_config(), _settings_or_none(self._dir))
+            blocker = side.reason if side.tier != PRIVATE else ""
+        if not blocker and self._checks_this_turn >= autoreview.CHECKS_PER_TURN:
+            blocker = f"it checks at most {autoreview.CHECKS_PER_TURN} a turn"
+        if blocker:
+            logger.info("whos-listening: Auto-review didn't run for a review choice: %s", blocker)
+            return False, blocker
+        self._checks_this_turn += 1
+        found = autoreview.check_choice(
+            change, self._own_words(),
+            lambda prompt: _ask_chat_model(prompt, route.model, timeout=CHOICE_CHECK_TIMEOUT,
+                                           purpose="whos-listening choice check"),
+            self._last_reply)
+        logger.info("whos-listening: Auto-review for a review choice (on %s): %s", route.model,
+                    "the user asked for it" if found.save else "not confirmed")
+        return found.save, found.reason
+
     def _start_auto_review(self, memory: Memory) -> bool:
         """Check a held save in the background, on the chat's own model. Returns True if started;
         otherwise, in Auto-review mode, the memory's reason says why it didn't run."""
@@ -482,6 +514,7 @@ class WhosListeningProvider(MemoryProvider):
             return False
         blocker, route = self._auto_review_blocker(memory)
         if blocker:
+            logger.info("whos-listening: Auto-review didn't run for held save #%d: %s", memory.id, blocker)
             self._store.set_status(memory.id, PENDING,
                                    pending_reason=f"{memory.pending_reason} Auto-review didn't run: {blocker}.")
             return False
@@ -490,9 +523,11 @@ class WhosListeningProvider(MemoryProvider):
         except Exception:
             return False
         self._checks_this_turn += 1
+        logger.info("whos-listening: Auto-review is checking held save %s (on %s)", display_ref(memory),
+                    route.model if route else "?")
         since = self._store.last_event_id(memory.id)
         spawn_context_thread(_auto_review, name="whos-listening-review",
-                             args=(self._store, memory.id, memory.text, self._own_words(), since, memory.order_key,
+                             args=(self._dir / DB_FILE, memory.id, memory.text, self._own_words(), since, memory.order_key,
                                    route.model if route else "")).start()
         return True
 
@@ -514,6 +549,8 @@ class WhosListeningProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **kwargs) -> None:
         # Only a small local write: persist the outside-content flag for this chat.
+        if isinstance(assistant_content, str):
+            self._last_reply = assistant_content[-autoreview.LAST_REPLY_MAX_CHARS:]
         try:
             self._outside_tool(session_id)
         except Exception as exc:
@@ -530,6 +567,7 @@ def _on_pre_llm_call(**kwargs: Any) -> None:
 
 
 AUTO_REVIEW_TIMEOUT = 45.0     # seconds; with no answer by then the memory keeps waiting
+CHOICE_CHECK_TIMEOUT = 20.0    # seconds; the user waits for this one, so with no answer the choice needs its number
 
 
 def _settings_or_none(data_dir: Optional[Path]) -> Optional[RouteSettings]:
@@ -551,16 +589,31 @@ def _ask_chat_model(prompt: str, expected_model: str = "", *, max_tokens: int = 
     return result.text
 
 
-def _auto_review(store: SQLiteStore, memory_id: int, text: str, user_messages: list[str],
-                 since_event: int, expected_order_key: str, expected_model: str = "", ask: Any = None) -> None:
+def _auto_review(store: Any, memory_id: int, text: str, user_messages: list[str],
+                 since_event: int, expected_order_key: str, expected_model: str = "",
+                 ask: Any = None) -> None:
     """Run in a background thread. The verdict applies only if nothing happened to the memory
-    since the check started (the user's decision always wins)."""
+    since the check started (the user's decision always wins). ``store`` is the database's path
+    (the thread opens its own connection: the chat that started the check may end, and close its
+    own, before the answer comes back) or an open store."""
     asker = ask or (lambda prompt: _ask_chat_model(prompt, expected_model))
     verdict = autoreview.check(text, user_messages, asker)
+    own = isinstance(store, (str, Path))
     try:
-        store.apply_review(memory_id, since_event, expected_order_key, verdict.save, verdict.reason)
+        if own:
+            store = SQLiteStore(Path(store))
+        applied = store.apply_review(memory_id, since_event, expected_order_key, verdict.save, verdict.reason)
+        shown = store.get(memory_id)
+        # Fixed words only: the model's reason can quote the memory.
+        logger.info("whos-listening: Auto-review for held save %s: %s",
+                    display_ref(shown) if shown else f"#{memory_id}",
+                    ("saved" if verdict.save else "kept waiting for the user") if applied
+                    else "not applied (the memory changed meanwhile)")
     except Exception as exc:
         logger.warning("whos-listening: could not apply the auto-review verdict: %s", type(exc).__name__)
+    finally:
+        if own and not isinstance(store, (str, Path)):
+            store.close()
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:

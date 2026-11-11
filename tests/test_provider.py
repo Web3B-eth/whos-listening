@@ -1138,7 +1138,7 @@ def test_the_default_model_judge_skips_a_save_only_on_the_expected_model(plugin,
     assert out["saved"] and "duplicate" not in out
 
 
-def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin, provider, monkeypatch):
+def test_review_by_plain_language(plugin, provider, monkeypatch, auto_mode):
     see(plugin, "http://127.0.0.1:9/v1")
     private = provider._store.add("Owns a Santa Cruz Hightower mountain bike", "private", plugin.Provenance())
     new = owner_shared(plugin, provider, "Bought a Santa Cruz Hightower mountain bike",
@@ -1146,13 +1146,40 @@ def test_review_by_plain_language_needs_the_number_in_this_turns_message(plugin,
     new_id = display_ref(new)
     provider.on_turn_start(1, "let's review your memories")
     assert [w["kind"] for w in tool(provider, "whos-listening_review", {"action": "list"})["waiting"]] == ["duplicate"]
-    assert tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["ok"] is False
-    provider.on_turn_start(2, f"ok let's keep new {new_id} and remove old number {display_ref(private)}")
-    provider.on_turn_start(3, {"image": "made-up"})                 # not words: the last turn's don't count
-    assert "doesn't name" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
-    provider.on_turn_start(4, f"ok let's keep new {new_id} and remove old number {display_ref(private)}")
+    p = display_ref(private)
+    provider.sync_turn("let's review your memories", f"{p} and {new_id} may say the same thing. Keep the newer one?")
+    provider.on_turn_start(2, {"image": "made-up"})                 # not words: the last turn's don't count
+    assert "no message from the user" in tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})["error"]
+
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")      # now the chat read outside content
+    seen = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: seen.append(prompt) or
+                        '{"approve": false, "reason": "Not clearly asked."}')
+    provider.on_turn_start(3, "yes")
+    out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
+    assert out["ok"] is False and "Not clearly asked" in out["error"]
+    assert "Keep the newer one?" in seen[0] and "- yes" in seen[0] and f"forget {p}" in seen[0]
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: '{"approve": true, "reason": "Agreed."}')
     out = tool(provider, "whos-listening_review", {"action": "keep", "id": new_id})
     assert out["ok"] and out["forgotten"] == [display_ref(private)]
+
+
+def test_a_choice_check_needs_auto_review_and_trusted_fallbacks(plugin, provider, monkeypatch, auto_mode, tmp_path):
+    calls = []
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw: calls.append(1) or '{"approve": true}')
+    see(plugin, "http://127.0.0.1:9/v1")
+    held = provider._store.add("Likes jazz", "private", plugin.Provenance(), status="pending", pending_reason="r")
+    plugin._on_post_tool_call(tool_name="read_file", session_id="sess-1")
+    provider.on_turn_start(1, "yes, save it")
+    monkeypatch.setattr(plugin, "_config", lambda: {
+        "model": {"provider": "local-sim", "default": "m"},
+        "fallback_providers": [{"provider": "openrouter", "model": "x", "base_url": "https://openrouter.ai/api/v1"}]})
+    out = tool(provider, "whos-listening_review", {"action": "approve", "id": display_ref(held)})
+    assert out["ok"] is False and "fallback provider is shared" in out["error"] and calls == []
+    (tmp_path / "whos-listening" / "settings.json").write_text('{"review": "ask"}')
+    out = tool(provider, "whos-listening_review", {"action": "approve", "id": display_ref(held)})
+    assert out["ok"] is False and "Auto-review is off" in out["error"] and calls == []
+    assert provider._store.get(held.id).status == "pending"
 
 
 def test_review_tool_exports_into_the_profile(plugin, provider, tmp_path):
@@ -1220,3 +1247,46 @@ def test_the_judge_says_the_real_reason_it_isnt_running(plugin, provider, tmp_pa
     assert "not running: Jev is anonymized on Venice" in plugin._settings_command(tmp_path)
     monkeypatch.setattr(plugin, "_hermes_settings", lambda: {})
     assert "not running" not in plugin._settings_command(tmp_path)         # Clef runs
+
+
+def test_auto_review_is_logged_without_memory_text_or_the_models_words(plugin, provider, monkeypatch, auto_mode,
+                                                                        caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    see(plugin, "http://127.0.0.1:9/v1")
+    monkeypatch.setattr(plugin, "_ask_chat_model", lambda prompt, model="", **kw:
+                        '{"save": true, "approve": false, "reason": "You said you play the bassoon on Fridays."}')
+    provider.on_turn_start(1, "Remember: I play the bassoon on Fridays")
+    plugin._on_post_tool_call(tool_name="web_extract", session_id="sess-1")
+    out = tool(provider, "whos-listening_remember", {"text": "Plays the bassoon on Fridays"})
+    mid = out["pending"]["id"]
+    assert _wait_for(lambda: provider._store.get(mid).status == "active")
+    assert _wait_for(lambda: any(f"Auto-review for held save {mid}: saved" in m for m in caplog.messages))
+    assert any(f"Auto-review is checking held save {mid} (on m)" in m for m in caplog.messages)
+
+    old = provider._store.add("Bassoon practice every Friday", "private", plugin.Provenance())
+    provider._store.set_duplicate_of(provider._store.resolve_reference(mid).id, old.id)
+    provider.on_turn_start(2, "yes")
+    out = tool(provider, "whos-listening_review", {"action": "keep", "id": mid})
+    assert out["ok"] is False and "bassoon" in out["error"]                 # the model still hears the reason
+    assert any("Auto-review for a review choice (on m): not confirmed" in m for m in caplog.messages)
+    assert any(f"review choice keep {mid} not applied: the chat read outside content (web_extract) and "
+               "Auto-review didn't confirm it" in m for m in caplog.messages)
+    assert not any("bassoon" in m.lower() for m in caplog.messages)       # no memory text, no model words
+
+
+
+def test_auto_review_applies_its_verdict_after_the_chat_closed(plugin, tmp_path):
+    """Hermes may close the chat's provider (and its database) before the background check answers."""
+    from whos_listening.store import SQLiteStore
+    path = tmp_path / "closed.sqlite"
+    store = SQLiteStore(path)
+    m = store.add("Prefers tea", "private", plugin.Provenance(), status="pending", pending_reason="r")
+    since = store.last_event_id(m.id)
+    store.close()                                                   # the chat ended
+    plugin._auto_review(path, m.id, m.text, ["I prefer tea"], since, m.order_key, ask=lambda p: '{"save": true}')
+    again = SQLiteStore(path)
+    try:
+        assert again.get(m.id).status == "active"
+    finally:
+        again.close()

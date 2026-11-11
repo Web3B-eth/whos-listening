@@ -411,3 +411,46 @@ def test_shared_route_private_reference_guess_matches_missing(store):
                                            route_tier=SHARED, provenance=lambda: ASSISTANT,
                                            user_message=f"{action} {token}"))
         assert choice("P1")["error"].replace("P1", "P?") == choice("P999")["error"].replace("P999", "P?")
+
+
+def _choose(store, action, ref, said, *, check=None, outside=""):
+    return json.loads(tools.handle(store, tools.REVIEW, {"action": action, "id": ref}, route_tier=PRIVATE,
+                                   provenance=lambda: ASSISTANT, user_message=said,
+                                   outside_tool=outside, choice_check=check))
+
+
+def test_sharing_approval_needs_the_number_or_a_check_even_without_outside_content(store):
+    save(store)                                         # the check couldn't run: Private, sharing waits
+    ref = display_ref(store.list(tiers=(PRIVATE,))[0])
+    out = _choose(store, "approve", ref, "yes, go ahead")                     # nothing can check it
+    assert out["ok"] is False and "sharing a private memory needs a check" in out["error"]
+    assert store.list(tiers=(SHARED,)) == []
+    seen = []
+    out = _choose(store, "approve", ref, "yes, share it",
+                  check=lambda change: seen.append(change) or (False, "Not clearly asked."))
+    assert out["ok"] is False and "Not clearly asked" in out["error"] and store.list(tiers=(SHARED,)) == []
+    assert seen == [f'Share the private memory {ref} ("{FACT}") with any model, including shared ones.']
+    out = _choose(store, "approve", ref, "yes, any model can see it", check=lambda change: (True, "Agreed."))
+    assert out["ok"] and [m.text for m in store.list(tiers=(SHARED,))] == [FACT]
+
+
+def test_sharing_approval_applies_when_the_user_names_the_number(store):
+    save(store)
+    ref = display_ref(store.list(tiers=(PRIVATE,))[0])
+    out = _choose(store, "approve", ref, f"approve {ref}", check=lambda change: 1 / 0)    # no check needed
+    assert out["ok"] and [m.text for m in store.list(tiers=(SHARED,))] == [FACT]
+
+
+def test_declining_to_share_applies_on_the_users_word(store):
+    save(store)
+    private = store.list(tiers=(PRIVATE,))[0]
+    out = _choose(store, "reject", display_ref(private), "no, keep that one private")
+    assert out["ok"] and not store.get(private.id).sharing_approval_needed and store.list(tiers=(SHARED,)) == []
+
+
+def test_a_choice_naming_a_different_number_changes_nothing(store):
+    held = store.add("Likes red maps", SHARED, USER, status=PENDING, pending_reason="Review this.")
+    out = _choose(store, "approve", display_ref(held), "approve S2 please")
+    assert out["ok"] is False and "names a different memory" in out["error"]
+    assert store.get(held.id).status == PENDING
+    assert _choose(store, "approve", display_ref(held), "yes, approve it")["ok"]       # no number: their word

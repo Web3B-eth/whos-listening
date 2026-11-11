@@ -126,7 +126,7 @@ def cmd_review(store: Store, show_private: bool, scan_note: str = "") -> str:
                 lines += [f"\n{n}. A forget waiting for your OK:", f"   {_line(m, show_private)}",
                           f"   why: {review.shown_reason(m, m.forget_reason, show_private)}",
                           f"   /memories approve {display_ref(m)}  ·  /memories reject {display_ref(m)}"]
-        lines.append('\nOr tell the assistant, such as "keep S3" or "approve P2" (with the full number).')
+        lines.append('\nOr tell the assistant in your own words, such as "keep the newer one", "keep S3" or "approve P2".')
     lines.append("Look for repeats saved earlier: /memories review scan" + (f"  ({scan_note})" if scan_note else ""))
     lines.append("See everything: /memories  ·  Write it all to a file: /memories export")
     return "\n".join(lines)

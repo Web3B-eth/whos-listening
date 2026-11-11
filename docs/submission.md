@@ -4,28 +4,43 @@ Deadline: Wednesday 2026-11-11, 5 PM ET (4 PM Central). Every step that publishe
 
 | Step | Who | Status |
 | --- | --- | --- |
-| Public repo with README, Install, Limits and license | done in this repo | ready (`main` at `976b90f`) |
-| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | ready for the owner's OK: entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
+| Public repo with README, Install, Limits and license | done in this repo | ready |
+| Catalog PR to `NousResearch/hermes-agent` adding `plugin-catalog/whos-listening.yaml` | agent drafts, **owner OKs before it is opened** | entry refreshed and checked at `9b0fb0a`; re-pin to the final commit first (below). Entry in [`catalog-entry.yaml`](catalog-entry.yaml), PR text in [`catalog-pr.md`](catalog-pr.md) |
 | Demo video under 90 seconds, posted on X tagging @NousResearch | **owner records and posts** | pending (Desktop + local backend + Venice) |
 | Typeform (https://form.typeform.com/to/FwJLvOln) | **owner submits** | after the video and catalog PR |
 
+## How the catalog works
+
+The catalog is the `plugin-catalog/` folder of `NousResearch/hermes-agent`: one YAML file per plugin, added only by a PR that a maintainer reviews and merges (the rules are in that folder's `README.md`, unchanged between 0.23.0 and `main` as of 2026-11-11). Desktop's plugin list, installs by name and the page at `hermes-agent.nousresearch.com/docs/plugins/whos-listening` come from it. An entry pins one full commit, and its README page shows the README at that commit. Before the PR merges, a new pin is just a push to it; after, each update is a new PR that moves the pin, and reviewers read the commits in between. The hackathon needs the PR opened, not merged.
+
 ## Before opening the catalog PR
 
-Done on 2026-11-09 for `976b90f836dd6d4e455ee04def2bd686b2b76a51`:
+Done on 2026-11-11 for `9b0fb0a2101ed469cba16af39dda3c72821215df` (main after #37):
 
-1. ✓ The open PRs are merged, so `main` has the final code.
-2. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared hooks and middleware match) and `hermes plugins doctor --ci` passed (manifest `standalone`, registration OK).
-3. ✓ `sha` and `docs_url` in the entry point at that commit. `capabilities` matches what validate reports. The catalog's own structural check (`scripts/validate_plugin_catalog.py` from hermes-agent; the 0.23.0 copy for the re-pin, since a fresh fetch from `main` was rate-limited, and `main`'s catalog rules are unchanged) passes with no warnings, and its payload scan (`scripts/scan_plugin_payloads.py`) passes.
-4. ✓ Read the admission rules (`plugin-catalog/README.md` on hermes-agent `main`, the same as in 0.23.0) against the code:
-   - Rule 6: capabilities match.
-   - Rule 9: the plugin adds one entry of its own to `sys.modules`, disclosed in the entry and the PR text, and rebinds nothing in core.
-   - Rule 11: config is read through Hermes' `load_config_readonly()`, route fields only, no credential files.
-   - Rule 13: the disclosure is in the entry, the PR text and the README.
+1. ✓ On a clean copy of that commit, `hermes plugins validate --install-deps` passed (security scan safe, no core override, declared tools, hooks and middleware match, no warnings) and `hermes plugins doctor --ci` passed.
+2. ✓ The catalog's own checks: `scripts/validate_plugin_catalog.py` on the entry with `removed.yaml` (OK, no warnings; the script is the same on `main` and in 0.23.0) and `scripts/scan_plugin_payloads.py` from `main` (exit 0).
+3. ✓ A fresh-home install at that commit from GitHub, as the README says, makes it the active memory provider.
+4. ✓ pytest and `e2e/run.py` pass at that commit (numbers in [`catalog-pr.md`](catalog-pr.md)).
+5. ✓ Read the admission rules against the code:
+   - Rule 3: nothing fetches code. Venice's model list and sync fetch data only.
+   - Rule 6: capabilities match (validate checks them).
+   - Rule 9: the plugin adds one entry of its own to `sys.modules` and rebinds nothing in core. Disclosed.
+   - Rule 11: config is read through `load_config_readonly()` (route fields only); secrets only through `get_secret`. See the open question below.
+   - Rule 13: every network call, side call, file, secret and background thread is in the entry, the PR text and the README section "What it sends, stores and runs".
    - Rule 14: `requires_hermes: ">=0.23.0"` in both the entry and `plugin.yaml`.
-5. **Ask the owner.** Only then open the PR, from the owner's account or fork. Use the text in [`catalog-pr.md`](catalog-pr.md).
 
-If `main` moves before the PR is opened, re-pin `sha` and `docs_url` to the new commit, then re-run steps 2 and 3.
+**Re-pin before submitting.** `9b0fb0a` doesn't have the README section "What it sends, stores and runs" (added by the docs PR, #38, after it), and the catalog page shows the README at the pinned commit. So once #38 and any later code PR have merged, pin `sha` and `docs_url` (in the entry and in [`catalog-pr.md`](catalog-pr.md)) to main's final commit, and re-run steps 1 to 4 on it. A later code PR that sends, stores or runs anything new also adds it to the disclosure in all three places.
 
-Sync between gateways (added after the current pin) must be in the entry before it goes upstream: disclose the network calls to GitHub (only when sync is set up), the background sync thread, and the optional `WHOS_LISTENING_SYNC_TOKEN` (read through Hermes' secrets) in `description`, and re-check `capabilities` against validate. Likewise the settings form in Desktop (`config_schema`) and the hosted default (a Hermes with remote config, such as Hermes Cloud, counts as a Shared gateway unless the user says otherwise): mention both in `description`. Also disclose the daily public request for Venice's model list (`api.venice.ai/api/v1/models`, no key, nothing about the user) and that only Venice's private models count as Private. The duplicate judge is Clef by default whenever Hermes has a Venice key: each checked save sends memory text (Private ones included) to Venice's decisions API with the user's Venice key (`clef`, `jev`), or to the default model through Hermes (`model`). Disclose that too, and that `duplicate_judge: off` keeps it local. The review workflow adds a fourth tool (`whos-listening_review`), `/memories export` writes a plain-text file under `whos-listening/exports/`, and `/memories review scan` sends each memory to the judge when it runs: mention all three.
+**Ask the owner.** Only then open the PR, from the owner's account or fork, with the text in [`catalog-pr.md`](catalog-pr.md).
 
-Upstream asks kept as backlog issues in this repo (filed together at the end, with the owner's OK): #3, #4, #5, plus "run `llm_request` middleware on compression, the tool-limit summary and mixture-of-agents requests", plus "the `tool_call` bridge answers 'not a known tool name' for a memory provider's tools (`tools/tool_search_validation.not_deferrable_error` checks only core and registry tools); it should say they're listed directly. Seen with Grok 4.5, which sends `whos-listening_review` through `tool_call`, gets that answer, and sometimes gives up".
+## What a reviewer may ask about
+
+- **The Clef judge is on by default** whenever Hermes has a Venice key, and it sends Private memories to Venice (where Clef runs privately). That's allowed if disclosed, and it is. The answer is "`duplicate_judge: off` keeps it local".
+- **The Venice key** is Hermes' own provider key, read through `get_secret`, but it isn't in the plugin's declared env. If a reviewer wants it declared, add `VENICE_API_KEY` to `optional_env` in `plugin.yaml` (a code change, so a new pin).
+- **The `sys.modules` entry** (rule 9 names `sys.modules[...]`). It's the plugin's own key, not a core module, and validate passes. The PR text offers to switch seams.
+
+## Upstream asks
+
+Kept as backlog issues in this repo, filed together at the end with the owner's OK: #3, #4 and #5, plus two more:
+- Run `llm_request` middleware on compression, the tool-limit summary and mixture-of-agents requests.
+- The `tool_call` bridge answers "not a known tool name" for a memory provider's tools, because `tools/tool_search_validation.not_deferrable_error` checks only core and registry tools. It should say they're listed directly. Seen with Grok 4.5, which sends `whos-listening_review` through `tool_call`, gets that answer, and sometimes gives up.

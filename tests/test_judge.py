@@ -170,3 +170,30 @@ def test_the_model_setting(tmp_path):
     f = tmp_path / "settings.json"
     s = ws.load(ws.Sources(f, {"duplicate_judge": "model"}, False))
     assert ws.route_settings(s).duplicate_judge == "model"
+
+
+def test_each_check_is_logged_by_number_never_by_text(store, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    spicy = store.add("Likes spicy food", SHARED, Provenance())
+    store.add("Prefers aisle seats on short flights", PRIVATE, Provenance())
+    judge.find(store, "Likes spicy food, particularly Thai curries", (PRIVATE, SHARED), "clef-api", "k",
+               opener=opener_answering("none", 0.64))
+    line = caplog.messages[-1]
+    assert "duplicate judge (clef-api) checked against 2 memories" in line and "none 0.64" in line
+    assert "no repeat (needs 0.80)" in line
+    judge.find(store, "Enjoys spicy food", (PRIVATE, SHARED), "clef-api", "k", opener=opener_answering(f"m{spicy.id}", 0.93))
+    assert f"#{spicy.id} 0.93" in caplog.messages[-1] and f"repeats #{spicy.id}" in caplog.messages[-1]
+    judge.find(store, "Enjoys spicy food", (PRIVATE, SHARED), "clef-api", "")                    # no key: an error
+    assert "failed (no Venice key)" in caplog.messages[-1]
+    judge.find_with_model(store, "Enjoys spicy food", (PRIVATE, SHARED), lambda prompt: '{"repeats": %d}' % spicy.id)
+    assert f"default model) checked against 2 memories: repeats #{spicy.id}" in caplog.messages[-1]
+    tools.handle(store, tools.REMEMBER, {"text": "Likes spicy food"}, route_tier=PRIVATE, provenance=Provenance)
+    tools.handle(store, tools.REMEMBER, {"text": "Collects vinyl records"}, route_tier=PRIVATE, provenance=Provenance)
+    tools.handle(store, tools.REMEMBER, {"text": "Plays chess on Sundays"}, route_tier=PRIVATE, provenance=Provenance,
+                 judge=lambda text, tiers, only=None: None)
+    assert any(f"word check found it repeats #{spicy.id}" in m for m in caplog.messages)
+    assert any("no repeat; no judge runs" in m for m in caplog.messages)
+    assert any("no repeat; asking the judge" in m for m in caplog.messages)
+    for words in ("spicy", "Thai", "aisle", "vinyl", "chess"):
+        assert not any(words.lower() in m.lower() for m in caplog.messages), words       # no memory text in the log
