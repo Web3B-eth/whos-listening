@@ -77,7 +77,8 @@ def test_routes_follow_venices_own_label():
     assert verdict("grok-4-5").tier == PRIVATE
     v = verdict("claude-opus-5-5")
     assert v.tier == SHARED and "anonymized" in v.reason
-    assert verdict("brand-new-model").tier == SHARED                 # not on the list: Shared
+    v = verdict("brand-new-model")
+    assert v.tier == SHARED and "isn't on Venice's list" in v.reason       # not on the list: Shared
     trusting = RouteSettings(venice_anonymized=PRIVATE)
     assert verdict("claude-opus-5-5", trusting).tier == PRIVATE
     assert verdict("brand-new-model", trusting).tier == PRIVATE
@@ -86,7 +87,9 @@ def test_routes_follow_venices_own_label():
 
 def test_no_list_yet_means_shared_unless_trusted():
     venice._reset_for_tests(None)
-    assert verdict("grok-4-5").tier == SHARED
+    assert not venice.loaded()
+    v = verdict("grok-4-5")
+    assert v.tier == SHARED and "hasn't loaded yet" in v.reason            # says why, not "not on the list"
     assert verdict("grok-4-5", RouteSettings(venice_anonymized=PRIVATE)).tier == PRIVATE
 
 

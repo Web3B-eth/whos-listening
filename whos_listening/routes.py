@@ -274,6 +274,9 @@ def _venice_verdict(model: str, settings: "RouteSettings") -> Verdict:
         return Verdict(PRIVATE, f"Venice {model}: you trust Venice's anonymized models")
     if label == venice.ANONYMIZED:
         return Verdict(SHARED, f"Venice passes {model} on to the company that made it (anonymized)")
+    if not venice.loaded():
+        return Verdict(SHARED, f"Venice's model list hasn't loaded yet, so {model or '?'} counts as shared "
+                               "for now (it loads in the background; try again in a moment)")
     return Verdict(SHARED, f"Venice model {model or '?'} isn't on Venice's list of private models")
 
 
