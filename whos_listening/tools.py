@@ -8,6 +8,7 @@ back tagged so the guard can find them later.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Callable, Optional
 
@@ -27,6 +28,7 @@ REVIEW = "whos-listening_review"
 TOOL_NAMES = (REMEMBER, RECALL, FORGET, REVIEW)
 REVIEW_CHOICES = ("keep", "keep_both", "approve", "reject")
 ALL_PAGE = 50
+logger = logging.getLogger(__name__)
 RECALLS_PER_TURN = 5     # a model that keeps searching (some cheap models loop on it) stops here
 
 
@@ -242,12 +244,19 @@ def repeat_of(store: Store, text: str, tier: str,
         same = dupes.find(store, text, PRIVATE)
     else:
         same = dupes.find(store, text, SHARED) or dupes.find(store, text, SHARED, tiers=(PRIVATE,))
-    if same is None and judge is not None:
-        try:
-            same = judge(text, (PRIVATE, SHARED) if tier == PRIVATE else (SHARED, PRIVATE))
-        except Exception:
-            same = None
-    return same
+    if same is not None:
+        logger.info("whos-listening: duplicate check (%s save): the word check found it repeats #%d", tier, same.id)
+        return same
+    if judge is None:
+        logger.info("whos-listening: duplicate check (%s save): the word check found no repeat; no judge runs "
+                    "(/memories settings says why)", tier)
+        return None
+    logger.info("whos-listening: duplicate check (%s save): the word check found no repeat; asking the judge", tier)
+    try:
+        return judge(text, (PRIVATE, SHARED) if tier == PRIVATE else (SHARED, PRIVATE))
+    except Exception as exc:
+        logger.info("whos-listening: duplicate judge failed (%s), so it counts as no repeat", type(exc).__name__)
+        return None
 
 
 def handle(store: Store, name: str, args: dict, *, route_tier: str,

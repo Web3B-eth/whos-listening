@@ -23,6 +23,7 @@ imports Hermes; the provider passes in the key, the model call and the tiers.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -30,6 +31,8 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 from .duplicates import content_words, people_words, similarity
 from .store import ACTIVE, PENDING, Memory, Store
+
+logger = logging.getLogger(__name__)
 
 URL = "https://api.venice.ai/api/v1/decisions"
 MODELS = {"clef": "clef-api", "jev": "jev-latest"}
@@ -74,6 +77,25 @@ def payload(model: str, text: str, cands: Iterable[Memory]) -> dict:
     return {"model": model,
             "state": {"new_memory": text, "existing_memories": [{"id": str(m.id), "text": m.text} for m in cands]},
             "questions": {"match": {"type": "choice", "instructions": INSTRUCTIONS, "criteria": criteria}}}
+
+
+def odds(answer: Any, top: int = 2) -> str:
+    """The judge's most likely choices for the log, by memory number ("none 0.64, #2 0.33"); never text."""
+    probs = answer.get("probabilities") if isinstance(answer, dict) else None
+    if not isinstance(probs, dict):
+        return "no probabilities"
+    out = []
+    for label, p in sorted(probs.items(), key=lambda kv: -_num(kv[1]))[:top]:
+        name = f"#{label[1:]}" if str(label).startswith("m") else str(label)
+        out.append(f"{name} {_num(p):.2f}")
+    return ", ".join(out)
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def decide(answer: Any, text: str, cands: Iterable[Memory], threshold: float = THRESHOLD) -> Optional[Memory]:
@@ -146,12 +168,18 @@ def find_with_model(store: Store, text: str, tiers: Sequence[str], ask_model: Ca
     """Like ``find``, with a chat model through ``ask_model(prompt) -> reply``. None on any error."""
     cands = candidates(store, text, tiers, only=only)
     if not cands:
+        logger.info("whos-listening: duplicate judge (default model): no memories to compare")
         return None
     try:
         reply = ask_model(model_prompt(text, cands))
-    except Exception:
+    except Exception as exc:
+        logger.info("whos-listening: duplicate judge (default model) failed (%s), so it counts as no repeat",
+                    type(exc).__name__)
         return None
-    return parse_model_answer(reply, text, cands)
+    hit = parse_model_answer(reply, text, cands)
+    logger.info("whos-listening: duplicate judge (default model) checked against %d memories: %s",
+                len(cands), f"repeats #{hit.id}" if hit else "no repeat")
+    return hit
 
 
 def ask(api_key: str, body: dict, *, opener: Callable[..., Any] = urllib.request.urlopen,
@@ -179,9 +207,14 @@ def find(store: Store, text: str, tiers: Sequence[str], model: str, api_key: str
     """The existing memory ``text`` repeats according to ``model``, or None (also on any error)."""
     cands = candidates(store, text, tiers, only=only)
     if not cands:
+        logger.info("whos-listening: duplicate judge (%s): no memories to compare", model)
         return None
     try:
         answer = ask(api_key, payload(model, text, cands), opener=opener)
-    except JudgeError:
+    except JudgeError as exc:
+        logger.info("whos-listening: duplicate judge (%s) failed (%s), so it counts as no repeat", model, exc)
         return None
-    return decide(answer, text, cands)
+    hit = decide(answer, text, cands)
+    logger.info("whos-listening: duplicate judge (%s) checked against %d memories: %s -> %s", model, len(cands),
+                odds(answer), f"repeats #{hit.id}" if hit else f"no repeat (needs {THRESHOLD:.2f})")
+    return hit
