@@ -156,6 +156,18 @@ def clean_base_url(base_url: str) -> str:
         return ""
 
 
+def hub_route(value: Any) -> Optional[Route]:
+    """A route the hub names in a ``context`` answer, or None when it isn't a well-formed one."""
+    if not isinstance(value, Mapping):
+        return None
+    provider, model, base_url = value.get("provider"), value.get("model"), value.get("base_url", "")
+    if not all(isinstance(v, str) for v in (provider, model, base_url)):
+        return None
+    if not provider.strip() or not model.strip() or len(provider) + len(model) + len(base_url) > 600:
+        return None
+    return Route(provider=provider.strip(), model=model.strip(), base_url=clean_base_url(base_url))
+
+
 def route_obj(route: Optional[Route]) -> Optional[dict]:
     if route is None:
         return None
@@ -602,8 +614,13 @@ class HubClient:
 
     # -- context --
 
-    def context(self, body: dict, token: str, *, keep_private: bool) -> str:
-        """Send ``context``; the memory block for this turn, or "" (no memories) on any failure."""
+    def context(self, body: dict, token: str, *, keep_private: bool,
+                recheck: Optional[Callable[[Route], bool]] = None) -> str:
+        """Send ``context``; the memory block for this turn, or "" (no memories) on any failure.
+
+        When the plugin didn't know the turn's route (``route_source`` ``unknown``) and the hub
+        says which route it knows the session is on (``route``), ``recheck`` decides again with
+        that route whether the plugin's own layers let Private memories through."""
         try:
             answer = self.call("context", body, token)
         except HubError:
@@ -611,6 +628,10 @@ class HubClient:
         memories, held_back = answer.get("memories"), answer.get("held_back", "")
         if not isinstance(memories, list):
             return ""
+        if not keep_private and recheck is not None and body.get("route_source") == "unknown":
+            known = hub_route(answer.get("route"))
+            if known is not None:
+                keep_private = bool(recheck(known))
         max_chars = body.get("max_chars") if isinstance(body.get("max_chars"), int) else recall.MAX_BLOCK_CHARS
         return build_block(memories, held_back, keep_private=keep_private, max_chars=max_chars)
 

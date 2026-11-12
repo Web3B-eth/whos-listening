@@ -171,7 +171,7 @@ Sends:
 }
 ```
 
-- `route` is the route the plugin **believes** the turn is on, because Hermes tells a plugin a request's real route only after recall (see [`spike.md`](spike.md)). `route_source` says where the belief comes from: `last_request` (the route of this session's last request, as the guard saw it, with the same model), `config_default` (a first turn whose model matches the default in `config.yaml`) or `unknown` (then `route` is `null`). The hub should treat `unknown` as Shared.
+- `route` is the route the plugin **believes** the turn is on, because Hermes tells a plugin a request's real route only after recall (see [`spike.md`](spike.md)). `route_source` says where the belief comes from: `last_request` (the route of this session's last request, as the guard saw it, with the same model), `config_default` (a first turn whose model matches the default in `config.yaml`) or `unknown` (then `route` is `null`). The hub should treat `unknown` as Shared, unless it knows the session's route itself (see `route` in the `context` answer).
 - With `wants_user_messages: true`, it also carries `"message": {"text": "…", "author_id": "…", "author_is_bot": false}`: the user's own words this turn, for a hub that judges saves by what the user said. Off by default, since it sends every message to the hub.
 
 Gets back (optional):
@@ -222,6 +222,7 @@ Gets back:
 ```
 
 - `memories`: what this turn may see, best first. `ref` is the name the user and model use for it, such as `P2`, or the id the hub's tools take (`^[A-Za-z0-9#._:-]{0,64}$`; empty when the hub shows none). `id` is the hub's own id (`^[A-Za-z0-9_.:-]{1,64}$`). `text` is the memory (at most 1000 characters). The optional `label` is a short note the hub wants shown with it, such as `"stated · from Hermes · not reviewed"` (at most 80 characters, one line).
+- `route` (optional): the route the hub itself knows this session is on, when the plugin's `route_source` was `unknown`. A hub that starts chats of its own (its own app, say) may know a chat's route before the plugin has seen a request: the first turn of a new chat. Same shape as a route in `hello`. The hub names a route only when it has its own record of it for this session, and then gives Private memories only if its verdict for that route is Private. Leave it out otherwise.
 - `held_back`: when the hub doesn't give this turn Private memories, a short reason the model may be told, such as `"this chat is on Telegram"`; `""` when it does. Like local mode's note, it must not depend on whether any Private memories exist, and must not include a memory's text or a count.
 
 The plugin builds the memory block itself, the same way local mode does, so the tags are always right:
@@ -238,7 +239,7 @@ Each line is `- `, then the `ref` and a space when there is one, then `[label] `
 
 - It replaces `<` with `‹` and `>` with `›` in each `text` and `label`, so a memory can't close or fake a tag.
 - It drops any memory whose `tier` isn't exactly `private` or `shared`, or whose `ref`, `id`, `text` or `label` breaks the limits above, and keeps the rest.
-- It drops every Private memory when its own layers already make the turn Shared (see [Who decides the tier](#who-decides-the-tier)), or when it doesn't know the turn's route (`route_source` `unknown`), whatever the hub sent.
+- It drops every Private memory when its own layers already make the turn Shared (see [Who decides the tier](#who-decides-the-tier)), or when it doesn't know the turn's route (`route_source` `unknown`), whatever the hub sent. One exception: when the hub's answer names a well-formed `route`, the plugin checks its own layers again with that route, and keeps Private memories only if the guard has already run in this gateway (so it is in place for the turn's requests), the route's model is the model Hermes says the turn started with, and no local setting makes that route Shared. The guard still checks every request against its real route, so if the hub was wrong, Private text still doesn't reach a Shared route.
 - It stops adding lines at `max_chars`.
 - When `held_back` isn't empty, it adds the line `(Private memories are not used in this chat: <held_back>.)` after the memories, with `<` and `>` replaced as above. With no memories at all there is no block, so no line either.
 - If the call fails, the turn gets no memories.
@@ -334,7 +335,7 @@ These are the hub's side of the agreement. `tests/vectors/hub/hub.json` has case
 1. **Tag Private text everywhere it hands it to Hermes**: in every MCP tool result, wrap each piece of text from a Private memory (its words, and anything made from them, such as a reason or a summary) in `<wl-private id="…">…</wl-private>`, with `<` and `>` in the text replaced by `‹` and `›`. The test: after the strip in `strip.json`, no Private memory's words are left in the result.
 2. **Check the token on every call** with constant-time comparison, and answer `401 unauthorized` without it. Never log or echo it.
 3. **Answer `unsupported_protocol`** to a `protocol` it doesn't speak.
-4. **Default to Shared.** An unknown route, a `route_source` of `unknown`, a `null` route, an empty platform or anything the hub can't classify is Shared.
+4. **Default to Shared.** An unknown route, a `route_source` of `unknown`, a `null` route, an empty platform or anything the hub can't classify is Shared. The one exception is a session whose route the hub knows from its own records; it then names that route in the `context` answer.
 5. **Give `context` Private memories only when the hub's own verdict for that platform and believed route is Private.** The plugin checks this too.
 6. **Expect a verdict to be kept** for `verdict_ttl_seconds` per session and route. A change in the hub's settings reaches the guard within that time.
 7. **Handle a tool call without a valid `wl_turn`**, and without any binding of the hub's own (such as a token its app put in the chat), as coming from a Shared chat that read outside content: Shared memories only, writes handled as after outside content.

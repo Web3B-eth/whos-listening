@@ -417,6 +417,11 @@ class RouteBook:
             with self._lock:
                 self._put(self._turn_model, session_id, str(model or ""))
 
+    def turn_model(self, session_id: str) -> Optional[str]:
+        """The model the session's current turn started with, if Hermes said."""
+        with self._lock:
+            return self._turn_model.get(session_id)
+
     def last_seen(self, session_id: str) -> Optional[Route]:
         with self._lock:
             return self._seen.get(session_id)

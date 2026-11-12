@@ -289,14 +289,16 @@ def hub_checks(hermes: str, keep: bool, results: list) -> None:
     (data / "settings.json").write_text(json.dumps({"hub": {"url": f"http://127.0.0.1:{hub_port}/v1",
                                                             "mcp_server": "hub"}}))
     (home / "hub-memories.json").write_text(json.dumps(HUB_MEMORIES))
-    (home / "hub-routes.json").write_text(json.dumps([{"provider": "custom", "model": "private-model",
-                                                       "base_url": f"http://127.0.0.1:{port}/v1"}]))
+    (home / "hub-routes.json").write_text(json.dumps([
+        {"provider": "custom", "model": m, "base_url": f"http://127.0.0.1:{port}/v1"}
+        for m in ("private-model", "private-model-2")]))
+    started = home / "hub-started-route.json"
     log, hlog = home / "requests.jsonl", home / "hub.jsonl"
     log.touch()
     fake = subprocess.Popen([sys.executable, str(ROOT / "e2e/fake_llm.py"), str(port), str(log)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     fhub = subprocess.Popen([sys.executable, str(ROOT / "e2e/fake_hub.py"), str(hub_port), str(hlog), HUB_TOKEN,
-                             str(home / "hub-memories.json"), str(home / "hub-routes.json")],
+                             str(home / "hub-memories.json"), str(home / "hub-routes.json"), str(started)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run = Run(hermes, home, log)
     run.results = results
@@ -321,6 +323,24 @@ def hub_checks(hermes: str, keep: bool, results: list) -> None:
         run.check("hub: private route carries the hub's Private memory, tagged",
                   has(main, PRIVATE_WORD) and has(main, 'wl-private id=\\"m_2\\"'))
         run.check("hub: private route carries the Shared memory", has(main, SHARED_WORD))
+
+        # A new chat on a model that isn't Hermes' default: on its first turn the plugin doesn't
+        # know the route yet. A hub that started the chat itself can name it; the plugin then
+        # checks that route against its own layers and the turn's model.
+        _, reqs = run.chat(QUESTION, provider="private-sim", model="private-model-2")
+        run.check("hub: first turn on another model: no Private memory while neither side knows the route",
+                  bool(main_requests(reqs)) and not has(main_requests(reqs), PRIVATE_WORD))
+        hub_route = {"provider": "custom", "model": "private-model-2", "base_url": f"http://127.0.0.1:{port}/v1"}
+        started.write_text(json.dumps(hub_route))
+        _, reqs = run.chat(QUESTION, provider="private-sim", model="private-model-2")
+        main = main_requests(reqs)
+        run.check("hub: first turn on a route the hub knows: Private memory, tagged",
+                  has(main, PRIVATE_WORD) and has(main, 'wl-private id=\\"m_2\\"'))
+        started.write_text(json.dumps({**hub_route, "model": "private-model"}))
+        _, reqs = run.chat(QUESTION, provider="private-sim", model="private-model-2")
+        run.check("hub: a hub route for another model than the turn's doesn't count",
+                  not has(main_requests(reqs), PRIVATE_WORD))
+        started.unlink()
         offered = {t.get("function", {}).get("name") for r in main for t in json.loads(r["text"]).get("tools") or []}
         run.check("hub: the plugin offers no tools of its own (the hub's are behind tool_search)",
                   "tool_call" in offered and not any(str(n).startswith("whos-listening_") for n in offered),

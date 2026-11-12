@@ -443,3 +443,39 @@ def test_held_back_reason_is_one_short_line():
     block = hub.build_block([{"ref": "S1", "id": "m_9", "tier": "shared", "text": "Likes spicy food"}],
                             "this chat\nis on <Telegram>.", keep_private=True)
     assert "(Private memories are not used in this chat: this chat is on ‹Telegram›.)" in block
+
+
+def test_a_route_the_hub_knows_lets_the_plugin_recheck_an_unknown_turn():
+    memories = [{"ref": "P1", "id": "m_1", "tier": "private", "text": "Allergic to kiwi"},
+                {"ref": "S1", "id": "m_2", "tier": "shared", "text": "Likes spicy food"}]
+    body = {"session": SESSION, "turn": {"number": "1", "id": ""}, "route": None, "route_source": "unknown",
+            "query": "Dinner?", "max_chars": 4000}
+    seen = []
+
+    def recheck(route):
+        seen.append(route)
+        return route.model == "grok-4-5"
+
+    def block(answer, **kw):
+        server = Scripted({"status": 200, "body": {"protocol": 1, "ok": True, "memories": memories,
+                                                   "held_back": "", **answer}})
+        try:
+            client = hub.HubClient(server.url, "hub", timeouts={k: 0.3 for k in hub.TIMEOUTS})
+            return client.context({**body, **kw}, TOKEN, keep_private=False, recheck=recheck)
+        finally:
+            server.close()
+
+    # The hub names the route it knows: the plugin decides again with it.
+    kept = block({"route": ROUTE})
+    assert "Allergic to kiwi" in kept and "Likes spicy food" in kept
+    assert seen == [Route(provider="custom", model="grok-4-5", base_url="https://api.venice.ai/api/v1")]
+    # The plugin's own layers still win.
+    assert "Allergic to kiwi" not in block({"route": {**ROUTE, "model": "other-model"}})
+    # No route, a malformed one, or a turn whose route the plugin already knew: no recheck.
+    for answer, extra in [({}, {}), ({"route": "custom/grok-4-5"}, {}), ({"route": {"provider": "", "model": "m"}}, {}),
+                          ({"route": {**ROUTE, "model": 5}}, {}),
+                          ({"route": ROUTE}, {"route": ROUTE, "route_source": "last_request"})]:
+        seen.clear()
+        text = block(answer, **extra)
+        assert "Allergic to kiwi" not in text and "Likes spicy food" in text
+        assert seen == []

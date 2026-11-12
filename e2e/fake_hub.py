@@ -55,12 +55,16 @@ def _tag(memory: dict) -> str:
 
 class FakeHub:
     def __init__(self, token: str, memories: list[dict], *, trusted_platforms: Optional[list] = None,
-                 trusted_routes: Optional[list] = None, log_path: str = "", clock=time.monotonic):
+                 trusted_routes: Optional[list] = None, log_path: str = "", clock=time.monotonic,
+                 started_route_path: str = ""):
         self.token = token
         self.memories = [dict(m) for m in memories]
         self.trusted_platforms = list(trusted_platforms if trusted_platforms is not None else TRUSTED_PLATFORMS)
         self.trusted_routes = list(trusted_routes or [])
         self.log_path, self.clock = log_path, clock
+        # Optional: a file naming the route this hub "started" new chats on, as a hub whose own app
+        # sends the turn would know it. Read on each call, so a test can change it as it goes.
+        self.started_route_path = started_route_path
         self.lock = threading.Lock()
         self.side_routes: list[dict] = []
         self.turn_tokens: dict[str, tuple[str, float]] = {}     # token -> (session id, expires)
@@ -139,13 +143,29 @@ class FakeHub:
         self.turn_tokens[token] = (sid, self.clock() + TOKEN_TTL)
         return {"turn_token": token, "token_ttl_seconds": TOKEN_TTL}
 
+    def _started_route(self) -> Optional[dict]:
+        try:
+            route = json.load(open(self.started_route_path, encoding="utf-8")) if self.started_route_path else None
+        except (OSError, ValueError):
+            return None
+        return route if isinstance(route, dict) else None
+
     def _context(self, body: dict) -> dict:
         s = self._session(body.get("session"))
         known = body.get("route_source") in ("last_request", "config_default") and isinstance(body.get("route"), dict)
-        tier, why = self.tier(s["platform"], body.get("route")) if known else ("shared", "the chat's model isn't known yet")
+        started = None if known else self._started_route()
+        if known:
+            tier, why = self.tier(s["platform"], body.get("route"))
+        elif started is not None:
+            tier, why = self.tier(s["platform"], started)
+        else:
+            tier, why = "shared", "the chat's model isn't known yet"
         out = [{"ref": m["ref"], "id": m["id"], "tier": m["tier"], "text": m["text"]}
                for m in self.memories if m.get("status", "active") == "active" and (tier == "private" or m["tier"] == "shared")]
-        return {"memories": out, "held_back": "" if tier == "private" else why}
+        answer = {"memories": out, "held_back": "" if tier == "private" else why}
+        if started is not None:
+            answer["route"] = started
+        return answer
 
     def _verdict(self, body: dict) -> dict:
         s = self._session(body.get("session"))
@@ -253,7 +273,9 @@ def main() -> None:
     port, log, token = int(sys.argv[1]), sys.argv[2], sys.argv[3]
     memories = json.load(open(sys.argv[4], encoding="utf-8")) if len(sys.argv) > 4 else []
     routes = json.load(open(sys.argv[5], encoding="utf-8")) if len(sys.argv) > 5 else []
-    serve(FakeHub(token, memories, trusted_routes=routes, log_path=log), port).serve_forever()
+    started = sys.argv[6] if len(sys.argv) > 6 else ""
+    serve(FakeHub(token, memories, trusted_routes=routes, log_path=log, started_route_path=started),
+          port).serve_forever()
 
 
 if __name__ == "__main__":
