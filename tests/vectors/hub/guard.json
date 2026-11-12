@@ -2,10 +2,11 @@
   "about": "A request on its real tier, and what must leave instead. sent null means the request leaves unchanged. Tool-call arguments given as JSON text are compared as parsed JSON, not as text. tools is the tools list from hello, and mcp_server the hub's MCP server name in Hermes. All data is made up.",
   "mcp_server": "hub",
   "tools": [
-    {"name": "memory_search", "memory_only": true, "redact_args": ["query"]},
-    {"name": "memory_save", "memory_only": true, "redact_args": ["text"]},
-    {"name": "memory_forget", "memory_only": true, "redact_args": []}
+    {"name": "memory_search", "outside_content": false, "redact_args": ["query"]},
+    {"name": "memory_save", "outside_content": false, "redact_args": ["text", "reason"]},
+    {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"]}
   ],
+  "server_outside_content": false,
   "cases": [
     {
       "name": "a Private route leaves the request alone",
@@ -43,28 +44,25 @@
       ]}
     },
     {
-      "name": "a forget keeps its arguments but loses the token",
+      "name": "a forget keeps its ref, loses its reason and the token",
       "tier": "shared",
       "request": {"model": "openai/gpt-6.1-terra", "messages": [
-        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\", \"wl_turn\": \"tt_9QmV2c\"}"}}]},
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\", \"reason\": \"No longer true\", \"wl_turn\": \"tt_9QmV2c\"}"}}]},
         {"role": "tool", "tool_call_id": "c3", "content": "Forgot S1."}
       ]},
       "sent": {"model": "openai/gpt-6.1-terra", "messages": [
-        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\"}"}}]},
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "mcp__hub__memory_forget", "arguments": "{\"ref\": \"S1\", \"reason\": \"[private memory withheld]\"}"}}]},
         {"role": "tool", "tool_call_id": "c3", "content": "Forgot S1."}
       ]}
     },
     {
-      "name": "a hub tool not listed in hello gets every string argument blanked",
+      "name": "another tool on the hub's server keeps its arguments",
       "tier": "shared",
       "request": {"model": "openai/gpt-6.1-terra", "messages": [
-        {"role": "assistant", "content": null, "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "mcp__hub__people_notes", "arguments": "{\"person\": \"Dana\", \"limit\": 3, \"wl_turn\": \"tt_9QmV2c\"}"}}]},
-        {"role": "tool", "tool_call_id": "c4", "content": "No notes."}
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "mcp__hub__log_walk", "arguments": "{\"minutes\": 40, \"note\": \"Evening walk\"}"}}]},
+        {"role": "tool", "tool_call_id": "c4", "content": "Logged."}
       ]},
-      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
-        {"role": "assistant", "content": null, "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "mcp__hub__people_notes", "arguments": "{\"person\": \"[private memory withheld]\", \"limit\": 3}"}}]},
-        {"role": "tool", "tool_call_id": "c4", "content": "No notes."}
-      ]}
+      "sent": null
     },
     {
       "name": "a tool on another MCP server with the same name is left alone",

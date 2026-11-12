@@ -34,7 +34,7 @@
       "optional": {}
     },
     "tool": {
-      "required": {"name": "string", "memory_only": "boolean", "redact_args": "array"},
+      "required": {"name": "string", "outside_content": "boolean", "redact_args": "array"},
       "optional": {}
     },
     "message": {
@@ -43,7 +43,7 @@
     },
     "memory": {
       "required": {"ref": "string", "id": "string", "tier": "string", "text": "string"},
-      "optional": {}
+      "optional": {"label": "string"}
     },
     "request_entry": {
       "required": {"route": "$route", "tier": "string", "tier_source": "string"},
@@ -62,7 +62,7 @@
       },
       "response": {
         "required": {"protocol": "integer", "ok": "boolean", "hub": "$hub", "tools": "[$tool]"},
-        "optional": {"verdict_ttl_seconds": "integer", "hello_interval_seconds": "integer", "wants_user_messages": "boolean"}
+        "optional": {"server_outside_content": "boolean", "verdict_ttl_seconds": "integer", "hello_interval_seconds": "integer", "wants_user_messages": "boolean"}
       }
     },
     "turn-start": {

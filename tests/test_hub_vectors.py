@@ -105,7 +105,8 @@ def test_every_call_has_an_example():
 
 ANSWERS = load("answers.json")
 EXPECT_KEYS = {
-    "hello": {"ready", "tools", "verdict_ttl_seconds", "hello_interval_seconds", "wants_user_messages"},
+    "hello": {"ready", "tools", "server_outside_content", "verdict_ttl_seconds", "hello_interval_seconds",
+              "wants_user_messages"},
     "context": {"block"},
     "verdict": {"tier", "keep_seconds"},
     "turn-start": {"turn_token"},
@@ -203,16 +204,16 @@ def test_guard_cases(case):
     calls_out = [d for d in _all(sent) if "name" in d and ("arguments" in d or "input" in d)]
     for before, after in zip(calls_in, calls_out):
         args_in, args_out = _arguments(before), _arguments(after)
-        if before["name"].startswith(f"mcp__{GUARD['mcp_server']}__"):
-            assert "wl_turn" not in args_out
-            tool = next((t for t in GUARD["tools"] if f"mcp__{GUARD['mcp_server']}__{t['name']}" == before["name"]), None)
-            for key, value in args_in.items():
-                if key == "wl_turn":
-                    continue
-                blank = isinstance(value, str) and (tool is None or key in tool["redact_args"])
-                assert args_out[key] == (WITHHELD if blank else value), key
-        else:
+        tool = next((t for t in GUARD["tools"] if f"mcp__{GUARD['mcp_server']}__{t['name']}" == before["name"]), None)
+        if tool is None:            # not a hub memory tool: left alone
             assert args_out == args_in
+            continue
+        assert "wl_turn" not in args_out
+        for key, value in args_in.items():
+            if key == "wl_turn":
+                continue
+            blank = isinstance(value, str) and key in tool["redact_args"]
+            assert args_out[key] == (WITHHELD if blank else value), key
     # Tagged text everywhere else follows the strip in strip.json.
     for a, b in _pairs(_without_arguments(case["request"]), _without_arguments(sent)):
         assert b == strip_private(a)

@@ -18,10 +18,11 @@
       "protocol": 1, "ok": true,
       "hub": {"name": "Example hub"},
       "tools": [
-        {"name": "memory_search", "memory_only": true, "redact_args": ["query"]},
-        {"name": "memory_save", "memory_only": true, "redact_args": ["text"]},
-        {"name": "memory_forget", "memory_only": true, "redact_args": []}
+        {"name": "memory_search", "outside_content": false, "redact_args": ["query"]},
+        {"name": "memory_save", "outside_content": false, "redact_args": ["text", "reason"]},
+        {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"]}
       ],
+      "server_outside_content": false,
       "verdict_ttl_seconds": 300,
       "hello_interval_seconds": 3600,
       "wants_user_messages": false
@@ -85,7 +86,7 @@
     "response": {
       "protocol": 1, "ok": true,
       "memories": [
-        {"ref": "P2", "id": "m_2", "tier": "private", "text": "Sister Dana is vegetarian"},
+        {"ref": "P2", "id": "m_2", "tier": "private", "text": "Sister Dana is vegetarian", "label": "stated · from you · reviewed"},
         {"ref": "S1", "id": "m_9", "tier": "shared", "text": "Likes spicy food"}
       ],
       "held_back": ""

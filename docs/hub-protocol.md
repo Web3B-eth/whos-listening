@@ -43,11 +43,11 @@ The user sets, on the gateway:
 | --- | --- |
 | `hub.url` | The hub's base address, such as `https://hub.example.ts.net/whos-listening/v1`. Must be `https://`, except a loopback address (`127.0.0.1`, `::1`, `localhost`), which may use `http://`. Setting it turns hub mode on. |
 | `hub.mcp_server` | The name of the hub's MCP server in Hermes' `mcp_servers` config. If empty, the plugin uses the one MCP server whose address has the same host as `hub.url`; with none or several, hub mode is not ready. |
-| `WHOS_LISTENING_HUB_TOKEN` | The token the plugin sends to the hub, held as a Hermes secret (Desktop's form or the gateway's `.env`). Read only through Hermes' secrets. It should be a different token from the one Hermes uses for the hub's MCP server. |
+| `WHOS_LISTENING_HUB_TOKEN` | The token the plugin sends to the hub, held as a Hermes secret (Desktop's form or the gateway's `.env`). If it isn't set, the plugin uses the bearer token of the hub's MCP server entry (its `Authorization` header), as Hermes' own config loader and secret scope resolve it. Either way it is read only through Hermes, never from a file. A hub can serve these calls beside its MCP endpoint and accept the same credential, since both come from the same Hermes. |
 
 In Desktop's form these are `hub_url`, `hub_mcp_server` and **Hub token**.
 
-The user also adds the hub's MCP server to Hermes, as for any MCP server. Hermes names its tools `mcp__<server>__<tool>` (each part with every character outside `A-Z a-z 0-9 _` turned into `_`, and the whole name cut to 64 characters with a hash ending when longer; Hermes 0.23.0, `tools/mcp_tool_schema.py`). The plugin works out the same names from `hub.mcp_server` and the tool names the hub gives in `hello`.
+The user also adds the hub's MCP server to Hermes, as for any MCP server. Hermes names its tools `mcp__<server>__<tool>` (each part with every character outside `A-Z a-z 0-9 _` turned into `_`, and the whole name cut to 64 characters with a hash ending when longer; `tools/mcp_tool_schema.py`, the same in Hermes 0.21.4 and 0.23.0). The plugin works out the same names from `hub.mcp_server` and the tool names the hub gives in `hello`.
 
 ## Transport
 
@@ -123,7 +123,7 @@ Sends:
 ```
 
 - `gateway.hosted`: whether the machine looks hosted (a Fly.io machine, or config from a remote service), and `hosted_why` says which sign. `gateway.setting` is the local `gateway` setting (`private`, `shared`, or `null` if not set).
-- `routes`: Hermes' configured routes by role (`main`, `fallback`, `compression`, `auxiliary`), names and addresses only, never keys. An `auxiliary` entry has a `name` (such as `title`). An empty `model` or `base_url` means Hermes picks at run time.
+- `routes`: Hermes' configured routes by role (`main`, `fallback`, `compression`, `auxiliary`), names and addresses only, never keys. An `auxiliary` entry has a `name` (such as `title`). Provider `auto` with an empty `model` and `base_url` means Hermes picks at run time: within a turn it runs an `auto` helper task (compression, titles) on the chat's own model (`agent/auxiliary_client.py`, `set_runtime_main`), so a hub can treat it as the main route of that turn. Helper work Hermes does outside a turn uses the default model instead.
 - `hermes.isolation`: `in_process` (the default) or `host` (`plugins.isolation: host`).
 
 Gets back:
@@ -133,20 +133,21 @@ Gets back:
   "protocol": 1, "ok": true,
   "hub": {"name": "Example hub"},
   "tools": [
-    {"name": "memory_search", "memory_only": true, "redact_args": ["query"]},
-    {"name": "memory_save", "memory_only": true, "redact_args": ["text"]},
-    {"name": "memory_forget", "memory_only": true, "redact_args": []}
+    {"name": "memory_search", "outside_content": false, "redact_args": ["query"]},
+    {"name": "memory_save", "outside_content": false, "redact_args": ["text", "reason"]},
+    {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"]}
   ],
+  "server_outside_content": false,
   "verdict_ttl_seconds": 300,
   "hello_interval_seconds": 3600,
   "wants_user_messages": false
 }
 ```
 
-- `tools`: the hub's memory tools by their MCP names (`^[A-Za-z0-9_-]{1,64}$`).
-  - `memory_only: true` means the tool returns only stored memories, so calling it doesn't count as outside content (like the plugin's own recall tool). Any other tool, the hub's other tools included, counts as outside content.
-  - `redact_args`: the arguments that carry the model's own words about a memory (a saved fact, a search query). On a Shared route the guard blanks them in replayed calls, as it does for the plugin's own save and search tools.
-  - A tool on the hub's MCP server that isn't in this list gets every string argument blanked on a Shared route.
+- `tools`: the hub's memory tools by their MCP names (`^[A-Za-z0-9_-]{1,64}$`). These are the tools that get the turn token and whose arguments the guard redacts.
+  - `outside_content: false` means the tool returns only what the hub stores, so calling it doesn't count as outside content (like the plugin's own recall tool). `true` makes it count.
+  - `redact_args`: the arguments that carry the model's own words about a memory (a saved fact, a search query, a reason that may quote one). On a Shared route the guard blanks them in replayed calls, as it does for the plugin's own save and search tools.
+- `server_outside_content`: whether the hub's other MCP tools, the ones not in `tools` (a hub can serve more than memory), count as outside content. Default `true`. Their arguments are left as they are.
 - `verdict_ttl_seconds`: how long the plugin keeps a `verdict`, from 0 to 3600; default 300.
 - `hello_interval_seconds`: from 300 to 86400; default 3600.
 - A number outside its range is moved to the nearest end of it.
@@ -220,7 +221,7 @@ Gets back:
 }
 ```
 
-- `memories`: what this turn may see, best first. `ref` is the label the user and model use (`^[A-Za-z0-9#._-]{1,16}$`), `id` is the hub's own id (`^[A-Za-z0-9_.:-]{1,64}$`), `text` is the memory (at most 1000 characters).
+- `memories`: what this turn may see, best first. `ref` is the name the user and model use for it, such as `P2`, or the id the hub's tools take (`^[A-Za-z0-9#._:-]{0,64}$`; empty when the hub shows none). `id` is the hub's own id (`^[A-Za-z0-9_.:-]{1,64}$`). `text` is the memory (at most 1000 characters). The optional `label` is a short note the hub wants shown with it, such as `"stated · from Hermes · not reviewed"` (at most 80 characters, one line).
 - `held_back`: when the hub doesn't give this turn Private memories, a short reason the model may be told, such as `"this chat is on Telegram"`; `""` when it does. Like local mode's note, it must not depend on whether any Private memories exist, and must not include a memory's text or a count.
 
 The plugin builds the memory block itself, the same way local mode does, so the tags are always right:
@@ -233,8 +234,10 @@ Things the user has asked you to remember (Who's Listening). Use them when they 
 </whos-listening-memory>
 ```
 
-- It replaces `<` with `‹` and `>` with `›` in each `text`, so a memory can't close or fake a tag.
-- It drops any memory whose `tier` isn't exactly `private` or `shared`, or whose `ref`, `id` or `text` breaks the limits above, and keeps the rest.
+Each line is `- `, then the `ref` and a space when there is one, then `[label] ` when there is a label, then the text. A Private memory's label goes inside its tag with the text, since a label can say something about it.
+
+- It replaces `<` with `‹` and `>` with `›` in each `text` and `label`, so a memory can't close or fake a tag.
+- It drops any memory whose `tier` isn't exactly `private` or `shared`, or whose `ref`, `id`, `text` or `label` breaks the limits above, and keeps the rest.
 - It drops every Private memory when its own layers already make the turn Shared (see [Who decides the tier](#who-decides-the-tier)), whatever the hub sent.
 - It stops adding lines at `max_chars`.
 - When `held_back` isn't empty, it adds the line `(Private memories are not used in this chat: <held_back>.)` after the memories, with `<` and `>` replaced as above. With no memories at all there is no block, so no line either.
@@ -242,7 +245,7 @@ Things the user has asked you to remember (Who's Listening). Use them when they 
 
 ### `verdict`
 
-When: from the guard, for a main chat request about to leave, unless a kept answer for the same platform and route is still fresh.
+When: from the guard, for a main chat request about to leave, unless a kept answer for the same session and route is still fresh.
 
 Sends:
 
@@ -264,9 +267,9 @@ Gets back:
 
 - `tier` is `private` or `shared`. Anything else, a missing `tier`, or a failed call means Shared.
 - `reason`: a short phrase for `/memories settings` and the log. No memory text.
-- The plugin keeps the answer for `verdict_ttl_seconds`, keyed by platform, `agent_context`, provider, model and `base_url`. So **a hub's verdict may depend only on those, the gateway and the hub's own settings**, not on anything else about the session.
+- The plugin keeps the answer for `verdict_ttl_seconds`, keyed by session id, platform, `agent_context`, provider, model and `base_url`. The verdict may depend on the session: a hub may know that some sessions are its own app's chats, which reach Hermes through its API server and so carry the same platform as any other API client.
 - A failed call counts as Shared and is kept for 60 seconds, so an unreachable hub doesn't add 2 seconds to every request.
-- The session is sent so the hub can note which route each chat is really on.
+- The session also tells the hub which route each chat is really on.
 
 ### `turn-report`
 
@@ -314,7 +317,6 @@ Everything the local guard does still applies (see the README's **The guard**). 
 
 - removes every `<wl-private …>…</wl-private>` span anywhere in the request, hub tool results included, exactly as [`tests/vectors/strip.json`](../tests/vectors/strip.json) specifies;
 - blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`;
-- blanks every string argument of a replayed call to a tool on the hub's MCP server that `hello` didn't list;
 - removes `wl_turn` from every replayed hub tool call.
 
 If any of that fails, it falls back as the local guard does: remove whole memory blocks and every tagged span, and if even that fails, send a short notice instead of the conversation.
@@ -328,9 +330,9 @@ These are the hub's side of the agreement. `tests/vectors/hub/hub.json` has case
 3. **Answer `unsupported_protocol`** to a `protocol` it doesn't speak.
 4. **Default to Shared.** An unknown route, a `route_source` of `unknown`, a `null` route, an empty platform or anything the hub can't classify is Shared.
 5. **Give `context` Private memories only when the hub's own verdict for that platform and believed route is Private.** The plugin checks this too.
-6. **Make `verdict` depend only on the gateway, platform, `agent_context`, route and the hub's settings**, since the plugin keeps it.
-7. **Handle a tool call without a valid `wl_turn`** as coming from a Shared chat that read outside content: Shared memories only, writes handled as after outside content.
-8. **Remember outside content per session**, from `turn-report` and from `session.outside_tool` on any call, and apply the hub's own rule for saves and forgets after outside content (for example, holding them for the user).
+6. **Expect a verdict to be kept** for `verdict_ttl_seconds` per session and route. A change in the hub's settings reaches the guard within that time.
+7. **Handle a tool call without a valid `wl_turn`**, and without any binding of the hub's own (such as a token its app put in the chat), as coming from a Shared chat that read outside content: Shared memories only, writes handled as after outside content.
+8. **Remember outside content per session**, from `turn-report` and from `session.outside_tool` on any call, and apply the hub's own rule for saves and forgets after outside content (for example, holding them for the user). The recommended pattern is to keep a turn's writes pending and decide them when that turn's `turn_end` report arrives, with no report meaning they wait for the user. That way the decision always sees the whole turn, even when Hermes runs an outside tool and a save in the same batch.
 9. **Consider the side routes** from `hello` before answering Private. If the compression model or a fallback isn't trusted, a Private memory used on a Private turn can still reach it later (see the README's **Limits**). The hub chooses what to do about it; the recommended rule is to answer Private only when the main route, every fallback and the compression route are all trusted.
 
 The rules from the earlier idea in #17 (another agent's saves and forgets wait for the user, an agent can't approve its own pending save, an agent sees Private memories only if the user said so for that agent) are the hub's to keep, not part of this protocol.
@@ -354,24 +356,21 @@ In [`tests/vectors/hub/`](../tests/vectors/hub/), as plain JSON both sides can r
 - **`context` returns a list of memories**, and the plugin builds and tags the block. The hub still tags text in its tool results.
 - **`turn-start` returns a turn token**, which the plugin puts into hub tool calls, because Hermes' MCP calls don't say which chat they came from.
 - **Outside content is reported before the outside tool runs**, and every call carries the session's outside state, instead of only after the turn: a save can come later in the same turn.
-- **`hello` lists the hub's tools with what to redact** and which ones return only memories.
-- **`verdict` is kept per platform and route**, a failed one for 60 seconds, and more local settings can make a request Shared (`shared_hosts`, `routes` set to `shared`, `moa`).
+- **`hello` lists the hub's memory tools with what to redact**, and says whether its other tools count as outside content.
+- **`verdict` is kept per session and route**, a failed one for 60 seconds, and more local settings can make a request Shared (`shared_hosts`, `routes` set to `shared`, `moa`).
 - **`turn-report` also carries the real routes and the tier the guard applied** to each request.
 
 ## Open questions
 
-For the user, about the hub side (this repo can't answer them):
+To check in the plugin work for #17, before building on them:
 
-1. Does the first hub already tag Private text in its own way? Can the text it hands to Hermes (MCP tool results) use `<wl-private id="…">` instead?
-2. Can the hub's memory tools take the extra optional `wl_turn` argument? Which memory tools will it list in `hello`, and which of their arguments carry memory words?
-3. Where will the five calls live on the hub, and will the hub token be separate from the one for its MCP server (recommended)?
-4. Does the hub want each user message in `turn-start` (`wants_user_messages`), for example for automatic saves that depend on what the user said?
+1. **The `tool_request` middleware from a memory provider.** Hermes 0.21.4 and 0.23.0 both have it, give it the session id, and let a memory provider register any middleware (the provider's context passes every `register_*` call on to a full plugin context). Checked in the source of both, not yet run.
+2. **Tool calls run in a batch.** Hermes can run several tool calls at once, so the `outside` report for a web fetch could reach the hub after a save in the same batch. A hub that decides writes at `turn_end` (rule 8 above) isn't affected. For a hub that doesn't, the plugin would need to see the model's tool calls before any of them runs.
+3. **The guard on older Hermes.** The `llm_request` middleware gets the same route details (provider, model, `base_url`, platform, session) in 0.21.4 as in 0.23.0 (`agent/turn_api_request.py`), checked in source. The guard itself has only run on 0.23.0.
 
-For the plugin work in #17, to check before building on it:
+For the user:
 
-5. Does Hermes' `tool_request` middleware fire when a memory provider registers it, as `llm_request` does? Checked in the 0.23.0 source only, not run.
-6. Hermes can run a batch of tool calls at once. Can a hub save and an outside tool in the same batch race, so the save reaches the hub before the `outside` report? If so, the plugin needs to see the model's tool calls before any of them runs.
-7. Does the guard's hook exist in the Hermes versions the hub's users run? Checked on 0.23.0 only.
+4. **A chat the user knowingly moves to a Shared model.** A hub may let the user send a chat that already used Private memories to a Shared model after a warning, accepting that the earlier memories go with it. In hub mode the guard removes them anyway, because every request on a Shared route is cleaned. Version 1 keeps it that way: the warning can then say the earlier Private memories will be left out. A later version could add a verdict field to allow them for one session, if that is wanted.
 
 Left out of version 1:
 
