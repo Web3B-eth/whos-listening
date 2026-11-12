@@ -115,6 +115,36 @@
       "sent": {"model": "openai/gpt-6.1-terra", "messages": [
         {"role": "user", "content": "Dinner ideas?\n\n<whos-listening-memory>\nThings the user has asked you to remember (Who's Listening). Use them when they help; do not repeat them back unprompted.\n- P2 [private memory withheld]\n- S1 Likes spicy food\n</whos-listening-memory>"}
       ]}
+    },
+    {
+      "name": "a redact_args argument is blanked whatever its type",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": "{\"text\": [\"Allergic to penicillin\"], \"reason\": {\"why\": \"Allergic to penicillin\"}, \"tier\": \"private\", \"wl_turn\": \"tt_9QmV2c\"}"}}]}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": "{\"text\": \"[private memory withheld]\", \"reason\": \"[private memory withheld]\", \"tier\": \"private\"}"}}]}
+      ]}
+    },
+    {
+      "name": "a hub call through Hermes' tool_call bridge is blanked inside it",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{\"calls\": [{\"name\": \"mcp__hub__memory_save\", \"arguments\": {\"text\": \"Allergic to penicillin\", \"wl_turn\": \"tt_9QmV2c\"}}]}"}}]}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{\"calls\": [{\"name\": \"mcp__hub__memory_save\", \"arguments\": {\"text\": \"[private memory withheld]\"}}]}"}}]}
+      ]}
+    },
+    {
+      "name": "a tool_call bridge call whose arguments can't be read is replaced",
+      "tier": "shared",
+      "request": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{\"calls\": [{\"name\": \"mcp__hub__memory_save\", \"arguments\": {\"text\": \"Allergic to penicillin\"}}"}}]}
+      ]},
+      "sent": {"model": "openai/gpt-6.1-terra", "messages": [
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{\"calls\": []}"}}]}
+      ]}
     }
   ]
 }

@@ -9,6 +9,8 @@ Nothing here imports Hermes.
 
 from __future__ import annotations
 
+import re
+
 import ipaddress
 import json
 import threading
@@ -287,11 +289,45 @@ def _venice_verdict(model: str, settings: "RouteSettings") -> Verdict:
     return Verdict(SHARED, f"Venice model {model or '?'} isn't on Venice's list of private models")
 
 
+def _provider_id(name: Any) -> str:
+    return re.sub(r"[\s_]+", "-", str(name or "").strip().lower())
+
+
+def _named_endpoints(config: Mapping) -> dict[str, Mapping]:
+    """config.yaml's named custom endpoints by provider id: ``providers.<name>`` and the older
+    ``custom_providers`` list. Only their addresses are read here, never key fields."""
+    out: dict[str, Mapping] = {}
+    legacy = config.get("custom_providers")
+    for entry in legacy if isinstance(legacy, list) else []:
+        if isinstance(entry, Mapping) and entry.get("name"):
+            out.setdefault(_provider_id(entry.get("name")), entry)
+    providers = config.get("providers")
+    for key, entry in providers.items() if isinstance(providers, Mapping) else ():
+        if isinstance(entry, Mapping):
+            out[_provider_id(key)] = entry
+    return out
+
+
+def config_route(config: Mapping, provider: Any, model: Any, base_url: Any = "") -> Route:
+    """A route as config.yaml names it, in the shape Hermes reports a real request in: a named
+    custom endpoint (``providers.<name>``, a ``custom_providers`` entry or ``custom:<name>``) is
+    provider ``"custom"`` with that endpoint's address, as Hermes 0.23.0 reports it (docs/spike.md)."""
+    provider, model, base_url = str(provider or "").strip(), str(model or "").strip(), str(base_url or "").strip()
+    named = _named_endpoints(config).get(_provider_id(provider))
+    if isinstance(named, Mapping):
+        base_url = base_url or str(named.get("base_url") or named.get("api_base") or named.get("url") or "").strip()
+        if base_url:
+            provider = "custom"
+    elif _provider_id(provider).startswith("custom:"):
+        provider = "custom"
+    return Route(provider=provider, model=model, base_url=base_url)
+
+
 def default_route_from_config(config: Any) -> Optional[Route]:
     """The route ``config.yaml`` picks when a chat does not choose one.
 
-    Reads only ``model.provider``, ``model.default``, ``model.base_url`` and the matching
-    ``providers.<name>.base_url``. Never key fields.
+    Reads only ``model.provider``, ``model.default``, ``model.base_url`` and the matching named
+    endpoint's address (see ``config_route``). Never key fields.
     """
     if not isinstance(config, Mapping):
         return None
@@ -300,17 +336,8 @@ def default_route_from_config(config: Any) -> Optional[Route]:
         return Route(model=model_cfg)
     if not isinstance(model_cfg, Mapping):
         return None
-    provider = str(model_cfg.get("provider") or "").strip()
-    model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
-    base_url = str(model_cfg.get("base_url") or "").strip()
-    providers = config.get("providers")
-    if not base_url and provider and isinstance(providers, Mapping):
-        entry = providers.get(provider)
-        if isinstance(entry, Mapping):
-            base_url = str(entry.get("base_url") or entry.get("api_base") or "").strip()
-            # Hermes reports named custom endpoints as provider "custom" (docs/spike.md).
-            provider = "custom" if base_url else provider
-    return Route(provider=provider, model=model, base_url=base_url)
+    return config_route(config, model_cfg.get("provider"), model_cfg.get("default") or model_cfg.get("model"),
+                        model_cfg.get("base_url"))
 
 
 def _fallback_entries(config: Mapping) -> list[Mapping]:
@@ -336,18 +363,16 @@ def side_call_routes_private(config: Any, settings: Optional[RouteSettings] = No
     main = str(model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, Mapping) else ""
     if main in ("", "auto"):
         return Verdict(SHARED, "Hermes picks the provider itself (provider: auto), so a side call could go anywhere")
-    providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
     for entry in _fallback_entries(config):
-        provider = str(entry.get("provider") or "").strip()
-        base_url = str(entry.get("base_url") or "").strip()
-        named = providers.get(provider) if isinstance(providers, Mapping) else None
-        if not base_url and isinstance(named, Mapping):
-            base_url = str(named.get("base_url") or named.get("api_base") or "").strip()
-            provider = "custom" if base_url else provider
-        verdict = classify(Route(provider, str(entry.get("model") or ""), base_url), settings)
+        verdict = classify(config_route(config, entry.get("provider"), entry.get("model"), entry.get("base_url")),
+                           settings)
         if verdict.tier != PRIVATE:
             return Verdict(SHARED, f"a fallback provider is shared ({verdict.reason})")
     return Verdict(PRIVATE, "the chat's route and every fallback are private")
+
+
+BELIEF_LAST = "last request in this session"
+BELIEF_CONFIG = "config.yaml default route"
 
 
 class RouteBook:
@@ -409,10 +434,10 @@ class RouteBook:
             turn_model = self._turn_model.get(session_id)
             guard_ran = self._guard_ran
         if seen is not None and (turn_model is None or turn_model == seen.model):
-            return seen, "last request in this session"
+            return seen, BELIEF_LAST
         if seen is None and not guard_ran:
             return None, "the guard has not run yet"
         if seen is None and config_default is not None and turn_model is not None \
                 and config_default.model and turn_model == config_default.model:
-            return config_default, "config.yaml default route"
+            return config_default, BELIEF_CONFIG
         return None, "route not known yet"

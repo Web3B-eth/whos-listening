@@ -1,9 +1,9 @@
 """Check the hub protocol's test cases in tests/vectors/hub/ are well formed.
 
-Hub mode isn't built yet (docs/hub-protocol.md). These tests only keep the case files
-consistent with the doc, with each other and with the local code they share (the memory
-block's header and the strip in recall.py). The hub client and fake hub will run the cases
-for real. All data is made up.
+These tests only keep the case files consistent with the doc (docs/hub-protocol.md), with
+each other and with the local code they share (the memory block's header and the strip in
+recall.py). tests/test_hub.py runs the cases for real, against the hub client and the fake
+hub. All data is made up.
 """
 
 import json
@@ -187,7 +187,39 @@ def _without_arguments(obj):
 
 def _arguments(d):
     raw = d.get("arguments", d.get("input"))
-    return json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return UNREADABLE
+
+
+UNREADABLE = object()
+
+
+def _check_call(name, args_in, args_out):
+    """One tool call's arguments before and after the guard (docs/hub-protocol.md, The guard)."""
+    if name == "tool_call":         # Hermes' Tool Search bridge: the calls inside, the same way
+        if args_in is UNREADABLE:
+            assert args_out == {"calls": []}
+            return
+        inner_in = args_in.get("calls", [args_in])
+        inner_out = args_out.get("calls", [args_out])
+        assert len(inner_in) == len(inner_out)
+        for a, b in zip(inner_in, inner_out):
+            _check_call(a.get("name"), a.get("arguments"), b.get("arguments"))
+        return
+    tool = next((t for t in GUARD["tools"] if f"mcp__{GUARD['mcp_server']}__{t['name']}" == name), None)
+    if tool is None:            # not a hub memory tool: left alone
+        assert args_out == args_in
+        return
+    assert "wl_turn" not in args_out
+    for key, value in args_in.items():
+        if key == "wl_turn":
+            continue
+        blank = value is not None and key in tool["redact_args"]     # whatever its type
+        assert args_out[key] == (WITHHELD if blank else value), key
 
 
 @pytest.mark.parametrize("case", GUARD["cases"], ids=lambda c: c["name"])
@@ -203,17 +235,7 @@ def test_guard_cases(case):
     calls_in = [d for d in _all(case["request"]) if "name" in d and ("arguments" in d or "input" in d)]
     calls_out = [d for d in _all(sent) if "name" in d and ("arguments" in d or "input" in d)]
     for before, after in zip(calls_in, calls_out):
-        args_in, args_out = _arguments(before), _arguments(after)
-        tool = next((t for t in GUARD["tools"] if f"mcp__{GUARD['mcp_server']}__{t['name']}" == before["name"]), None)
-        if tool is None:            # not a hub memory tool: left alone
-            assert args_out == args_in
-            continue
-        assert "wl_turn" not in args_out
-        for key, value in args_in.items():
-            if key == "wl_turn":
-                continue
-            blank = isinstance(value, str) and key in tool["redact_args"]
-            assert args_out[key] == (WITHHELD if blank else value), key
+        _check_call(before["name"], _arguments(before), _arguments(after))
     # Tagged text everywhere else follows the strip in strip.json.
     for a, b in _pairs(_without_arguments(case["request"]), _without_arguments(sent)):
         assert b == strip_private(a)

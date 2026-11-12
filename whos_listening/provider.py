@@ -18,14 +18,15 @@ from typing import Any, Mapping, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from . import autoreview, commands, guard, recall, resolve, review, tools
+from . import __version__ as PLUGIN_VERSION
+from . import autoreview, commands, guard, hub, recall, resolve, review, tools
 from . import settings as wl_settings
 from . import sync as wl_sync
 from . import judge as wl_judge
 from . import venice
 from .routes import (
-    Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config, layered_verdict,
-    private_storage_refusal, shared_only_gateway, side_call_routes_private,
+    BELIEF_CONFIG, BELIEF_LAST, Route, RouteBook, RouteSettings, Verdict, classify, default_route_from_config,
+    layered_verdict, private_storage_refusal, shared_only_gateway, side_call_routes_private,
 )
 from .store import PENDING, PRIVATE, SHARED, Memory, Provenance, SQLiteStore, display_ref
 
@@ -264,6 +265,11 @@ class WhosListeningProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._agent_context = str(kwargs.get("agent_context") or "primary")
         self._platform = str(kwargs.get("platform") or "cli")
+        client = self._hub()
+        if client is not None:          # hub mode: the hub keeps the memories (no Venice list, no sync)
+            client.note_session(self._session_id, platform=self._platform, agent_context=self._agent_context)
+            _hub_hello(self._dir.parent, client)
+            return
         _venice_list(self._dir.parent)
         if self._agent_context == "primary":
             maybe_sync(self._dir.parent)
@@ -277,6 +283,10 @@ class WhosListeningProvider(MemoryProvider):
         old = self._session_id
         self._session_id = new_session_id or self._session_id
         parent = str(kwargs.get("parent_session_id") or old or "")
+        client = self._hub()
+        if client is not None:
+            client.carry_over(parent, new_session_id)
+            client.note_session(self._session_id, platform=self._platform, agent_context=self._agent_context)
         if kwargs.get("reset"):
             self._user_messages = []      # a new chat: the old chat's words don't count
             self._last_reply = ""
@@ -300,7 +310,10 @@ class WhosListeningProvider(MemoryProvider):
         self._recalls_this_turn = 0
         self._turn_message = ""        # the user's own words this turn: a review choice must name its number
         SHARED_REQUEST_WORDS.clear(self._session_id)
-        if self._dir is not None:
+        client = self._hub()
+        if client is not None:
+            self._hub_turn_start(client, message, kwargs)
+        elif self._dir is not None:
             maybe_sync(self._dir.parent)
         if kwargs.get("author_is_bot") or not isinstance(message, str):
             return
@@ -327,6 +340,9 @@ class WhosListeningProvider(MemoryProvider):
     # -- recall ------------------------------------------------------------
 
     def system_prompt_block(self) -> str:
+        client = self._hub()
+        if client is not None:
+            return _hub_prompt_note(self._home(), client)
         return ("You have a long-term memory about the user (Who's Listening). When the user tells you a "
                 "lasting fact about themselves (what they own, people in their life, preferences, "
                 "routines, plans, health details like allergies), save it with whos-listening_remember "
@@ -340,10 +356,18 @@ class WhosListeningProvider(MemoryProvider):
     def _home(self) -> Optional[Path]:
         return self._dir.parent if self._dir else None
 
+    def _hub(self) -> Optional[hub.HubClient]:
+        """This profile's hub client when hub mode is on, else None (local mode). Hermes asks for
+        the tool schemas before ``initialize``, so until then the active profile counts."""
+        return _hub(self._home()) if self._dir is not None else _active_hub()
+
     def _shared_only(self) -> bool:
         return _shared_only(self._home())
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        client = self._hub()
+        if client is not None:
+            return self._hub_prefetch(client, query, session_id or self._session_id)
         if self._store is None:
             return ""
         try:
@@ -356,9 +380,13 @@ class WhosListeningProvider(MemoryProvider):
     # -- tools -------------------------------------------------------------
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
+        if self._hub() is not None:
+            return []                   # hub mode: the hub's MCP server has the memory tools
         return [dict(s) for s in tools.schemas(self._shared_only())]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
+        if self._hub() is not None:
+            return tools._err(HUB_MANAGED)
         if self._store is None:
             return tools._err("Who's Listening is not initialized.")
         if self._agent_context != "primary" and tool_name in (tools.REMEMBER, tools.FORGET, tools.REVIEW):
@@ -548,6 +576,10 @@ class WhosListeningProvider(MemoryProvider):
         return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", **kwargs) -> None:
+        client = self._hub()
+        if client is not None:
+            _hub_turn_end(client, session_id or self._session_id)
+            return
         # Only a small local write: persist the outside-content flag for this chat.
         if isinstance(assistant_content, str):
             self._last_reply = assistant_content[-autoreview.LAST_REPLY_MAX_CHARS:]
@@ -555,6 +587,54 @@ class WhosListeningProvider(MemoryProvider):
             self._outside_tool(session_id)
         except Exception as exc:
             logger.debug("whos-listening: could not save the outside-content flag: %s", exc)
+
+
+    # -- hub mode ------------------------------------------------------------
+
+    def _hub_turn_start(self, client: hub.HubClient, message: Any, kwargs: Mapping[str, Any]) -> None:
+        """``turn-start``, in the background: only the turn's first hub tool call waits for it."""
+        sid, home = self._session_id, self._home()
+        client.note_session(sid, platform=self._platform, agent_context=self._agent_context)
+        _hub_hello(home, client)
+        done = client.begin_turn(sid, self._turn)
+        if not sid or client.setup_problem or getattr(client, "settings_problem", ""):
+            done.set()
+            return
+        token = _hub_token(client)
+        route, source = _believed(sid)
+        words = {"text": message if isinstance(message, str) else "",
+                 "author_id": str(kwargs.get("author_id") or ""), "author_is_bot": bool(kwargs.get("author_is_bot"))}
+
+        def work() -> None:
+            if not client.wait_hello() or client.hello is None:
+                done.set()
+                return
+            body = {"session": client.session_obj(sid, OUTSIDE.get(sid)), "turn": client.turn_obj(sid),
+                    "route": hub.route_obj(route), "route_source": source}
+            if client.hello.wants_user_messages:
+                body["message"] = words
+            client.turn_start(sid, body, token, done)
+
+        _spawn(work, "whos-listening-hub-turn")
+
+    def _hub_prefetch(self, client: hub.HubClient, query: str, sid: str) -> str:
+        """``context``: the memories this turn may see, tagged here (no memories on any failure)."""
+        try:
+            home = self._home()
+            _hub_hello(home, client, wait=True)
+            if not _hub_ready(client):
+                return ""
+            route, source = _believed(sid)
+            settings, _ = _load_settings(home)
+            platform = client.session(sid).platform or self._platform
+            keep_private = hub.local_shared(settings, platform, route) is None
+            body = {"session": client.session_obj(sid, OUTSIDE.get(sid)), "turn": client.turn_obj(sid),
+                    "route": hub.route_obj(route), "route_source": source,
+                    "query": str(query or "")[:hub.QUERY_MAX_CHARS], "max_chars": recall.MAX_BLOCK_CHARS}
+            return client.context(body, _hub_token(client), keep_private=keep_private)
+        except Exception as exc:
+            logger.warning("whos-listening hub: recall failed, adding no memories: %s", type(exc).__name__)
+            return ""
 
 
 # -- hooks: what model a turn starts with ------------------------------------
@@ -621,6 +701,10 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     flag holds even if Hermes stops before the turn ends."""
     tool = str(kwargs.get("tool_name") or "")
     session_id = str(kwargs.get("session_id") or "")
+    client = _active_hub()
+    if client is not None:          # hub mode: tool_request reported it; this catches any it missed
+        _hub_outside(client, session_id, tool, wait=False)
+        return
     if not session_id or not review.is_outside_tool(tool) or OUTSIDE.get(session_id):
         return
     OUTSIDE.saw(session_id, tool)
@@ -645,6 +729,12 @@ def _memories_command(raw_args: str = "", *, platform: str = "", **_: Any) -> st
     if home is None:
         return "Who's Listening can't tell which Hermes profile this is."
     words = (raw_args or "").split()
+    client = _hub(home)
+    if client is not None:
+        if words and words[0].lower() == "settings":
+            _hub_hello(home, client, wait=True)
+            return _with_setup_notes(_settings_command(home) + "\n" + _hub_status(home, client))
+        return HUB_MANAGED + " /memories settings shows the hub's status."
     if words and words[0].lower() == "sync":
         return _sync_command(home, words[1].lower() if len(words) > 1 else "")
     if words and words[0].lower() == "settings":
@@ -1116,6 +1206,9 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
     the route counts as Shared and Private text is removed (see guard.guard_request).
     """
     request = kwargs.get("request")
+    client = _active_hub()
+    if client is not None:
+        return _hub_llm_request(client, kwargs)
     tier = None
     try:
         route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
@@ -1140,6 +1233,320 @@ def _on_llm_request(**kwargs: Any) -> Optional[dict]:
     return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}
 
 
+# -- hub mode (hub.py, docs/hub-protocol.md) ------------------------------------------
+
+HUB_MANAGED = ("Who's Listening is in hub mode: your memories are kept by your hub, and the assistant uses "
+               "the hub's own memory tools.")
+HUBS = _process_wide("hubs", dict)        # profile home -> HubClient
+_HUB_TOKENS = _process_wide("hub_tokens", dict)   # profile home -> (token, read at); kept briefly
+HUB_TOKEN_KEEP = 60.0                      # seconds a token read through Hermes is reused
+
+
+def _hub(home: Optional[Path]) -> Optional[hub.HubClient]:
+    """The hub client of the profile at ``home`` when hub mode is on (``hub.url`` is set), else
+    None. If the settings can't be read, a profile already in hub mode stays in it, with every
+    route Shared, no memories and no turn tokens (``settings_problem``), so the guard still knows
+    the hub's tools and still removes turn tokens from hub tool calls. One that wasn't is in local
+    mode, where every route is then Shared too."""
+    if home is None:
+        return None
+    key = str(Path(home).resolve())
+    try:
+        url, server = wl_settings.hub_settings(_settings(home))
+    except Exception as exc:
+        client = HUBS.get(key)
+        if client is not None:
+            if not getattr(client, "settings_problem", ""):
+                logger.warning("whos-listening hub: settings unreadable, treating every route as Shared: %s",
+                               type(exc).__name__)
+            client.settings_problem = "settings unreadable"
+        return client
+    if not url:
+        return None
+    client = HUBS.get(key)
+    if client is None or client.url != url.rstrip("/") or getattr(client, "server_setting", None) != server:
+        mcp_server, why = (server, "") if server else hub.find_mcp_server(url, _mcp_servers_config())
+        client = hub.HubClient(url, mcp_server)
+        client.server_setting = server
+        client.setup_problem = hub.url_problem(url) or why
+        HUBS[key] = client
+    client.settings_problem = ""
+    return client
+
+
+def _active_hub() -> Optional[hub.HubClient]:
+    """The active profile's hub client, or None (local mode, or the profile can't be told). Never raises."""
+    try:
+        return _hub(_active_home())
+    except Exception:
+        return None
+
+
+def _hub_ready(client: hub.HubClient) -> bool:
+    """Whether the hub may be asked for a tier or memories. Not while the settings can't be read."""
+    return not client.setup_problem and not getattr(client, "settings_problem", "") and client.ready
+
+
+def _mcp_servers_config() -> Mapping:
+    config = _config()
+    servers = config.get("mcp_servers") if isinstance(config, Mapping) else None
+    return servers if isinstance(servers, Mapping) else {}
+
+
+def _hub_token(client: hub.HubClient) -> str:
+    """The hub token, read through Hermes for the active profile (never from a file):
+    WHOS_LISTENING_HUB_TOKEN, else the bearer token in the hub MCP server entry's Authorization
+    header, with a ${VAR} there looked up in Hermes' secrets. Kept a minute, so a request doesn't reload the config."""
+    key = (str(_active_home()), client.url, client.mcp_server)
+    kept = _HUB_TOKENS.get(key)
+    if kept is not None and time.monotonic() - kept[1] < HUB_TOKEN_KEEP:
+        return kept[0]
+    token = _secret(hub.TOKEN_ENV)
+    if not token and client.mcp_server:
+        # The hub MCP server's own bearer, with any ${VAR} in it filled in from Hermes' secrets.
+        token = hub.bearer_of(_mcp_servers_config().get(client.mcp_server), _secret)
+    _HUB_TOKENS[key] = (token, time.monotonic())
+    return token
+
+
+def _spawn(fn: Any, name: str) -> None:
+    try:
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(fn, name=name).start()
+    except Exception:
+        threading.Thread(target=fn, name=name, daemon=True).start()
+
+
+def _secret(name: str) -> str:
+    try:
+        from agent.secret_scope import get_secret
+        return str(get_secret(name) or "")
+    except Exception:
+        return ""
+
+
+def _hermes_version() -> str:
+    """Best effort, for the hub's information only. Hermes is already loaded when this runs;
+    ``hermes_cli.__version__`` is the attribute Hermes keeps for its old updaters."""
+    try:
+        return str(getattr(sys.modules.get("hermes_cli"), "__version__", "") or "")
+    except Exception:
+        return ""
+
+
+def _hello_body(home: Path) -> dict:
+    """What ``hello`` reports: names and addresses only, never keys."""
+    config = _config()
+    config = config if isinstance(config, Mapping) else {}
+    plugins = config.get("plugins") if isinstance(config.get("plugins"), Mapping) else {}
+    isolation = "host" if str(plugins.get("isolation") or "").strip().lower() == "host" else "in_process"
+    hosted = _hosted()
+    try:
+        s = _settings(home)
+        setting = s.doc.get("gateway") if s.origin.get("gateway") not in (wl_settings.FROM_DEFAULT,
+                                                                           wl_settings.FROM_HOSTED) else None
+    except Exception:
+        setting = None
+    import socket
+    return {"plugin": {"name": PROVIDER_NAME, "version": PLUGIN_VERSION},
+            "hermes": {"version": _hermes_version(), "isolation": isolation},
+            "gateway": {"name": socket.gethostname().split(".")[0][:64], "hosted": bool(hosted),
+                        "hosted_why": hosted, "setting": setting if setting in (PRIVATE, SHARED) else None},
+            "routes": hub.hello_routes(config)}
+
+
+def _hub_hello(home: Optional[Path], client: hub.HubClient, *, wait: bool = False) -> None:
+    """Start ``hello`` in the background when one is due; ``wait`` waits for a running one."""
+    if home is None or client.setup_problem:
+        return
+    if client.hello_needed():
+        done = client.start_hello()
+        if done is not None:
+            token, body = _hub_token(client), _hello_body(home)
+            _spawn(lambda: client.run_hello(body, token, done), "whos-listening-hub-hello")
+    if wait:
+        client.wait_hello()
+
+
+def _believed(session_id: str) -> tuple[Optional[Route], str]:
+    """The route a session is believed to be on, and the protocol's ``route_source``."""
+    route, why = ROUTES.believed(session_id, _config_default_route())
+    source = {BELIEF_LAST: "last_request", BELIEF_CONFIG: "config_default"}.get(why, "unknown")
+    return (route if source != "unknown" else None), source
+
+
+def _hub_prompt_note(home: Optional[Path], client: hub.HubClient) -> str:
+    _hub_hello(home, client, wait=True)
+    if not _hub_ready(client) or client.hello is None:
+        return ("Who's Listening keeps the user's memories in a hub, which can't be reached right now, so no "
+                "memories are available in this chat.")
+    hello = client.hello
+    name = hello.hub_name.replace("<", "‹").replace(">", "›")
+    tools_note = (f" Its memory tools are {', '.join(t.wire for t in hello.tools)}: call them directly by name, "
+                  "never through tool_search or tool_call. Leave their wl_turn argument empty; Hermes fills it in."
+                  if hello.tools else "")
+    return (f"You have a long-term memory about the user, kept by {name} (Who's Listening hub mode).{tools_note} "
+            "Memories marked private are only shown on private model routes.")
+
+
+def _hub_outside(client: hub.HubClient, session_id: str, tool: str, *, wait: bool) -> None:
+    """Note a tool that brings in outside content and, the first time in a chat, tell the hub
+    before the tool runs (``wait``: from tool_request, which holds the tool until then)."""
+    if not session_id or not tool:
+        return
+    hello = client.hello
+    if hello is not None:
+        counted = hello.counts_as_outside(tool)
+    else:
+        counted = True if client.mcp_server and tool.startswith(hub.mcp_server_prefix(client.mcp_server)) else None
+    if not (counted if counted is not None else review.is_outside_tool(tool)):
+        return
+    first = not OUTSIDE.get(session_id)
+    OUTSIDE.saw(session_id, tool)
+    if not client.note_outside(session_id, tool, first) or not _hub_ready(client):
+        return
+    body = hub.turn_report_body("outside", client.session_obj(session_id, OUTSIDE.get(session_id)),
+                                client.turn_obj(session_id), [tool])
+    token = _hub_token(client)
+    if wait:
+        client.turn_report(body, token)
+    else:
+        _spawn(lambda: client.turn_report(body, token), "whos-listening-hub-report")
+
+
+def _hub_turn_end(client: hub.HubClient, session_id: str) -> None:
+    """``turn_end``, in the background: the turn's outside tools and the tier of each request."""
+    if not session_id:
+        return
+    requests, outside = client.take_turn(session_id)
+    if not _hub_ready(client):
+        return
+    body = hub.turn_report_body("turn_end", client.session_obj(session_id, OUTSIDE.get(session_id)),
+                                client.turn_obj(session_id), outside, requests)
+    token = _hub_token(client)
+    _spawn(lambda: client.turn_report(body, token), "whos-listening-hub-report")
+
+
+def _hub_llm_request(client: hub.HubClient, kwargs: Mapping[str, Any]) -> Optional[dict]:
+    """The guard in hub mode (docs/hub-protocol.md, Who decides the tier). Never raises."""
+    request = kwargs.get("request")
+    tier, source = SHARED, "failed"
+    home = _active_home()
+    session_id = str(kwargs.get("session_id") or "")
+    try:
+        route = Route(provider=str(kwargs.get("provider") or ""), model=str(kwargs.get("model") or ""),
+                      base_url=str(kwargs.get("base_url") or ""))
+        ROUTES.saw_request(session_id, route)
+        _hub_hello(home, client, wait=True)       # waits only while the first hello is still running
+        platform = str(kwargs.get("platform") or "").strip().lower()
+        if platform:
+            client.note_session(session_id, platform=platform)
+        else:
+            platform = client.session(session_id).platform if session_id else ""
+        settings, _ = _load_settings(home)
+        route_obj = hub.route_obj(route)
+
+        def ask_hub() -> tuple[str, str]:
+            if not _hub_ready(client):
+                return SHARED, "failed"
+            session = {**client.session_obj(session_id, OUTSIDE.get(session_id)), "platform": platform}
+            verdict_tier, verdict_source, _ = client.verdict(session, route_obj, _hub_token(client))
+            return verdict_tier, verdict_source
+
+        tier, source = hub.decide_tier(settings, platform, route, ask_hub)
+        client.record_request(session_id, str(kwargs.get("turn_id") or ""), route_obj, tier, source)
+    except Exception as exc:
+        tier = SHARED
+        logger.warning("whos-listening guard: could not get the hub's tier, treating it as Shared: %s",
+                       type(exc).__name__)
+    hello = client.hello
+    prefix = hub.mcp_server_prefix(client.mcp_server) if client.mcp_server and hello is None else ""
+    cleaned = guard.guard_request(request, tier, hello.redactions() if hello is not None else None, prefix)
+    if cleaned is None:
+        return None
+    return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}
+
+
+def _on_tool_request(**kwargs: Any) -> Optional[dict]:
+    """``tool_request`` middleware (hub mode only). Puts the turn token into a hub memory tool's
+    ``wl_turn``, replacing whatever the model wrote there, and tells the hub about outside content
+    before an outside tool runs. Hermes runs the tool unchanged if this raises, so it never does."""
+    try:
+        client = _active_hub()
+        if client is None:
+            return None
+        tool = str(kwargs.get("tool_name") or "")
+        session_id = str(kwargs.get("session_id") or "")
+        args = kwargs.get("args")
+        _hub_outside(client, session_id, tool, wait=True)
+        hello = client.hello
+        known = hello is not None and hello.tool(tool) is not None
+        on_server = bool(client.mcp_server) and tool.startswith(hub.mcp_server_prefix(client.mcp_server))
+        if not isinstance(args, dict) or not (known or (on_server and hub.WL_TURN in args)):
+            return None
+        new = {k: v for k, v in args.items() if k != hub.WL_TURN}
+        live = known and session_id and not getattr(client, "settings_problem", "")
+        token = client.current_token(session_id) if live else ""
+        if token:
+            new[hub.WL_TURN] = token
+        if new == args:
+            return None
+        return {"args": new, "source": PROVIDER_NAME, "reason": "hub turn token"}
+    except Exception as exc:
+        logger.warning("whos-listening hub: tool_request failed: %s", type(exc).__name__)
+        return None
+
+
+def _hub_status(home: Path, client: hub.HubClient) -> str:
+    """Hub mode's part of /memories settings."""
+    failure = client.last_failure
+    failing = failure is not None and failure[2] >= client.last_success_wall
+    if client.setup_problem:
+        state = f"not ready: {client.setup_problem}"
+    elif getattr(client, "settings_problem", ""):
+        state = (f"not ready: {client.settings_problem}, so every route is Shared and no memories are added "
+                 "until settings.json can be read again")
+    elif not client.ready:
+        state = "not ready: " + _hub_problem(client)
+    elif failing:
+        secs = max(0, int(time.time() - failure[2]))
+        state = (f"not answering: the last call ({failure[0]}) failed ({failure[1]}) {secs} s ago. While the "
+                 f"hub doesn't answer, routes count as Shared and no memories are added. Last good hello: "
+                 f"{client.hello.hub_name}, {max(0, int((time.time() - client.hello_wall) // 60))} min ago")
+    else:
+        mins = max(0, int((time.time() - client.hello_wall) // 60))
+        state = f"ready, connected to {client.hello.hub_name} (last hello {mins} min ago)"
+        if client.hello_error:
+            state += f"; the last hello failed ({client.hello_error})"
+    rows = [f"hub mode: {state}", f"hub MCP server in Hermes: {client.mcp_server or '(none found)'}"]
+    if client.hello is not None:
+        rows.append("hub memory tools: " + (", ".join(t.wire for t in client.hello.tools) or "none"))
+    kept = client.kept_verdicts()
+    if kept:
+        for key, verdict, left in kept:
+            session, platform, _, provider, model, base_url = key
+            rows.append(f"verdict kept: {platform or '?'} · {provider}/{model} @ {Route(base_url=base_url).host or '?'}"
+                        f" = {verdict.tier} ({verdict.reason or 'no reason given'}), {int(left)} s left"
+                        f", chat …{str(session or '?')[-8:]}")
+    else:
+        rows.append("verdicts kept: none")
+    rows.append("In hub mode the hub decides what is Private. Local settings can only make a request Shared "
+                "(gateway: shared, shared_platforms, shared_hosts, routes set to shared). private_platforms, "
+                "private_hosts, routes set to private and local mode's settings (review, duplicates, Venice "
+                "anonymized models, sync) don't apply, so they aren't listed.")
+    return "\n".join(rows)
+
+
+def _hub_problem(client: hub.HubClient) -> str:
+    code = client.hello_error
+    if code == "no_token":
+        return ("no hub token: set Hub token in Desktop (WHOS_LISTENING_HUB_TOKEN), or give the hub's MCP "
+                "server entry an Authorization header")
+    if code == "not tried yet":
+        return "the first hello hasn't finished yet"
+    return f"hello failed ({code})"
+
+
 def register_hooks(ctx) -> None:
     """Hooks and the guard. Safe to call many times.
 
@@ -1155,6 +1562,7 @@ def register_hooks(ctx) -> None:
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_middleware("llm_request", _on_llm_request)
+    ctx.register_middleware("tool_request", _on_tool_request)
     ctx.register_command("memories", _memories_command,
                          description="Review what Who's Listening remembers: pending, approve, undo, forget, show",
                          args_hint="[pending|approve Pn/Sn|reject Pn/Sn|undo|forget Pn/Sn|restore Pn/Sn|show Pn/Sn|add TEXT|sync|settings]")

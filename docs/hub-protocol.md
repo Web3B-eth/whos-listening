@@ -1,6 +1,6 @@
-# Hub protocol (draft, version 1)
+# Hub protocol (version 1)
 
-**Status: draft for review. Nothing here is built yet.** This is the agreement that hub mode ([issue #17](https://github.com/Web3B-eth/whos-listening/issues/17)) is built against, on both sides: the plugin's hub client, its fake hub for tests, and any hub. The test cases are in [`tests/vectors/hub/`](../tests/vectors/hub/). Once the doc is agreed, the plugin work in #17 starts; until then this file can still change.
+**Status: version 1. The plugin side is built** ([issue #17](https://github.com/Web3B-eth/whos-listening/issues/17)): the hub client is [`whos_listening/hub.py`](../whos_listening/hub.py), wired into Hermes in `provider.py`, and the fake hub for tests is [`e2e/fake_hub.py`](../e2e/fake_hub.py). This is the agreement between the plugin and any hub. The test cases are in [`tests/vectors/hub/`](../tests/vectors/hub/).
 
 All examples and test data are made up.
 
@@ -41,7 +41,7 @@ The user sets, on the gateway:
 
 | Setting | What it is |
 | --- | --- |
-| `hub.url` | The hub's base address, such as `https://hub.example.ts.net/whos-listening/v1`. Must be `https://`, except a loopback address (`127.0.0.1`, `::1`, `localhost`), which may use `http://`. Setting it turns hub mode on. |
+| `hub.url` | The hub's base address, such as `https://hub.example.com/whos-listening/v1`. Must be `https://`, except a loopback address (`127.0.0.1`, `::1`, `localhost`), which may use `http://`. Setting it turns hub mode on. |
 | `hub.mcp_server` | The name of the hub's MCP server in Hermes' `mcp_servers` config. If empty, the plugin uses the one MCP server whose address has the same host as `hub.url`; with none or several, hub mode is not ready. |
 | `WHOS_LISTENING_HUB_TOKEN` | The token the plugin sends to the hub, held as a Hermes secret (Desktop's form or the gateway's `.env`). If it isn't set, the plugin uses the bearer token of the hub's MCP server entry (its `Authorization` header), as Hermes' own config loader and secret scope resolve it. Either way it is read only through Hermes, never from a file. A hub can serve these calls beside its MCP endpoint and accept the same credential, since both come from the same Hermes. |
 
@@ -51,7 +51,7 @@ The user also adds the hub's MCP server to Hermes, as for any MCP server. Hermes
 
 ## Transport
 
-- Each call is an HTTPS `POST` to `{hub.url}/{call}`, for example `https://hub.example.ts.net/whos-listening/v1/context`, with a JSON body and the headers `Content-Type: application/json` and `Authorization: Bearer <token>`.
+- Each call is an HTTPS `POST` to `{hub.url}/{call}`, for example `https://hub.example.com/whos-listening/v1/context`, with a JSON body and the headers `Content-Type: application/json` and `Authorization: Bearer <token>`.
 - Every request body has `"protocol": 1`. Every success answer is status `200` with a JSON object holding `"protocol": 1` and `"ok": true`.
 - An error answer is a JSON object with `"ok": false`, an `error` code and an optional `message`: `unauthorized` (status 401), `unsupported_protocol` (400), `bad_request` (400) or `not_ready` (503). The plugin treats every error the same way, as a failure of that call, and logs only the call name, the status and the code.
 - The plugin does not follow redirects (the token must not go anywhere else), and treats a redirect as a failure.
@@ -88,7 +88,7 @@ The user also adds the hub's MCP server to Hermes, as for any MCP server. Hermes
 {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
 ```
 
-The plugin removes any user name, password, query and fragment from `base_url` before sending it. Named custom endpoints show up as provider `custom` in Hermes 0.23.0, so the host in `base_url` is what tells routes apart.
+The plugin removes any user name, password, query and fragment from `base_url` before sending it. Named custom endpoints show up as provider `custom` in Hermes 0.23.0, so the host in `base_url` is what tells routes apart. The plugin names them `custom` everywhere it sends a route, also in `hello` and for a route taken from `config.yaml` (where the endpoint has its own name), so a hub sees one name for one endpoint. Match routes on model and host.
 
 **`turn`**:
 
@@ -238,7 +238,7 @@ Each line is `- `, then the `ref` and a space when there is one, then `[label] `
 
 - It replaces `<` with `‹` and `>` with `›` in each `text` and `label`, so a memory can't close or fake a tag.
 - It drops any memory whose `tier` isn't exactly `private` or `shared`, or whose `ref`, `id`, `text` or `label` breaks the limits above, and keeps the rest.
-- It drops every Private memory when its own layers already make the turn Shared (see [Who decides the tier](#who-decides-the-tier)), whatever the hub sent.
+- It drops every Private memory when its own layers already make the turn Shared (see [Who decides the tier](#who-decides-the-tier)), or when it doesn't know the turn's route (`route_source` `unknown`), whatever the hub sent.
 - It stops adding lines at `max_chars`.
 - When `held_back` isn't empty, it adds the line `(Private memories are not used in this chat: <held_back>.)` after the memories, with `<` and `>` replaced as above. With no memories at all there is no block, so no line either.
 - If the call fails, the turn gets no memories.
@@ -275,7 +275,7 @@ Gets back:
 
 When, with `event`:
 
-- `outside`: the first time a chat calls a tool that counts as outside content, from Hermes' `tool_request` middleware, so before the tool runs. The plugin waits for the answer (up to the timeout) before letting the tool run, so a later save in the same turn is seen as coming after outside content.
+- `outside`: the first time a chat calls a tool that counts as outside content, from Hermes' `tool_request` middleware, so before the tool runs. Hermes' Tool Search tools (`tool_search`, `tool_describe`, `tool_call`) don't count: they read only Hermes' own tool list, and the tool `tool_call` runs is judged by its own name. The plugin waits for the answer (up to the timeout) before letting the tool run, so a later save in the same turn is seen as coming after outside content.
 - `turn_end`: after every turn, from `sync_turn`. In the background.
 
 Sends:
@@ -303,8 +303,8 @@ Gets back: `{"protocol": 1, "ok": true}`. A failure is only logged: the next cal
 
 For each main chat request, the guard works out the tier like this:
 
-1. If the plugin's settings can't be read, **Shared**.
-2. If a local setting makes it Shared, **Shared**: `gateway` set to `shared`; the platform in `shared_platforms`; the route's host in `shared_hosts`; a `routes` entry for this route set to `shared`; or a provider that is always Shared (`moa`, whose requests the guard can't check).
+1. If the plugin's settings can't be read, **Shared**. A profile already in hub mode stays in it while they can't be read: the guard still blanks the hub's tool calls, `wl_turn` is removed from hub tool calls instead of filled in, and there is no `turn-start`, `context` or `verdict` until they can be read again.
+2. If a local setting makes it Shared, **Shared**: `gateway` set to `shared` (or left at its default on a hosted Hermes, which is Shared); the platform in `shared_platforms`; the route's host in `shared_hosts`; a `routes` entry for this route set to `shared`; or a provider that is always Shared (`moa`, whose requests the guard can't check).
 3. Otherwise, the hub's `verdict`: **Private** only if it says exactly `private`; anything else is **Shared**.
 
 Local settings that would make something Private (`private_hosts`, `private_platforms`, `routes` set to `private`, `venice_anonymized`, `gateway: private`) don't apply in hub mode: the hub decides that. `/memories settings` says so.
@@ -316,8 +316,12 @@ The same rules, with the believed route instead of the real one, decide whether 
 Everything the local guard does still applies (see the README's **The guard**). On a Shared route it also:
 
 - removes every `<wl-private …>…</wl-private>` span anywhere in the request, hub tool results included, exactly as [`tests/vectors/strip.json`](../tests/vectors/strip.json) specifies;
-- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`;
-- removes `wl_turn` from every replayed hub tool call.
+- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`, whatever its type (a list or object is replaced whole; only a `null` stays);
+- removes `wl_turn` from every replayed hub tool call;
+- does the same for hub tool calls made through Hermes' Tool Search bridge. Hermes 0.23.0 defers MCP tools behind `tool_search` by default, so the model calls them as `tool_call` with `{"calls": [{"name", "arguments"}]}` (or one `{"name", "arguments"}`), and history replays that call, not the hub tool's own. A `tool_call` whose arguments can't be read as JSON is replaced with `{"calls": []}`, since it's still the model's own words;
+- before the first `hello` has worked (so the hub's tools aren't known), blanks every argument of every tool on the hub's MCP server, as above.
+
+Hermes wraps an MCP tool's result in its own `<untrusted_tool_result>` note and gives the hub's text as JSON, so the tag arrives with escaped quotes (`<wl-private id=\"m_2\">`). The strip in `strip.json` handles that (its "inside a JSON tool result" case).
 
 If any of that fails, it falls back as the local guard does: remove whole memory blocks and every tagged span, and if even that fails, send a short notice instead of the conversation.
 
@@ -341,7 +345,7 @@ The rules from the earlier idea in #17 (another agent's saves and forgets wait f
 
 ## Test cases
 
-In [`tests/vectors/hub/`](../tests/vectors/hub/), as plain JSON both sides can run. `tests/test_hub_vectors.py` checks that the files are well formed; the hub client and fake hub in #17 will run them for real.
+In [`tests/vectors/hub/`](../tests/vectors/hub/), as plain JSON both sides can run. `tests/test_hub_vectors.py` checks that the files are well formed; `tests/test_hub.py` runs `answers.json`, `tiers.json` and `guard.json` against the plugin's hub client and `hub.json` against the fake hub.
 
 | File | Who runs it | What it pins down |
 | --- | --- | --- |
@@ -364,11 +368,11 @@ In [`tests/vectors/hub/`](../tests/vectors/hub/), as plain JSON both sides can r
 
 ## Open questions
 
-To check in the plugin work for #17, before building on them:
+Checked in the plugin work for #17 (2026-11-12):
 
-1. **The `tool_request` middleware from a memory provider.** Hermes 0.21.4 and 0.23.0 both have it, give it the session id, and let a memory provider register any middleware (the provider's context passes every `register_*` call on to a full plugin context). Checked in the source of both, not yet run.
-2. **Tool calls run in a batch.** Hermes can run several tool calls at once, so the `outside` report for a web fetch could reach the hub after a save in the same batch. A hub that decides writes at `turn_end` (rule 8 above) isn't affected. For a hub that doesn't, the plugin would need to see the model's tool calls before any of them runs.
-3. **The guard on older Hermes.** The `llm_request` middleware gets the same route details (provider, model, `base_url`, platform, session) in 0.21.4 as in 0.23.0 (`agent/turn_api_request.py`), checked in source. The guard itself has only run on 0.23.0.
+1. **The `tool_request` middleware from a memory provider: works.** In real Hermes runs (`e2e/run.py --hub-only`) on 0.23.0 and on 0.21.4, it ran for each hub tool call with the session id and the hub tool's own name, also for calls made through the `tool_call` bridge (the executor peels the bridge before middleware runs), and the hub got this turn's token in place of the one the model wrote. The `outside` report for a `read_file` reached the hub before a save later in the same turn. On 0.21.4 the plugin as a whole is skipped (it needs 0.23.0), but the memory provider still loads and its middleware runs.
+2. **Tool calls run in a batch** (still open). Hermes can run several tool calls at once, so the `outside` report for a web fetch could reach the hub after a save in the same batch. A hub that decides writes at `turn_end` (rule 8 above) isn't affected. For a hub that doesn't, the plugin would need to see the model's tool calls before any of them runs.
+3. **The guard on older Hermes: the middleware runs.** On 0.21.4 the `llm_request` middleware from a memory provider ran with the route details and the guard removed a tagged span on a Shared route. The rest of the e2e run (route switches with `/model`, `/memories` in `chat -q`) doesn't work on 0.21.4's command line, so the guard's behavior there is checked only that far.
 
 Left out of version 1:
 

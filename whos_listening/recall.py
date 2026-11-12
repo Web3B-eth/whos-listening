@@ -25,6 +25,8 @@ PRIVATE_WITHHELD = "[private memory withheld]"
 # A marker in an unusually large request string may hide text anywhere in it. Withhold the
 # whole string so a single malicious input cannot make the synchronous guard scan without bound.
 MAX_PRIVATE_SCAN_CHARS = 1_000_000
+BLOCK_HEADER = ("Things the user has asked you to remember (Who's Listening). "
+                "Use them when they help; do not repeat them back unprompted.")
 BLOCK_RE = re.compile(r"<whos-listening-memory>.*?(?:</whos-listening-memory>|\Z)", re.DOTALL)
 
 SMALL_STORE = 30       # up to this many memories, prefetch carries all of them
@@ -49,23 +51,23 @@ def format_line(m: Memory) -> str:
     return f"- {display_ref(m)} {_escape(m.text)}"
 
 
-def format_block(memories: Iterable[Memory], *, max_chars: int = MAX_BLOCK_CHARS) -> str:
-    lines, used = [], 0
-    for m in memories:
-        line = format_line(m)
+def block_of_lines(lines: Iterable[str], *, max_chars: int = MAX_BLOCK_CHARS, note: str = "") -> str:
+    """The memory block around ready-made lines, stopping at ``max_chars``. ``note`` goes after
+    the lines; with no lines there is no block, so no note either. Hub mode builds its lines in
+    hub.py and uses this too, so both modes send the same block."""
+    kept, used = [], 0
+    for line in lines:
         if used + len(line) > max_chars:
             break
-        lines.append(line)
+        kept.append(line)
         used += len(line) + 1
-    if not lines:
+    if not kept:
         return ""
-    return "\n".join([
-        BLOCK_OPEN,
-        "Things the user has asked you to remember (Who's Listening). "
-        "Use them when they help; do not repeat them back unprompted.",
-        *lines,
-        BLOCK_CLOSE,
-    ])
+    return "\n".join([BLOCK_OPEN, BLOCK_HEADER, *kept, *([note] if note else []), BLOCK_CLOSE])
+
+
+def format_block(memories: Iterable[Memory], *, max_chars: int = MAX_BLOCK_CHARS) -> str:
+    return block_of_lines((format_line(m) for m in memories), max_chars=max_chars)
 
 
 def allowed_tiers(route_tier: str) -> tuple[str, ...]:

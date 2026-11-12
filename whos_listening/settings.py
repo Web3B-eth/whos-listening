@@ -51,6 +51,8 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "private_hosts": ("private_hosts",),
     "shared_hosts": ("shared_hosts",),
     "routes": ("routes",),
+    "hub_url": ("hub", "url"),
+    "hub_mcp_server": ("hub", "mcp_server"),
 }
 _LISTS = {"private_platforms", "shared_platforms", "private_hosts", "shared_hosts"}
 
@@ -143,7 +145,7 @@ def _check(key: str, value: Any, where: str) -> None:
         return                          # the rest settings.json has always taken loosely
     if key == "sync_interval" and (isinstance(value, bool) or not isinstance(value, (int, float))):
         raise SettingsError(f'"{name}" in {where} must be a number of seconds')
-    if key in ("gateway", "review", "sync_repo", "sync_name") and not isinstance(value, str):
+    if key in ("gateway", "review", "sync_repo", "sync_name", "hub_url", "hub_mcp_server") and not isinstance(value, str):
         raise SettingsError(f'"{name}" in {where} must be text')
 
 
@@ -194,6 +196,9 @@ def load(sources: Sources) -> Settings:
             doc.pop(key)                            # "" or empty: not set
     if isinstance(doc.get("sync"), Mapping):
         doc["sync"] = dict(doc["sync"])     # (any other "sync" turns only sync off, as it always has)
+    if doc.get("hub") is not None and not isinstance(doc.get("hub"), Mapping):
+        raise SettingsError(f'"hub" in {FROM_FILE} must be an object, like {{"url": "https://…"}}')
+    doc["hub"] = dict(doc.get("hub") or {})
 
     hermes = {k: v for k, v in (sources.hermes or {}).items() if k in FIELDS and _is_set(k, v, FROM_HERMES)}
     for key, value in hermes.items():
@@ -207,8 +212,8 @@ def load(sources: Sources) -> Settings:
         path = FIELDS[key]
         dotted = ".".join(path)
         if len(path) == 2:
-            if isinstance(doc.get("sync"), dict):   # a broken "sync" in the file stays broken
-                doc["sync"][path[1]] = value
+            if isinstance(doc.get(path[0]), dict):   # a broken "sync" in the file stays broken
+                doc[path[0]][path[1]] = value
                 origin[dotted] = FROM_HERMES
             continue
         if key in _LISTS and origin.get(dotted) == FROM_FILE:
@@ -224,6 +229,14 @@ def load(sources: Sources) -> Settings:
         doc["routes"] = _routes(doc["routes"])
     if doc.get("sync") == {}:
         doc.pop("sync")
+    hub = {k: v for k, v in doc["hub"].items() if k in ("url", "mcp_server") and _is_set("hub_" + k, v, FROM_FILE)}
+    for k in ("url", "mcp_server"):
+        if k in hub and not isinstance(hub[k], str):
+            raise SettingsError(f'"hub.{k}" in {FROM_FILE} must be text')
+    if hub:
+        doc["hub"] = hub
+    else:
+        doc.pop("hub")
     for key in ("review", "duplicates", "duplicate_judge", "venice_anonymized", "tier_duplicates"):
         if key not in origin:
             doc.pop(key, None)
@@ -239,6 +252,13 @@ def route_settings(s: Settings) -> RouteSettings:
 
 def sync_settings(s: Settings) -> SyncSettings:
     return SyncSettings.from_dict(s.doc.get("sync"))
+
+
+def hub_settings(s: Settings) -> tuple[str, str]:
+    """``hub.url`` and ``hub.mcp_server`` ("" when not set). A ``hub.url`` turns hub mode on."""
+    hub = s.doc.get("hub") if isinstance(s.doc.get("hub"), Mapping) else {}
+    url, server = hub.get("url"), hub.get("mcp_server")
+    return (url.strip() if isinstance(url, str) else "", server.strip() if isinstance(server, str) else "")
 
 
 def snapshot_path(data_dir: Path) -> Path:
@@ -302,10 +322,24 @@ def describe(s: Settings, *, token_set: Optional[bool] = None, judge_off: str = 
         return f"{label}: {value}  ({o.get(key, FROM_DEFAULT)})"
 
     sync = d.get("sync") if isinstance(d.get("sync"), Mapping) else {}
+    hub_url, hub_server = hub_settings(s)
     rows = [
         "this machine: " + ("hosted, because " + s.hosted if s.hosted else
                             "not recognized as hosted (your own, as far as Who's Listening can tell)"),
         line("gateway", "gateway", d.get("gateway")),
+    ]
+    if hub_url:
+        # Review, duplicates, Venice's anonymized models and sync are local mode's: the hub keeps the memories.
+        rows.append(line("hub", "hub.url", hub_url))
+        rows.append(line("hub MCP server", "hub.mcp_server", hub_server or "(the one with the hub's host)"))
+        for key in ("shared_platforms", "shared_hosts"):
+            if d.get(key):
+                rows.append(line(key, key, ", ".join(d[key])))
+        shared = sorted(k for k, v in (d.get("routes") or {}).items() if v == "shared")
+        if shared:
+            rows.append(line("routes set to shared", "routes", ", ".join(shared)))
+        return "\n".join(rows)
+    rows += [
         line("review", "review", d.get("review") or "auto"),
         line("near-duplicates", "duplicates", d.get("duplicates") or "skip"),
         line("duplicate judge", "duplicate_judge", d.get("duplicate_judge") or "clef")

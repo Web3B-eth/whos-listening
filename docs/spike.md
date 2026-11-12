@@ -52,3 +52,12 @@ Before building on them, we checked three assumptions about Hermes against **Her
 6. **README limits** must say: side calls (titles and similar) are not filtered; what the assistant already said about a Private memory stays in the chat history and can reach a Shared model later; another plugin's middleware could undo our change; and Auto-review needs the default in-process mode.
 
 Possible upstream asks (not sent; need the owner's OK): let memory providers use `ctx.llm`, include the route (`provider`, `model`, `base_url`) in `on_turn_start` or `prefetch`, and make `llm_request` middleware errors fail closed.
+
+## Hub mode checks (2026-11-12)
+
+For hub mode ([`hub-protocol.md`](hub-protocol.md)) we also needed `tool_request` middleware from a memory provider. `e2e/run.py --hub-only` runs real Hermes against the fake hub, with the hub's memory tools as a stdio MCP server, on **Hermes 0.23.0** (`v0.23.0`) and **Hermes 0.21.4** (tag `v2026.9.21`):
+
+- **`tool_request` from a memory provider works on both.** `ctx.register_middleware("tool_request", fn)` from the provider's `register(ctx)` ran before each tool call with `tool_name`, `args` and `session_id` (no platform), and a returned `{"args": …}` replaced what the tool got.
+- **MCP tools sit behind tool search.** Hermes 0.23.0 defers MCP tools behind `tool_search` / `tool_describe` / `tool_call` by default; a direct call to `mcp__<server>__<tool>` fails with "does not exist". The model calls `tool_call`. The executor peels that bridge before middleware runs, so `tool_request` (and `post_tool_call`) see the hub tool's own name; but the transcript, and so every replayed request, keeps the `tool_call` wrapper, which the guard has to look inside.
+- **MCP results arrive wrapped.** Hermes puts an MCP tool's result inside an `<untrusted_tool_result>` note, as JSON (`{"result": "…"}`), so a tag in it arrives with escaped quotes. The strip handles that.
+- **On 0.21.4 the plugin is skipped but the provider loads.** General plugin discovery skips whos-listening there (it asks for 0.23.0), so `/memories` doesn't exist; the memory loader still loads the provider, and its `llm_request` and `tool_request` middleware run. Each `hermes chat -q` there runs in its own process (no background gateway), and `/model` in a resumed `-q` chat doesn't switch the route, so only the hub calls, the turn token, the outside report and the unreachable-hub checks could run.

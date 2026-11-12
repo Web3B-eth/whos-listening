@@ -44,8 +44,13 @@ RULES: tuple[tuple[re.Pattern, str], ...] = (
 # Tools whose results are not outside content: ours, and Hermes' own bookkeeping tools.
 # Hermes' skill tools read skills installed on this gateway (by the user, or bundled with Hermes),
 # not content from outside, so loading a skill doesn't make a chat's saves wait.
+# Hermes' Tool Search bridge (tool_search, tool_describe, tool_call) reads only Hermes' own tool
+# catalog, the same tool descriptions a chat without deferred tools has in its prompt. Hermes peels
+# tool_call before the tool hooks run, so the tool inside it is still judged on its own name.
+BRIDGE_TOOLS = frozenset({"tool_search", "tool_describe", "tool_call"})
 TRUSTED_TOOLS = frozenset({"whos-listening_remember", "whos-listening_recall", "whos-listening_forget",
-                           "whos-listening_review", "todo", "todo_list", "clarify", "skills_list", "skill_view"})
+                           "whos-listening_review", "todo", "todo_list", "clarify", "skills_list", "skill_view",
+                           *BRIDGE_TOOLS})
 
 REVIEW_MODES = ("ask", "auto")      # "auto" is Auto-review (see autoreview.py)
 
