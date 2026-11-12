@@ -1,0 +1,78 @@
+{
+  "about": "The tier the guard applies in hub mode: the plugin's settings, the request's platform and real route, and the hub's verdict (private, shared, or failed for no usable answer). settings is a settings.json object, or \"unreadable\". All data is made up.",
+  "cases": [
+    {
+      "name": "the hub says private",
+      "settings": {}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "private"
+    },
+    {
+      "name": "the hub says shared",
+      "settings": {}, "platform": "desktop",
+      "route": {"provider": "nous", "model": "openai/gpt-6.1-terra", "base_url": "https://inference-api.nousresearch.com/v1"},
+      "hub": "shared", "tier": "shared"
+    },
+    {
+      "name": "no answer from the hub",
+      "settings": {}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "failed", "tier": "shared"
+    },
+    {
+      "name": "the settings can't be read",
+      "settings": "unreadable", "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "local gateway setting is shared",
+      "settings": {"gateway": "shared"}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "the platform is in shared_platforms",
+      "settings": {"shared_platforms": ["desktop"]}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "the host is in shared_hosts",
+      "settings": {"shared_hosts": ["venice.ai"]}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "a routes entry says shared",
+      "settings": {"routes": {"*/grok-4-5": "shared"}}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "mixture of agents is always shared",
+      "settings": {}, "platform": "desktop",
+      "route": {"provider": "moa", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "shared"
+    },
+    {
+      "name": "local settings can't make a hub shared verdict private",
+      "settings": {
+        "gateway": "private",
+        "private_platforms": ["telegram"],
+        "private_hosts": ["inference-api.nousresearch.com"],
+        "routes": {"nous/openai/gpt-6.1-terra": "private"},
+        "venice_anonymized": "private"
+      },
+      "platform": "telegram",
+      "route": {"provider": "nous", "model": "openai/gpt-6.1-terra", "base_url": "https://inference-api.nousresearch.com/v1"},
+      "hub": "shared", "tier": "shared"
+    },
+    {
+      "name": "a local routes entry for another model doesn't apply",
+      "settings": {"routes": {"*/glm-5.3-flash": "shared"}}, "platform": "desktop",
+      "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+      "hub": "private", "tier": "private"
+    }
+  ]
+}

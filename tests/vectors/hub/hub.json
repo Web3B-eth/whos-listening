@@ -1,0 +1,161 @@
+{
+  "about": "Cases a hub must pass. Each case starts from the memories in given, runs its steps in order, and checks each step's must. A step is one protocol call (call and request, with headers when they matter; otherwise the right token is sent) or a hub tool call made over MCP (call \"tool\", with tool and args). \"{turn_token}\" stands for the token the hub gave in the case's last turn-start; a step with keep_token_as: NAME also keeps its token as \"{NAME}\". must keys: status and error (the answer's HTTP status and error code); no_private (no memory with tier private in a context answer); held_back_set (held_back is not empty); tier (a verdict's tier); private_text_after_strip (false: after the strip in tests/vectors/strip.json, no Private memory's text is left in the tool result); private_text (false: no Private memory's text is in the tool result at all, tagged or not); handled_as (how the hub must treat a write: its route tier and whether the chat read outside content). level is required unless it says recommended. All data is made up.",
+  "token": "hub-token-for-tests-only",
+  "given": {
+    "memories": [
+      {"ref": "P2", "id": "m_2", "tier": "private", "text": "Sister Dana is vegetarian"},
+      {"ref": "P7", "id": "m_7", "tier": "private", "text": "Takes <5 mg> of something & says \"hi\""},
+      {"ref": "S1", "id": "m_9", "tier": "shared", "text": "Likes spicy food"}
+    ],
+    "trusted": {
+      "platforms": ["cli", "tui", "desktop", "local"],
+      "routes": [{"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}]
+    }
+  },
+  "cases": [
+    {
+      "name": "no token",
+      "steps": [{"call": "verdict", "headers": {},
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+        "must": {"status": 401, "error": "unauthorized"}}]
+    },
+    {
+      "name": "a wrong token",
+      "steps": [{"call": "verdict", "headers": {"Authorization": "Bearer not-the-token"},
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+        "must": {"status": 401, "error": "unauthorized"}}]
+    },
+    {
+      "name": "another protocol version",
+      "steps": [{"call": "verdict",
+        "request": {"protocol": 2, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+        "must": {"status": 400, "error": "unsupported_protocol"}}]
+    },
+    {
+      "name": "a trusted platform and route may be private",
+      "steps": [{"call": "verdict",
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+        "must": {"status": 200, "tier": "private"}}]
+    },
+    {
+      "name": "an unknown host is shared",
+      "steps": [{"call": "verdict",
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "some-model", "base_url": "https://llm.example.com/v1"}},
+        "must": {"status": 200, "tier": "shared"}}]
+    },
+    {
+      "name": "an empty platform is shared",
+      "steps": [{"call": "verdict",
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+        "must": {"status": 200, "tier": "shared"}}]
+    },
+    {
+      "name": "an untrusted compression route makes the main route shared",
+      "level": "recommended",
+      "steps": [
+        {"call": "hello",
+          "request": {"protocol": 1, "plugin": {"name": "whos-listening", "version": "0.2.0"}, "hermes": {"version": "0.23.0", "isolation": "in_process"},
+            "gateway": {"name": "laptop", "hosted": false, "hosted_why": "", "setting": null},
+            "routes": [
+              {"role": "main", "provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"},
+              {"role": "compression", "provider": "custom", "model": "some-model", "base_url": "https://llm.example.com/v1"}
+            ]},
+          "must": {"status": 200}},
+        {"call": "verdict",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}},
+          "must": {"status": 200, "tier": "shared"}}
+      ]
+    },
+    {
+      "name": "context with an unknown route has no Private memories, and says why",
+      "steps": [{"call": "context",
+        "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "1", "id": ""},
+          "route": null, "route_source": "unknown", "query": "Dinner ideas for my sister?", "max_chars": 4000},
+        "must": {"status": 200, "no_private": true, "held_back_set": true}}]
+    },
+    {
+      "name": "context on Telegram has no Private memories, and says why",
+      "steps": [{"call": "context",
+        "request": {"protocol": 1, "session": {"id": "s2", "platform": "telegram", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "2", "id": ""},
+          "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request", "query": "Dinner ideas for my sister?", "max_chars": 4000},
+        "must": {"status": 200, "no_private": true, "held_back_set": true}}]
+    },
+    {
+      "name": "a tool result with Private text is fully tagged, odd characters included",
+      "steps": [
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "3", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request"},
+          "must": {"status": 200}},
+        {"call": "tool", "tool": "memory_search", "args": {"query": "Takes 5 mg", "wl_turn": "{turn_token}"},
+          "must": {"private_text_after_strip": false}}
+      ]
+    },
+    {
+      "name": "a tool call without a token gets no Private text at all",
+      "steps": [{"call": "tool", "tool": "memory_search", "args": {"query": "sister"},
+        "must": {"private_text": false}}]
+    },
+    {
+      "name": "a tool call with a made-up token gets no Private text at all",
+      "steps": [{"call": "tool", "tool": "memory_search", "args": {"query": "sister", "wl_turn": "tt_madeUpToken1"},
+        "must": {"private_text": false}}]
+    },
+    {
+      "name": "a token stops working at the session's next turn-start",
+      "steps": [
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "3", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request"},
+          "must": {"status": 200}, "keep_token_as": "old"},
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "4", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request"},
+          "must": {"status": 200}},
+        {"call": "tool", "tool": "memory_search", "args": {"query": "sister", "wl_turn": "{old}"},
+          "must": {"private_text": false}}
+      ]
+    },
+    {
+      "name": "a save without a token is handled as from a Shared chat after outside content",
+      "steps": [{"call": "tool", "tool": "memory_save", "args": {"text": "Likes long walks"},
+        "must": {"handled_as": {"route": "shared", "outside_content": true}}}]
+    },
+    {
+      "name": "a save after an outside report is handled as after outside content",
+      "steps": [
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "3", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request"},
+          "must": {"status": 200}},
+        {"call": "turn-report",
+          "request": {"protocol": 1, "event": "outside", "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": "web_extract"}, "turn": {"number": "3", "id": ""}, "outside_tools": ["web_extract"]},
+          "must": {"status": 200}},
+        {"call": "tool", "tool": "memory_save", "args": {"text": "Likes long walks", "wl_turn": "{turn_token}"},
+          "must": {"handled_as": {"route": "private", "outside_content": true}}}
+      ]
+    },
+    {
+      "name": "a lost outside report is repaired by the next call's session",
+      "steps": [
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s1", "platform": "desktop", "agent_context": "primary", "outside_tool": "web_extract"}, "turn": {"number": "4", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "last_request"},
+          "must": {"status": 200}},
+        {"call": "tool", "tool": "memory_save", "args": {"text": "Likes long walks", "wl_turn": "{turn_token}"},
+          "must": {"handled_as": {"route": "private", "outside_content": true}}}
+      ]
+    },
+    {
+      "name": "a save in a chat with no outside content",
+      "steps": [
+        {"call": "turn-start",
+          "request": {"protocol": 1, "session": {"id": "s3", "platform": "desktop", "agent_context": "primary", "outside_tool": ""}, "turn": {"number": "1", "id": ""},
+            "route": {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}, "route_source": "config_default"},
+          "must": {"status": 200}},
+        {"call": "tool", "tool": "memory_save", "args": {"text": "Likes long walks", "wl_turn": "{turn_token}"},
+          "must": {"handled_as": {"route": "private", "outside_content": false}}}
+      ]
+    }
+  ]
+}

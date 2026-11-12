@@ -263,6 +263,8 @@ Add `--hermes PATH` to use another Hermes build.
 
 Shared test cases (routes, stripping, tombstone matching) live as JSON in [`tests/vectors/`](tests/vectors/).
 
+Hub mode, a planned second way to run with memories kept in a central backend, isn't built yet. Its protocol draft and test cases are in [`docs/hub-protocol.md`](docs/hub-protocol.md).
+
 The Hermes checks scan every file under the folder you give them, so run them on a clean copy of the tracked files (not a checkout with ignored folders such as `.local/`):
 
 ```bash

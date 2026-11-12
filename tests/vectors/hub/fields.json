@@ -1,0 +1,118 @@
+{
+  "about": "Fields of each hub call, for docs/hub-protocol.md. A type is one of string, integer, boolean, object, array, null, or several joined by |. A name starting with $ is one of the objects below; [$name] is a list of them. Unknown fields are allowed everywhere and ignored.",
+  "objects": {
+    "session": {
+      "required": {"id": "string", "platform": "string", "agent_context": "string", "outside_tool": "string"},
+      "optional": {}
+    },
+    "route": {
+      "required": {"provider": "string", "model": "string", "base_url": "string"},
+      "optional": {}
+    },
+    "config_route": {
+      "required": {"role": "string", "provider": "string", "model": "string", "base_url": "string"},
+      "optional": {"name": "string"}
+    },
+    "turn": {
+      "required": {"number": "string", "id": "string"},
+      "optional": {}
+    },
+    "plugin": {
+      "required": {"name": "string", "version": "string"},
+      "optional": {}
+    },
+    "hermes": {
+      "required": {"version": "string", "isolation": "string"},
+      "optional": {}
+    },
+    "gateway": {
+      "required": {"name": "string", "hosted": "boolean", "hosted_why": "string", "setting": "string|null"},
+      "optional": {}
+    },
+    "hub": {
+      "required": {"name": "string"},
+      "optional": {}
+    },
+    "tool": {
+      "required": {"name": "string", "outside_content": "boolean", "redact_args": "array"},
+      "optional": {}
+    },
+    "message": {
+      "required": {"text": "string", "author_id": "string", "author_is_bot": "boolean"},
+      "optional": {}
+    },
+    "memory": {
+      "required": {"ref": "string", "id": "string", "tier": "string", "text": "string"},
+      "optional": {"label": "string"}
+    },
+    "request_entry": {
+      "required": {"route": "$route", "tier": "string", "tier_source": "string"},
+      "optional": {}
+    }
+  },
+  "error": {
+    "required": {"protocol": "integer", "ok": "boolean", "error": "string"},
+    "optional": {"message": "string"}
+  },
+  "calls": {
+    "hello": {
+      "request": {
+        "required": {"protocol": "integer", "plugin": "$plugin", "hermes": "$hermes", "gateway": "$gateway", "routes": "[$config_route]"},
+        "optional": {}
+      },
+      "response": {
+        "required": {"protocol": "integer", "ok": "boolean", "hub": "$hub", "tools": "[$tool]"},
+        "optional": {"server_outside_content": "boolean", "verdict_ttl_seconds": "integer", "hello_interval_seconds": "integer", "wants_user_messages": "boolean"}
+      }
+    },
+    "turn-start": {
+      "request": {
+        "required": {"protocol": "integer", "session": "$session", "turn": "$turn", "route": "$route|null", "route_source": "string"},
+        "optional": {"message": "$message"}
+      },
+      "response": {
+        "required": {"protocol": "integer", "ok": "boolean"},
+        "optional": {"turn_token": "string", "token_ttl_seconds": "integer"}
+      }
+    },
+    "context": {
+      "request": {
+        "required": {"protocol": "integer", "session": "$session", "turn": "$turn", "route": "$route|null", "route_source": "string", "query": "string", "max_chars": "integer"},
+        "optional": {}
+      },
+      "response": {
+        "required": {"protocol": "integer", "ok": "boolean", "memories": "[$memory]", "held_back": "string"},
+        "optional": {}
+      }
+    },
+    "verdict": {
+      "request": {
+        "required": {"protocol": "integer", "session": "$session", "route": "$route"},
+        "optional": {}
+      },
+      "response": {
+        "required": {"protocol": "integer", "ok": "boolean", "tier": "string", "reason": "string"},
+        "optional": {}
+      }
+    },
+    "turn-report": {
+      "request": {
+        "required": {"protocol": "integer", "event": "string", "session": "$session", "turn": "$turn", "outside_tools": "array"},
+        "optional": {"requests": "[$request_entry]"}
+      },
+      "response": {
+        "required": {"protocol": "integer", "ok": "boolean"},
+        "optional": {}
+      }
+    }
+  },
+  "values": {
+    "route_source": ["last_request", "config_default", "unknown"],
+    "event": ["outside", "turn_end"],
+    "tier": ["private", "shared"],
+    "tier_source": ["hub", "kept", "local", "failed"],
+    "role": ["main", "fallback", "compression", "auxiliary"],
+    "isolation": ["in_process", "host"],
+    "error": ["unauthorized", "unsupported_protocol", "bad_request", "not_ready"]
+  }
+}
