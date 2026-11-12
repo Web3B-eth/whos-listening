@@ -321,6 +321,8 @@ Everything the local guard does still applies (see the README's **The guard**). 
 
 If any of that fails, it falls back as the local guard does: remove whole memory blocks and every tagged span, and if even that fails, send a short notice instead of the conversation.
 
+**A chat moved to a Shared model on purpose** (decided by B, 2026-11-11). A hub may warn the user before a chat that already used Private memories goes to a Shared model. In hub mode the earlier Private memories never go with it: the guard cleans every request on a Shared route, warning or not, and no verdict field allows them for one session. The warning can say the earlier Private memories will be left out.
+
 ## What the hub must do
 
 These are the hub's side of the agreement. `tests/vectors/hub/hub.json` has cases for them.
@@ -367,10 +369,6 @@ To check in the plugin work for #17, before building on them:
 1. **The `tool_request` middleware from a memory provider.** Hermes 0.21.4 and 0.23.0 both have it, give it the session id, and let a memory provider register any middleware (the provider's context passes every `register_*` call on to a full plugin context). Checked in the source of both, not yet run.
 2. **Tool calls run in a batch.** Hermes can run several tool calls at once, so the `outside` report for a web fetch could reach the hub after a save in the same batch. A hub that decides writes at `turn_end` (rule 8 above) isn't affected. For a hub that doesn't, the plugin would need to see the model's tool calls before any of them runs.
 3. **The guard on older Hermes.** The `llm_request` middleware gets the same route details (provider, model, `base_url`, platform, session) in 0.21.4 as in 0.23.0 (`agent/turn_api_request.py`), checked in source. The guard itself has only run on 0.23.0.
-
-For the user:
-
-4. **A chat the user knowingly moves to a Shared model.** A hub may let the user send a chat that already used Private memories to a Shared model after a warning, accepting that the earlier memories go with it. In hub mode the guard removes them anyway, because every request on a Shared route is cleaned. Version 1 keeps it that way: the warning can then say the earlier Private memories will be left out. A later version could add a verdict field to allow them for one session, if that is wanted.
 
 Left out of version 1:
 
