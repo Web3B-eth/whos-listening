@@ -128,8 +128,8 @@ def test_the_form_declares_every_hermes_setting():
     text = (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text()
     schema = text.split("config_schema:", 1)[1]
     keys = set(re.findall(r"^  ([a-z_]+):\s*$", schema, re.M))
-    assert keys == set(ws.FIELDS) | {"sync_token"}
-    assert "env: WHOS_LISTENING_SYNC_TOKEN" in schema
+    assert keys == set(ws.FIELDS) | {"sync_token", "hub_token"}
+    assert "env: WHOS_LISTENING_SYNC_TOKEN" in schema and "env: WHOS_LISTENING_HUB_TOKEN" in schema
 
 
 # -- review findings ------------------------------------------------------------------------

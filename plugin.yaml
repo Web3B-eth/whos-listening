@@ -11,9 +11,13 @@ provides_hooks:
   - post_tool_call
 provides_middleware:
   - llm_request
+  - tool_request
 optional_env:
   - name: WHOS_LISTENING_SYNC_TOKEN
     description: "Only for sync between gateways: a GitHub fine-grained token with read and write access to the contents of one private repository (see the README, Sync between gateways)."
+    password: true
+  - name: WHOS_LISTENING_HUB_TOKEN
+    description: "Only for hub mode: the token Who's Listening sends to your hub. If it isn't set, the bearer token of the hub's MCP server entry is used."
     password: true
 # The settings form in Hermes Desktop (Settings → Plugins), for whichever gateway Desktop is
 # connected to. A value set here wins over settings.json; "default" or an empty field means
@@ -86,3 +90,16 @@ config_schema:
     type: dict
     label: "Routes"
     description: "Private or shared by provider/model, */model or provider, as a JSON object. Example: {\"nous/gpt-6-luna\": \"private\", \"openrouter\": \"shared\"}. Combined with settings.json's (shared wins where they disagree); {} for none."
+  hub_url:
+    type: str
+    label: "Hub address"
+    description: "Hub mode: keep memories in a hub (a backend of your own that serves memory tools over MCP) instead of on this gateway. Its base address, such as https://hub.example.com/whos-listening/v1 (https://, or http:// on 127.0.0.1 or localhost). Setting it turns hub mode on: the hub stores the memories and decides what is Private, and this plugin keeps the guard. Empty: local mode."
+  hub_mcp_server:
+    type: str
+    label: "Hub MCP server"
+    description: "Hub mode: the name of the hub's MCP server in Hermes' mcp_servers config. Empty: the one MCP server whose address has the hub's host."
+  hub_token:
+    type: secret
+    env: WHOS_LISTENING_HUB_TOKEN
+    label: "Hub token"
+    description: "Hub mode: the token Who's Listening sends to the hub. Empty: the bearer token of the hub's MCP server entry."

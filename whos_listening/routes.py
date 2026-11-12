@@ -350,6 +350,10 @@ def side_call_routes_private(config: Any, settings: Optional[RouteSettings] = No
     return Verdict(PRIVATE, "the chat's route and every fallback are private")
 
 
+BELIEF_LAST = "last request in this session"
+BELIEF_CONFIG = "config.yaml default route"
+
+
 class RouteBook:
     """What each session's route is believed to be, from the hooks we see.
 
@@ -409,10 +413,10 @@ class RouteBook:
             turn_model = self._turn_model.get(session_id)
             guard_ran = self._guard_ran
         if seen is not None and (turn_model is None or turn_model == seen.model):
-            return seen, "last request in this session"
+            return seen, BELIEF_LAST
         if seen is None and not guard_ran:
             return None, "the guard has not run yet"
         if seen is None and config_default is not None and turn_model is not None \
                 and config_default.model and turn_model == config_default.model:
-            return config_default, "config.yaml default route"
+            return config_default, BELIEF_CONFIG
         return None, "route not known yet"

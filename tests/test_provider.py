@@ -79,7 +79,7 @@ def test_register_wires_provider_and_hooks(entry):
 
     entry.register(Ctx())
     assert calls == [("provider", "whos-listening"), ("hook", "pre_llm_call"), ("hook", "post_tool_call"),
-                     ("middleware", "llm_request"), ("command", "memories")]
+                     ("middleware", "llm_request"), ("middleware", "tool_request"), ("command", "memories")]
 
 
 def test_store_lives_in_profile_home(provider, tmp_path):

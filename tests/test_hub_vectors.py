@@ -1,9 +1,9 @@
 """Check the hub protocol's test cases in tests/vectors/hub/ are well formed.
 
-Hub mode isn't built yet (docs/hub-protocol.md). These tests only keep the case files
-consistent with the doc, with each other and with the local code they share (the memory
-block's header and the strip in recall.py). The hub client and fake hub will run the cases
-for real. All data is made up.
+These tests only keep the case files consistent with the doc (docs/hub-protocol.md), with
+each other and with the local code they share (the memory block's header and the strip in
+recall.py). tests/test_hub.py runs the cases for real, against the hub client and the fake
+hub. All data is made up.
 """
 
 import json
