@@ -88,7 +88,7 @@ The user also adds the hub's MCP server to Hermes, as for any MCP server. Hermes
 {"provider": "custom", "model": "grok-4-5", "base_url": "https://api.venice.ai/api/v1"}
 ```
 
-The plugin removes any user name, password, query and fragment from `base_url` before sending it. Named custom endpoints show up as provider `custom` in Hermes 0.23.0, so the host in `base_url` is what tells routes apart.
+The plugin removes any user name, password, query and fragment from `base_url` before sending it. Named custom endpoints show up as provider `custom` in Hermes 0.23.0, so the host in `base_url` is what tells routes apart. The plugin names them `custom` everywhere it sends a route, also in `hello` and for a route taken from `config.yaml` (where the endpoint has its own name), so a hub sees one name for one endpoint. Match routes on model and host.
 
 **`turn`**:
 
@@ -275,7 +275,7 @@ Gets back:
 
 When, with `event`:
 
-- `outside`: the first time a chat calls a tool that counts as outside content, from Hermes' `tool_request` middleware, so before the tool runs. The plugin waits for the answer (up to the timeout) before letting the tool run, so a later save in the same turn is seen as coming after outside content.
+- `outside`: the first time a chat calls a tool that counts as outside content, from Hermes' `tool_request` middleware, so before the tool runs. Hermes' Tool Search tools (`tool_search`, `tool_describe`, `tool_call`) don't count: they read only Hermes' own tool list, and the tool `tool_call` runs is judged by its own name. The plugin waits for the answer (up to the timeout) before letting the tool run, so a later save in the same turn is seen as coming after outside content.
 - `turn_end`: after every turn, from `sync_turn`. In the background.
 
 Sends:
@@ -303,7 +303,7 @@ Gets back: `{"protocol": 1, "ok": true}`. A failure is only logged: the next cal
 
 For each main chat request, the guard works out the tier like this:
 
-1. If the plugin's settings can't be read, **Shared**.
+1. If the plugin's settings can't be read, **Shared**. A profile already in hub mode stays in it while they can't be read: the guard still blanks the hub's tool calls, `wl_turn` is removed from hub tool calls instead of filled in, and there is no `turn-start`, `context` or `verdict` until they can be read again.
 2. If a local setting makes it Shared, **Shared**: `gateway` set to `shared` (or left at its default on a hosted Hermes, which is Shared); the platform in `shared_platforms`; the route's host in `shared_hosts`; a `routes` entry for this route set to `shared`; or a provider that is always Shared (`moa`, whose requests the guard can't check).
 3. Otherwise, the hub's `verdict`: **Private** only if it says exactly `private`; anything else is **Shared**.
 
@@ -316,10 +316,10 @@ The same rules, with the believed route instead of the real one, decide whether 
 Everything the local guard does still applies (see the README's **The guard**). On a Shared route it also:
 
 - removes every `<wl-private …>…</wl-private>` span anywhere in the request, hub tool results included, exactly as [`tests/vectors/strip.json`](../tests/vectors/strip.json) specifies;
-- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`;
+- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`, whatever its type (a list or object is replaced whole; only a `null` stays);
 - removes `wl_turn` from every replayed hub tool call;
-- does the same for hub tool calls made through Hermes' Tool Search bridge. Hermes 0.23.0 defers MCP tools behind `tool_search` by default, so the model calls them as `tool_call` with `{"calls": [{"name", "arguments"}]}` (or one `{"name", "arguments"}`), and history replays that call, not the hub tool's own;
-- before the first `hello` has worked (so the hub's tools aren't known), blanks every string argument of every tool on the hub's MCP server.
+- does the same for hub tool calls made through Hermes' Tool Search bridge. Hermes 0.23.0 defers MCP tools behind `tool_search` by default, so the model calls them as `tool_call` with `{"calls": [{"name", "arguments"}]}` (or one `{"name", "arguments"}`), and history replays that call, not the hub tool's own. A `tool_call` whose arguments can't be read as JSON is replaced with `{"calls": []}`, since it's still the model's own words;
+- before the first `hello` has worked (so the hub's tools aren't known), blanks every argument of every tool on the hub's MCP server, as above.
 
 Hermes wraps an MCP tool's result in its own `<untrusted_tool_result>` note and gives the hub's text as JSON, so the tag arrives with escaped quotes (`<wl-private id=\"m_2\">`). The strip in `strip.json` handles that (its "inside a JSON tool result" case).
 

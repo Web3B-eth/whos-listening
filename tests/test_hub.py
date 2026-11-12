@@ -12,7 +12,7 @@ import pytest
 
 from whos_listening import guard, hub
 from whos_listening.recall import strip_private
-from whos_listening.routes import Route, RouteSettings
+from whos_listening.routes import Route, RouteSettings, default_route_from_config
 
 ROOT = Path(__file__).resolve().parent.parent
 HUB = ROOT / "tests" / "vectors" / "hub"
@@ -234,14 +234,58 @@ def test_guard_cases(case):
 
 
 def test_guard_before_hello_blanks_every_hub_server_argument():
+    nested = json.dumps({"facts": [{"text": "Walked to the physio"}], "minutes": 40, "wl_turn": "tt_9QmV2c"})
     req = {"model": "m", "messages": [{"role": "assistant", "content": None, "tool_calls": [
         {"id": "c1", "type": "function", "function": {"name": "mcp__hub__log_walk",
                                                       "arguments": '{"note": "Walked to the physio", "minutes": 40, "wl_turn": "tt_9QmV2c"}'}},
-        {"id": "c2", "type": "function", "function": {"name": "web_search", "arguments": '{"query": "x"}'}}]}]}
+        {"id": "c2", "type": "function", "function": {"name": "web_search", "arguments": '{"query": "x"}'}},
+        {"id": "c3", "type": "function", "function": {"name": "mcp__hub__log_walk", "arguments": nested}}]}]}
     out = guard.guard_request(req, "shared", None, hub.mcp_server_prefix("hub"))
     calls = out["messages"][0]["tool_calls"]
-    assert json.loads(calls[0]["function"]["arguments"]) == {"note": guard.WITHHELD, "minutes": 40}
+    W = guard.WITHHELD
+    assert json.loads(calls[0]["function"]["arguments"]) == {"note": W, "minutes": W}   # every argument
     assert calls[1] == req["messages"][0]["tool_calls"][1]
+    assert json.loads(calls[2]["function"]["arguments"]) == {"facts": W, "minutes": W}   # nested ones too
+    assert "physio" not in json.dumps(out)
+
+
+def test_guard_blanks_redact_args_of_any_type():
+    W = guard.WITHHELD
+    for value in (["Walked to the physio"], {"text": "Walked to the physio"}, 40, True):
+        args = json.dumps({"text": value, "tier": "private", "reason": None, "wl_turn": "tt_9QmV2c"})
+        req = {"model": "m", "messages": [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "mcp__hub__memory_save", "arguments": args}}]}]}
+        out = guard.guard_request(req, "shared", HELLO.redactions())
+        assert json.loads(out["messages"][0]["tool_calls"][0]["function"]["arguments"]) == {
+            "text": W, "tier": "private", "reason": None}
+
+
+def test_guard_withholds_bridged_calls_it_cant_read():
+    """A bridged call whose arguments don't parse is still the model's own words."""
+    broken = [
+        '{"calls": [{"name": "mcp__hub__memory_save", "arguments": {"text": "Walked to the physio"}}',   # cut off
+        '{"name": "whos-listening_remember", "arguments": {"text": "Walked to the physio"',
+        'Walked to the physio',
+    ]
+    for raw in broken:
+        for shape in ("function", "responses", "anthropic"):
+            if shape == "function":
+                msg = {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": raw}}]}
+            elif shape == "responses":
+                msg = {"type": "function_call", "call_id": "c1", "name": "tool_call", "arguments": raw}
+            else:
+                msg = {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "tool_call",
+                                                         "input": {"calls": raw}}]}
+            req = {"model": "m", "messages": [msg]}
+            for tools, prefix in ((HELLO.redactions(), ""), (None, hub.mcp_server_prefix("hub")), (None, "")):
+                out = guard.guard_request(req, "shared", tools, prefix)
+                assert "physio" not in json.dumps(out), (raw, shape, prefix)
+    # Readable bridged calls to other tools keep their arguments.
+    ok = json.dumps({"calls": [{"name": "web_search", "arguments": {"query": "weather"}}]})
+    req = {"model": "m", "messages": [{"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": ok}}]}]}
+    assert guard.guard_request(req, "shared", HELLO.redactions()) is None            # nothing to change
 
 
 def test_guard_hub_arguments_that_cant_be_read():
@@ -359,6 +403,29 @@ def test_hello_routes_from_config():
         {"role": "compression", "provider": "auto", "model": "", "base_url": ""},
         {"role": "auxiliary", "name": "title_generation", "provider": "auto", "model": "", "base_url": ""}]
     assert "not-sent" not in json.dumps(routes)
+
+
+def test_named_custom_endpoints_are_provider_custom_as_hermes_reports_them():
+    """hello and the config default name a custom endpoint the way llm_request does: "custom"."""
+    venice = "https://api.venice.ai/api/v1"
+    for config in (
+        {"model": {"provider": "api-venice-ai", "default": "grok-4-5", "base_url": venice},     # base_url on model
+         "providers": {"api-venice-ai": {"base_url": venice}}},
+        {"model": {"provider": "Venice Private", "default": "grok-4-5"},                       # legacy list form
+         "custom_providers": [{"name": "Venice Private", "base_url": venice}]},
+        {"model": {"provider": "custom:api-venice-ai", "default": "grok-4-5", "base_url": venice}},
+    ):
+        assert hub.hello_routes(config)[0] == {"role": "main", "provider": "custom", "model": "grok-4-5",
+                                               "base_url": venice}
+        assert default_route_from_config(config) == Route("custom", "grok-4-5", venice)
+    fallback = {"model": {"provider": "nous", "default": "x"}, "providers": {"my-venice": {"base_url": venice}},
+                "fallback_providers": [{"provider": "my-venice", "model": "grok-4-5", "base_url": venice}],
+                "auxiliary": {"compression": {"provider": "my-venice", "model": "grok-4-5"}}}
+    routes = hub.hello_routes(fallback)
+    assert routes[1]["provider"] == "custom" and routes[2] == {"role": "compression", "provider": "custom",
+                                                                "model": "grok-4-5", "base_url": venice}
+    # A built-in provider keeps its name.
+    assert hub.hello_routes({"model": {"provider": "nous", "default": "x"}})[0]["provider"] == "nous"
 
 
 def test_hub_tools_and_outside_content():

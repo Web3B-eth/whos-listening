@@ -597,7 +597,7 @@ class WhosListeningProvider(MemoryProvider):
         client.note_session(sid, platform=self._platform, agent_context=self._agent_context)
         _hub_hello(home, client)
         done = client.begin_turn(sid, self._turn)
-        if not sid or client.setup_problem:
+        if not sid or client.setup_problem or getattr(client, "settings_problem", ""):
             done.set()
             return
         token = _hub_token(client)
@@ -1244,16 +1244,25 @@ HUB_TOKEN_KEEP = 60.0                      # seconds a token read through Hermes
 
 def _hub(home: Optional[Path]) -> Optional[hub.HubClient]:
     """The hub client of the profile at ``home`` when hub mode is on (``hub.url`` is set), else
-    None. Settings that can't be read mean None: local mode, where every route is then Shared."""
+    None. If the settings can't be read, a profile already in hub mode stays in it, with every
+    route Shared, no memories and no turn tokens (``settings_problem``), so the guard still knows
+    the hub's tools and still removes turn tokens from hub tool calls. One that wasn't is in local
+    mode, where every route is then Shared too."""
     if home is None:
         return None
+    key = str(Path(home).resolve())
     try:
         url, server = wl_settings.hub_settings(_settings(home))
-    except Exception:
-        return None
+    except Exception as exc:
+        client = HUBS.get(key)
+        if client is not None:
+            if not getattr(client, "settings_problem", ""):
+                logger.warning("whos-listening hub: settings unreadable, treating every route as Shared: %s",
+                               type(exc).__name__)
+            client.settings_problem = "settings unreadable"
+        return client
     if not url:
         return None
-    key = str(Path(home).resolve())
     client = HUBS.get(key)
     if client is None or client.url != url.rstrip("/") or getattr(client, "server_setting", None) != server:
         mcp_server, why = (server, "") if server else hub.find_mcp_server(url, _mcp_servers_config())
@@ -1261,6 +1270,7 @@ def _hub(home: Optional[Path]) -> Optional[hub.HubClient]:
         client.server_setting = server
         client.setup_problem = hub.url_problem(url) or why
         HUBS[key] = client
+    client.settings_problem = ""
     return client
 
 
@@ -1273,7 +1283,8 @@ def _active_hub() -> Optional[hub.HubClient]:
 
 
 def _hub_ready(client: hub.HubClient) -> bool:
-    return not client.setup_problem and client.ready
+    """Whether the hub may be asked for a tier or memories. Not while the settings can't be read."""
+    return not client.setup_problem and not getattr(client, "settings_problem", "") and client.ready
 
 
 def _mcp_servers_config() -> Mapping:
@@ -1474,7 +1485,8 @@ def _on_tool_request(**kwargs: Any) -> Optional[dict]:
         if not isinstance(args, dict) or not (known or (on_server and hub.WL_TURN in args)):
             return None
         new = {k: v for k, v in args.items() if k != hub.WL_TURN}
-        token = client.current_token(session_id) if known and session_id else ""
+        live = known and session_id and not getattr(client, "settings_problem", "")
+        token = client.current_token(session_id) if live else ""
         if token:
             new[hub.WL_TURN] = token
         if new == args:
@@ -1487,10 +1499,20 @@ def _on_tool_request(**kwargs: Any) -> Optional[dict]:
 
 def _hub_status(home: Path, client: hub.HubClient) -> str:
     """Hub mode's part of /memories settings."""
+    failure = client.last_failure
+    failing = failure is not None and failure[2] >= client.last_success_wall
     if client.setup_problem:
         state = f"not ready: {client.setup_problem}"
+    elif getattr(client, "settings_problem", ""):
+        state = (f"not ready: {client.settings_problem}, so every route is Shared and no memories are added "
+                 "until settings.json can be read again")
     elif not client.ready:
         state = "not ready: " + _hub_problem(client)
+    elif failing:
+        secs = max(0, int(time.time() - failure[2]))
+        state = (f"not answering: the last call ({failure[0]}) failed ({failure[1]}) {secs} s ago. While the "
+                 f"hub doesn't answer, routes count as Shared and no memories are added. Last good hello: "
+                 f"{client.hello.hub_name}, {max(0, int((time.time() - client.hello_wall) // 60))} min ago")
     else:
         mins = max(0, int((time.time() - client.hello_wall) // 60))
         state = f"ready, connected to {client.hello.hub_name} (last hello {mins} min ago)"
@@ -1502,14 +1524,16 @@ def _hub_status(home: Path, client: hub.HubClient) -> str:
     kept = client.kept_verdicts()
     if kept:
         for key, verdict, left in kept:
-            _, platform, _, provider, model, base_url = key
+            session, platform, _, provider, model, base_url = key
             rows.append(f"verdict kept: {platform or '?'} · {provider}/{model} @ {Route(base_url=base_url).host or '?'}"
-                        f" = {verdict.tier} ({verdict.reason or 'no reason given'}), {int(left)} s left")
+                        f" = {verdict.tier} ({verdict.reason or 'no reason given'}), {int(left)} s left"
+                        f", chat …{str(session or '?')[-8:]}")
     else:
         rows.append("verdicts kept: none")
     rows.append("In hub mode the hub decides what is Private. Local settings can only make a request Shared "
-                "(gateway: shared, shared_platforms, shared_hosts, routes set to shared); private_platforms, "
-                "private_hosts, routes set to private and venice_anonymized don't apply.")
+                "(gateway: shared, shared_platforms, shared_hosts, routes set to shared). private_platforms, "
+                "private_hosts, routes set to private and local mode's settings (review, duplicates, Venice "
+                "anonymized models, sync) don't apply, so they aren't listed.")
     return "\n".join(rows)
 
 

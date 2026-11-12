@@ -77,46 +77,54 @@ def _redact_args(name: str, args: Any) -> Any:
 
 
 def _redact_hub_args(args: Any, redact: tuple[str, ...]) -> Any:
-    """A hub memory tool's replayed arguments: each ``redact_args`` string blanked and the turn
-    token removed (docs/hub-protocol.md, The guard in hub mode). Arguments that can't be read
-    become just the blanked names."""
+    """A hub memory tool's replayed arguments: each ``redact_args`` value blanked, whatever its
+    type (a list or object can carry the model's words as well as a string), and the turn token
+    removed (docs/hub-protocol.md, The guard in hub mode). With ``ALL_ARGS`` (before ``hello``)
+    every argument is blanked. Arguments that can't be read become just the blanked names."""
+    unreadable = {key: WITHHELD for key in redact if key != "*"}
     if isinstance(args, str):
         try:
             parsed = json.loads(args) if args.strip() else {}
         except ValueError:
-            return json.dumps({key: WITHHELD for key in redact if key != "*"})
+            return json.dumps(unreadable)
         if not isinstance(parsed, dict):
-            return json.dumps({key: WITHHELD for key in redact if key != "*"})
+            return json.dumps(unreadable)
         cleaned = _redact_hub_args(parsed, redact)
         return args if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
     if not isinstance(args, dict):
-        return {key: WITHHELD for key in redact if key != "*"}
+        return unreadable
     out = {k: v for k, v in args.items() if k != WL_TURN}
-    for key in (out if redact == ALL_ARGS else redact):
-        if isinstance(out.get(key), str):
+    for key in (list(out) if redact == ALL_ARGS else redact):
+        if out.get(key) is not None:
             out[key] = WITHHELD
     return out
+
+
+EMPTY_BRIDGE = {"calls": []}
 
 
 def _redact_bridge(args: Any, hub_tools: Optional[Mapping[str, tuple[str, ...]]], hub_prefix: str) -> Any:
     """Hermes' Tool Search bridge: with tool search on (the default once there are MCP tools),
     the model calls a deferred tool, such as a hub's, as ``tool_call`` with ``{"calls": [{"name",
     "arguments"}]}`` (or one ``{"name", "arguments"}``), and that is what history replays. The
-    calls inside get the same treatment as direct ones. Arguments that can't be read are left
-    alone: the call inside then fails, so it can't have carried anything that worked."""
+    calls inside get the same treatment as direct ones. Arguments that can't be read are
+    replaced with an empty bridge call: we can't tell which tool they were for, and they are
+    still the model's own words, which may repeat a Private memory."""
     if isinstance(args, str):
         try:
             parsed = json.loads(args) if args.strip() else {}
         except ValueError:
-            return args
+            return json.dumps(EMPTY_BRIDGE)
         cleaned = _redact_bridge(parsed, hub_tools, hub_prefix)
         return args if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
-    calls = args.get("calls") if isinstance(args, dict) else None
+    if not isinstance(args, dict):
+        return dict(EMPTY_BRIDGE)
+    calls = args.get("calls")
     if isinstance(calls, str):
         try:
             parsed_calls = json.loads(calls)
         except ValueError:
-            return args
+            return {**args, "calls": []}
         cleaned = _redact_bridge({**args, "calls": parsed_calls}, hub_tools, hub_prefix)
         return args if cleaned["calls"] == parsed_calls else cleaned
     return _walk(args, lambda text: text, lambda inner: _redact_call(inner, hub_tools, hub_prefix))
@@ -129,7 +137,7 @@ def _redact_call(d: dict, hub_tools: Optional[Mapping[str, tuple[str, ...]]] = N
     ``{"type": "function_call", "name", "arguments"}`` (Responses API) and ``{"type":
     "tool_use", "name", "input"}`` (Anthropic). The ``function`` dict of the first shape is
     reached on its own by the walk. ``hub_prefix``: hub mode before the hub's ``hello``, when its
-    memory tools aren't known yet, so every string argument of every tool on its MCP server is
+    memory tools aren't known yet, so every argument of every tool on its MCP server is
     blanked."""
     name = d.get("name")
     if isinstance(name, str) and ((hub_tools and name in hub_tools) or (hub_prefix and name.startswith(hub_prefix))):

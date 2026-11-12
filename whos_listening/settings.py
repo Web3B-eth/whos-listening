@@ -322,10 +322,24 @@ def describe(s: Settings, *, token_set: Optional[bool] = None, judge_off: str = 
         return f"{label}: {value}  ({o.get(key, FROM_DEFAULT)})"
 
     sync = d.get("sync") if isinstance(d.get("sync"), Mapping) else {}
+    hub_url, hub_server = hub_settings(s)
     rows = [
         "this machine: " + ("hosted, because " + s.hosted if s.hosted else
                             "not recognized as hosted (your own, as far as Who's Listening can tell)"),
         line("gateway", "gateway", d.get("gateway")),
+    ]
+    if hub_url:
+        # Review, duplicates, Venice's anonymized models and sync are local mode's: the hub keeps the memories.
+        rows.append(line("hub", "hub.url", hub_url))
+        rows.append(line("hub MCP server", "hub.mcp_server", hub_server or "(the one with the hub's host)"))
+        for key in ("shared_platforms", "shared_hosts"):
+            if d.get(key):
+                rows.append(line(key, key, ", ".join(d[key])))
+        shared = sorted(k for k, v in (d.get("routes") or {}).items() if v == "shared")
+        if shared:
+            rows.append(line("routes set to shared", "routes", ", ".join(shared)))
+        return "\n".join(rows)
+    rows += [
         line("review", "review", d.get("review") or "auto"),
         line("near-duplicates", "duplicates", d.get("duplicates") or "skip"),
         line("duplicate judge", "duplicate_judge", d.get("duplicate_judge") or "clef")
@@ -339,10 +353,6 @@ def describe(s: Settings, *, token_set: Optional[bool] = None, judge_off: str = 
         rows.append(line("sync interval", "sync.interval", f"{sync.get('interval') or 60} s"))
         if token_set is not None:
             rows.append(f"sync token: {'set' if token_set else 'missing'}  (Hermes secrets)")
-    hub_url, hub_server = hub_settings(s)
-    if hub_url:
-        rows.append(line("hub", "hub.url", hub_url))
-        rows.append(line("hub MCP server", "hub.mcp_server", hub_server or "(the one with the hub's host)"))
     for key in ("private_platforms", "shared_platforms", "private_hosts", "shared_hosts"):
         if d.get(key):
             rows.append(line(key, key, ", ".join(d[key])))

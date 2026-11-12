@@ -165,30 +165,24 @@ def route_obj(route: Optional[Route]) -> Optional[dict]:
 
 def hello_routes(config: Any) -> list[dict]:
     """Hermes' configured routes by role, names and addresses only (never keys): the main model,
-    each fallback, the compression model and the other helper tasks (``auxiliary``)."""
+    each fallback, the compression model and the other helper tasks (``auxiliary``). A named
+    custom endpoint is provider ``"custom"``, as Hermes reports it in a real request."""
     out: list[dict] = []
     if not isinstance(config, Mapping):
         return out
-    from .routes import _fallback_entries, default_route_from_config
+    from .routes import _fallback_entries, config_route, default_route_from_config
 
     main = default_route_from_config(config)
     if main is not None:
         out.append({"role": "main", **route_obj(main)})
-    providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
     for entry in _fallback_entries(config):
-        provider = str(entry.get("provider") or "").strip()
-        base_url = str(entry.get("base_url") or "").strip()
-        named = providers.get(provider)
-        if not base_url and isinstance(named, Mapping):
-            base_url = str(named.get("base_url") or named.get("api_base") or "").strip()
-            provider = "custom" if base_url else provider
-        out.append({"role": "fallback", **route_obj(Route(provider, str(entry.get("model") or ""), base_url))})
+        route = config_route(config, entry.get("provider"), entry.get("model"), entry.get("base_url"))
+        out.append({"role": "fallback", **route_obj(route)})
     aux = config.get("auxiliary") if isinstance(config.get("auxiliary"), Mapping) else {}
     for task, cfg in aux.items():
         if not isinstance(cfg, Mapping) or "provider" not in cfg:
             continue
-        route = route_obj(Route(str(cfg.get("provider") or "auto"), str(cfg.get("model") or ""),
-                                str(cfg.get("base_url") or "")))
+        route = route_obj(config_route(config, cfg.get("provider") or "auto", cfg.get("model"), cfg.get("base_url")))
         if task == "compression":
             out.append({"role": "compression", **route})
         else:
@@ -436,6 +430,8 @@ class HubClient:
         self.hello_at = 0.0                     # clock time of the last good hello
         self.hello_wall = 0.0                   # wall time of it, for /memories settings
         self.hello_error = "not tried yet"
+        self.last_failure: Optional[tuple[str, str, float]] = None   # (call, code, wall time) of the last failed call
+        self.last_success_wall = 0.0
         self._hello_due = True
         self._hello_running: Optional[threading.Event] = None
         self._verdicts: OrderedDict[tuple, Kept] = OrderedDict()
@@ -456,8 +452,10 @@ class HubClient:
                                           self._timeouts[name])
             answer = answer_of(status, raw)
             logger.info("whos-listening hub: %s %s in %d ms", name, status, (time.monotonic() - started) * 1000)
+            self.last_success_wall = time.time()
             return answer
         except HubError as exc:
+            self.last_failure = (name, exc.code, time.time())
             logger.warning("whos-listening hub: %s failed (%s%s) in %d ms", name,
                            f"{exc.status or status} " if (exc.status or status) else "", exc.code,
                            (time.monotonic() - started) * 1000)
@@ -466,6 +464,7 @@ class HubClient:
                     self._hello_due = True
             raise
         except Exception as exc:             # a broken transport counts as a failed call
+            self.last_failure = (name, "unreachable", time.time())
             logger.warning("whos-listening hub: %s failed (%s)", name, type(exc).__name__)
             raise HubError("unreachable") from exc
 

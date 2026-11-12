@@ -238,3 +238,56 @@ def test_the_mcp_server_bearer_is_the_fallback_token(plugin, monkeypatch, the_hu
     monkeypatch.delenv("FAKE_HUB_BEARER")
     plugin._HUB_TOKENS.clear()
     assert plugin._hub_token(client) == ""                            # not set: no token, never the placeholder
+
+
+def test_tool_search_is_not_outside_content(plugin, provider, the_hub):
+    """Hermes' Tool Search bridge reads only Hermes' own tool catalog, so the user's saves aren't held."""
+    guard(plugin, {"messages": []}, PRIVATE_URL)
+    turn(plugin, provider, 1)
+    for tool in ("tool_search", "tool_describe", "tool_call"):
+        assert plugin._on_tool_request(tool_name=tool, args={"query": "memory"}, session_id="sess-1") is None
+        plugin._on_post_tool_call(tool_name=tool, session_id="sess-1")
+    assert calls(the_hub, "turn-report") == []
+    args = plugin._on_tool_request(tool_name="mcp__hub__memory_save", args={"text": "Likes long walks"},
+                                   session_id="sess-1")["args"]
+    assert the_hub.tool("memory_save", args)[1] == {"route": "private", "outside_content": False}
+
+
+def test_unreadable_settings_keep_hub_mode_with_every_route_shared(plugin, provider, the_hub, tmp_path):
+    guard(plugin, {"messages": []}, PRIVATE_URL)
+    turn(plugin, provider, 1)
+    old_token = plugin._on_tool_request(tool_name="mcp__hub__memory_search", args={"query": "x"},
+                                        session_id="sess-1")["args"]["wl_turn"]
+    (tmp_path / "whos-listening" / "settings.json").write_text("{not json")
+    n = len(calls(the_hub, "verdict"))
+    # The guard: Shared, and replayed hub calls still blanked, without asking the hub.
+    req = {"messages": [
+        {"role": "user", "content": '- P2 <wl-private id="m_2">Sister Dana is vegetarian</wl-private>'},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": "mcp__hub__memory_search", "arguments": json.dumps({"query": "Dana", "wl_turn": old_token})}}]}]}
+    out = json.dumps(guard(plugin, req, PRIVATE_URL)["request"])
+    assert "Dana" not in out and old_token not in out
+    assert len(calls(the_hub, "verdict")) == n
+    # A token the model copies from history is removed, not passed on, and no new turn gets one.
+    turn(plugin, provider, 2)
+    args = plugin._on_tool_request(tool_name="mcp__hub__memory_search", args={"query": "x", "wl_turn": old_token},
+                                   session_id="sess-1")["args"]
+    assert "wl_turn" not in args
+    assert provider.prefetch("dinner", session_id="sess-1") == ""
+    assert "settings unreadable" in plugin._hub_status(tmp_path, plugin._active_hub())
+    # Readable again: hub mode as before.
+    hub_settings(tmp_path, the_hub.url)
+    turn(plugin, provider, 3)
+    assert "wl_turn" in plugin._on_tool_request(tool_name="mcp__hub__memory_search", args={"query": "x"},
+                                                session_id="sess-1")["args"]
+
+
+def test_memories_settings_says_when_the_hub_stops_answering(plugin, provider, the_hub, tmp_path):
+    guard(plugin, {"messages": []}, PRIVATE_URL)
+    out = plugin._memories_command("settings")
+    assert "hub mode: ready" in out and "chat …sess-1" in out
+    assert "review:" not in out and "near-duplicates:" not in out and "sync:" not in out
+    client = plugin._active_hub()
+    client.last_failure = ("verdict", "unreachable", time.time())
+    out = plugin._hub_status(tmp_path, client)
+    assert "hub mode: not answering: the last call (verdict) failed (unreachable)" in out

@@ -352,6 +352,18 @@ def hub_checks(hermes: str, keep: bool, results: list) -> None:
                   bool(saves) and saves[-1]["handled_as"] == {"route": "private", "outside_content": False},
                   json.dumps(saves[-1:])[:300])
 
+        # A model that looks the save tool up with tool_search first, as real models do: the lookup
+        # isn't outside content, so the user's own save isn't held for it.
+        sid_ts, _ = run.chat('Remember that I like rowing. [[call tool_search {"query": "memory save"}]] '
+                             + bridged("mcp__hub__memory_save", {"text": "Likes rowing"}),
+                             provider="private-sim", model="private-model")
+        saves = [e for e in hub_log(hlog) if e.get("tool") == "memory_save"]
+        outside = [e for e in hub_log(hlog) if e.get("call") == "turn-report" and e["body"].get("event") == "outside"
+                   and e["body"].get("session", {}).get("id") == sid_ts]
+        run.check("hub: tool_search doesn't count as outside content",
+                  bool(saves) and saves[-1]["handled_as"] == {"route": "private", "outside_content": False}
+                  and not outside, json.dumps(saves[-1:] + outside)[:300])
+
         # The same chat, switched to a Shared route: the replayed block and tool result lose their
         # Private text, and the replayed hub call its query and token.
         run.chat("/model shared-model --provider shared-sim", resume=sid_tool)
