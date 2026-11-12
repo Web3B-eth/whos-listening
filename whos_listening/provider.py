@@ -628,10 +628,18 @@ class WhosListeningProvider(MemoryProvider):
             settings, _ = _load_settings(home)
             platform = client.session(sid).platform or self._platform
             keep_private = hub.local_shared(settings, platform, route) is None
+
+            def recheck(known: Route) -> bool:
+                # A route the hub knows (a chat it started itself) counts like the config default:
+                # only for the model this turn started with, and once the guard has run here.
+                turn_model = ROUTES.turn_model(sid)
+                return (ROUTES.guard_ran and bool(turn_model) and known.model == turn_model
+                        and hub.local_shared(settings, platform, known) is None)
+
             body = {"session": client.session_obj(sid, OUTSIDE.get(sid)), "turn": client.turn_obj(sid),
                     "route": hub.route_obj(route), "route_source": source,
                     "query": str(query or "")[:hub.QUERY_MAX_CHARS], "max_chars": recall.MAX_BLOCK_CHARS}
-            return client.context(body, _hub_token(client), keep_private=keep_private)
+            return client.context(body, _hub_token(client), keep_private=keep_private, recheck=recheck)
         except Exception as exc:
             logger.warning("whos-listening hub: recall failed, adding no memories: %s", type(exc).__name__)
             return ""
