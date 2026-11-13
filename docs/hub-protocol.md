@@ -11,7 +11,7 @@ In local mode, Who's Listening keeps memories in SQLite on the gateway and does 
 - **The plugin keeps:** the request guard, the three layers it can see (gateway, platform, model route), and the Hermes glue (recall before each turn, route tracking, outside-content tracking).
 - **The hub does:** storing memories, the memory tools (over MCP, as an MCP server Hermes connects to), review, duplicates and sync. In hub mode the plugin's own tools, store, sync, review, duplicate checks, sharing check and Venice model list are off.
 - **The hub decides the tier.** The plugin reports facts (which gateway, which platform, which route) and never states its own tier. Local settings can only make a request stricter.
-- **What the user sees on the gateway:** the plugin offers no tools of its own, and its note in the system prompt names the hub's memory tools instead. `/memories settings` says whether hub mode is ready, when `hello` last worked and which verdicts are kept; the other `/memories` commands say that memories are managed by the hub.
+- **What the user sees on the gateway:** the plugin offers no tools of its own, and its note in the system prompt names the hub's memory tools instead, with the same rule for when to save as in local mode (lasting facts the user tells about themselves, without being asked) and how to reach the tools when Hermes keeps them behind tool search (through `tool_call`). `/memories settings` says whether hub mode is ready, when `hello` last worked and which verdicts are kept; the other `/memories` commands say that memories are managed by the hub.
 
 ## The five things that see a memory
 
@@ -133,9 +133,9 @@ Gets back:
   "protocol": 1, "ok": true,
   "hub": {"name": "Example hub"},
   "tools": [
-    {"name": "memory_search", "outside_content": false, "redact_args": ["query"]},
-    {"name": "memory_save", "outside_content": false, "redact_args": ["text", "reason"]},
-    {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"]}
+    {"name": "memory_search", "outside_content": false, "redact_args": ["query"], "role": "search"},
+    {"name": "memory_save", "outside_content": false, "redact_args": ["text", "reason"], "role": "save"},
+    {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"], "role": "forget"}
   ],
   "server_outside_content": false,
   "verdict_ttl_seconds": 300,
@@ -147,6 +147,7 @@ Gets back:
 - `tools`: the hub's memory tools by their MCP names (`^[A-Za-z0-9_-]{1,64}$`). These are the tools that get the turn token and whose arguments the guard redacts.
   - `outside_content: false` means the tool returns only what the hub stores, so calling it doesn't count as outside content (like the plugin's own recall tool). `true` makes it count.
   - `redact_args`: the arguments that carry the model's own words about a memory (a saved fact, a search query, a reason that may quote one). On a Shared route the guard blanks them in replayed calls, as it does for the plugin's own save and search tools.
+  - `role` (optional): what the tool is for, one of `save`, `search`, `forget`, `list` or `context`. Any other value, or one that isn't text, is ignored. If two tools say `save`, the note names the first. The plugin's note in the system prompt tells the model to save lasting facts about the user without being asked, and names the `save` tool; without one it says "the hub's memory tool for saving".
 - `server_outside_content`: whether the hub's other MCP tools, the ones not in `tools` (a hub can serve more than memory), count as outside content. Default `true`. Their arguments are left as they are.
 - `verdict_ttl_seconds`: how long the plugin keeps a `verdict`, from 0 to 3600; default 300.
 - `hello_interval_seconds`: from 300 to 86400; default 3600.
@@ -317,7 +318,7 @@ The same rules, with the believed route instead of the real one, decide whether 
 Everything the local guard does still applies (see the README's **The guard**). On a Shared route it also:
 
 - removes every `<wl-private …>…</wl-private>` span anywhere in the request, hub tool results included, exactly as [`tests/vectors/strip.json`](../tests/vectors/strip.json) specifies;
-- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`, whatever its type (a list or object is replaced whole; only a `null` stays);
+- blanks each `redact_args` argument of a replayed call to a hub tool, in the three call shapes Hermes sends (chat completions, Responses, Anthropic), to `"[private memory withheld]"`, whatever its type (a list or object is replaced whole; only a `null` stays). A `query`, and every argument of a tool whose `role` is `search`, `context` or `list`, goes to `""` instead, as local mode blanks a recall query: a model that searched before saving copied the placeholder from its replayed search into the save's text, so the hub got `[private memory withheld]` in place of the fact. A hub should still refuse a save whose text holds the placeholder;
 - removes `wl_turn` from every replayed hub tool call;
 - does the same for hub tool calls made through Hermes' Tool Search bridge. Hermes 0.23.0 defers MCP tools behind `tool_search` by default, so the model calls them as `tool_call` with `{"calls": [{"name", "arguments"}]}` (or one `{"name", "arguments"}`), and history replays that call, not the hub tool's own. A `tool_call` whose arguments can't be read as JSON is replaced with `{"calls": []}`, since it's still the model's own words;
 - before the first `hello` has worked (so the hub's tools aren't known), blanks every argument of every tool on the hub's MCP server, as above.

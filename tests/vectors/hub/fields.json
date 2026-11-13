@@ -35,7 +35,7 @@
     },
     "tool": {
       "required": {"name": "string", "outside_content": "boolean", "redact_args": "array"},
-      "optional": {}
+      "optional": {"role": "string"}
     },
     "message": {
       "required": {"text": "string", "author_id": "string", "author_is_bot": "boolean"},

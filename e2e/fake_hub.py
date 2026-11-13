@@ -33,9 +33,9 @@ from urllib.parse import urlsplit
 
 CALLS = ("hello", "turn-start", "context", "verdict", "turn-report")
 TOOLS = [
-    {"name": "memory_search", "outside_content": False, "redact_args": ["query"]},
-    {"name": "memory_save", "outside_content": False, "redact_args": ["text", "reason"]},
-    {"name": "memory_forget", "outside_content": False, "redact_args": ["reason"]},
+    {"name": "memory_search", "outside_content": False, "redact_args": ["query"], "role": "search"},
+    {"name": "memory_save", "outside_content": False, "redact_args": ["text", "reason"], "role": "save"},
+    {"name": "memory_forget", "outside_content": False, "redact_args": ["reason"], "role": "forget"},
 ]
 TRUSTED_PLATFORMS = ["cli", "tui", "desktop", "local"]
 TOKEN_TTL = 3600
