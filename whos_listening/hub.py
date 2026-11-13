@@ -218,6 +218,7 @@ class HubTool:
 # What a hub tool is for, from its optional ``role`` in ``hello``. Any other value is ignored, so a
 # hub can add roles later; the system prompt note names the save tool from it.
 TOOL_ROLES = frozenset({"save", "search", "forget", "list", "context"})
+SEARCH_ROLES = frozenset({"search", "list", "context"})
 
 
 @dataclass(frozen=True)
@@ -236,6 +237,11 @@ class Hello:
     def tool_for(self, role: str) -> Optional[HubTool]:
         """The first hub tool with this ``role``, or None."""
         return next((t for t in self.tools if t.role == role), None)
+
+    def search_tools(self) -> frozenset:
+        """Hermes names of the hub tools that only look memories up (role search, context or list):
+        the guard blanks their replayed arguments to "" instead of the withheld placeholder."""
+        return frozenset(t.wire for t in self.tools if t.role in SEARCH_ROLES)
 
     def redactions(self) -> dict[str, tuple[str, ...]]:
         """What the guard blanks: each hub memory tool's Hermes name and its ``redact_args``."""
@@ -259,6 +265,11 @@ def _clamp(value: Any, key: str) -> int:
     return int(min(max(value, low), high))
 
 
+def _role(value: Any) -> str:
+    """A tool's ``role``, or "" when it is missing, not text or not one we know."""
+    return value if isinstance(value, str) and value in TOOL_ROLES else ""
+
+
 def parse_hello(body: Mapping, mcp_server: str) -> Hello:
     """A ``hello`` answer, or HubError("bad_answer") if a tool entry can't be read."""
     tools = body.get("tools")
@@ -276,7 +287,7 @@ def parse_hello(body: Mapping, mcp_server: str) -> Hello:
         parsed.append(HubTool(name=name, wire=mcp_tool_name(mcp_server, name),
                               outside_content=t.get("outside_content") is not False,   # anything else counts
                               redact_args=tuple(dict.fromkeys(redact)),
-                              role=t.get("role") if t.get("role") in TOOL_ROLES else ""))
+                              role=_role(t.get("role"))))
     hub = body.get("hub")
     name = hub.get("name") if isinstance(hub, Mapping) else ""
     return Hello(hub_name=str(name or "the hub")[:80].replace("\n", " "), tools=tuple(parsed),

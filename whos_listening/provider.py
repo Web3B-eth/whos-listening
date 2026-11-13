@@ -1480,7 +1480,8 @@ def _hub_llm_request(client: hub.HubClient, kwargs: Mapping[str, Any]) -> Option
                        type(exc).__name__)
     hello = client.hello
     prefix = hub.mcp_server_prefix(client.mcp_server) if client.mcp_server and hello is None else ""
-    cleaned = guard.guard_request(request, tier, hello.redactions() if hello is not None else None, prefix)
+    cleaned = guard.guard_request(request, tier, hello.redactions() if hello is not None else None, prefix,
+                                 hello.search_tools() if hello is not None else frozenset())
     if cleaned is None:
         return None
     return {"request": cleaned, "source": PROVIDER_NAME, "reason": "removed private memories"}

@@ -76,12 +76,25 @@ def _redact_args(name: str, args: Any) -> Any:
     return out
 
 
-def _redact_hub_args(args: Any, redact: tuple[str, ...]) -> Any:
+# A search query is blanked to "" (as local mode blanks a recall query), not to WITHHELD: a model
+# that searched before saving copies the placeholder from its replayed search into the save's text,
+# and the user's fact is lost. Saved text, reasons and anything else keep WITHHELD, so the model can
+# see that something was there.
+SEARCH_ARGS = frozenset({"query"})
+
+
+def _blank(key: str, search: bool) -> str:
+    return "" if search or key in SEARCH_ARGS else WITHHELD
+
+
+def _redact_hub_args(args: Any, redact: tuple[str, ...], search: bool = False) -> Any:
     """A hub memory tool's replayed arguments: each ``redact_args`` value blanked, whatever its
     type (a list or object can carry the model's words as well as a string), and the turn token
     removed (docs/hub-protocol.md, The guard in hub mode). With ``ALL_ARGS`` (before ``hello``)
-    every argument is blanked. Arguments that can't be read become just the blanked names."""
-    unreadable = {key: WITHHELD for key in redact if key != "*"}
+    every argument is blanked. Arguments that can't be read become just the blanked names.
+    ``search``: a tool the hub calls a search (role ``search``, ``context`` or ``list``), whose
+    arguments are blanked to "" like any ``query``."""
+    unreadable = {key: _blank(key, search) for key in redact if key != "*"}
     if isinstance(args, str):
         try:
             parsed = json.loads(args) if args.strip() else {}
@@ -89,21 +102,22 @@ def _redact_hub_args(args: Any, redact: tuple[str, ...]) -> Any:
             return json.dumps(unreadable)
         if not isinstance(parsed, dict):
             return json.dumps(unreadable)
-        cleaned = _redact_hub_args(parsed, redact)
+        cleaned = _redact_hub_args(parsed, redact, search)
         return args if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
     if not isinstance(args, dict):
         return unreadable
     out = {k: v for k, v in args.items() if k != WL_TURN}
     for key in (list(out) if redact == ALL_ARGS else redact):
         if out.get(key) is not None:
-            out[key] = WITHHELD
+            out[key] = _blank(key, search)
     return out
 
 
 EMPTY_BRIDGE = {"calls": []}
 
 
-def _redact_bridge(args: Any, hub_tools: Optional[Mapping[str, tuple[str, ...]]], hub_prefix: str) -> Any:
+def _redact_bridge(args: Any, hub_tools: Optional[Mapping[str, tuple[str, ...]]], hub_prefix: str,
+                   hub_search: frozenset = frozenset()) -> Any:
     """Hermes' Tool Search bridge: with tool search on (the default once there are MCP tools),
     the model calls a deferred tool, such as a hub's, as ``tool_call`` with ``{"calls": [{"name",
     "arguments"}]}`` (or one ``{"name", "arguments"}``), and that is what history replays. The
@@ -115,7 +129,7 @@ def _redact_bridge(args: Any, hub_tools: Optional[Mapping[str, tuple[str, ...]]]
             parsed = json.loads(args) if args.strip() else {}
         except ValueError:
             return json.dumps(EMPTY_BRIDGE)
-        cleaned = _redact_bridge(parsed, hub_tools, hub_prefix)
+        cleaned = _redact_bridge(parsed, hub_tools, hub_prefix, hub_search)
         return args if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
     if not isinstance(args, dict):
         return dict(EMPTY_BRIDGE)
@@ -125,28 +139,28 @@ def _redact_bridge(args: Any, hub_tools: Optional[Mapping[str, tuple[str, ...]]]
             parsed_calls = json.loads(calls)
         except ValueError:
             return {**args, "calls": []}
-        cleaned = _redact_bridge({**args, "calls": parsed_calls}, hub_tools, hub_prefix)
+        cleaned = _redact_bridge({**args, "calls": parsed_calls}, hub_tools, hub_prefix, hub_search)
         return args if cleaned["calls"] == parsed_calls else cleaned
-    return _walk(args, lambda text: text, lambda inner: _redact_call(inner, hub_tools, hub_prefix))
+    return _walk(args, lambda text: text, lambda inner: _redact_call(inner, hub_tools, hub_prefix, hub_search))
 
 
 def _redact_call(d: dict, hub_tools: Optional[Mapping[str, tuple[str, ...]]] = None,
-                 hub_prefix: str = "") -> dict:
+                 hub_prefix: str = "", hub_search: frozenset = frozenset()) -> dict:
     """A replayed call to one of our tools (or, in hub mode, one of the hub's memory tools), in any
     of the shapes Hermes sends: ``{"function": {"name", "arguments"}}`` (chat completions),
     ``{"type": "function_call", "name", "arguments"}`` (Responses API) and ``{"type":
     "tool_use", "name", "input"}`` (Anthropic). The ``function`` dict of the first shape is
     reached on its own by the walk. ``hub_prefix``: hub mode before the hub's ``hello``, when its
     memory tools aren't known yet, so every argument of every tool on its MCP server is
-    blanked."""
+    blanked. ``hub_search``: the hub's search tools (see ``_redact_hub_args``)."""
     name = d.get("name")
     if isinstance(name, str) and ((hub_tools and name in hub_tools) or (hub_prefix and name.startswith(hub_prefix))):
         redact = tuple(hub_tools[name]) if hub_tools and name in hub_tools else ALL_ARGS
-        fix = lambda args: _redact_hub_args(args, redact)   # noqa: E731
+        fix = lambda args: _redact_hub_args(args, redact, name in hub_search)   # noqa: E731
     elif name in (REMEMBER, RECALL):
         fix = lambda args: _redact_args(name, args)          # noqa: E731
     elif name == BRIDGE:
-        fix = lambda args: _redact_bridge(args, hub_tools, hub_prefix)   # noqa: E731
+        fix = lambda args: _redact_bridge(args, hub_tools, hub_prefix, hub_search)   # noqa: E731
     else:
         return d
     for key in ("arguments", "input"):
@@ -230,13 +244,15 @@ def blocked_request(request: dict) -> dict:
 
 
 def guard_request(request: Any, tier: Optional[str],
-                  hub_tools: Optional[Mapping[str, tuple[str, ...]]] = None, hub_prefix: str = "") -> Optional[dict]:
+                  hub_tools: Optional[Mapping[str, tuple[str, ...]]] = None, hub_prefix: str = "",
+                  hub_search: frozenset = frozenset()) -> Optional[dict]:
     """What to send instead of ``request``, or ``None`` to send it as it is.
 
     ``tier`` is the tier of the request's real route; anything but ``"private"`` (including
     ``None`` when it could not be worked out) is treated as Shared. ``hub_tools`` (hub mode) maps
     each hub memory tool's Hermes name to the arguments to blank; ``hub_prefix`` is for when the
-    hub hasn't said yet (see ``_redact_call``). Never raises.
+    hub hasn't said yet (see ``_redact_call``); ``hub_search`` names its search tools, whose
+    arguments are blanked to "" (see ``_redact_hub_args``). Never raises.
     """
     if not isinstance(request, dict):
         return None
@@ -252,7 +268,7 @@ def guard_request(request: Any, tier: Optional[str],
 
     def redact(d: dict) -> dict:
         nonlocal changed
-        out = _legacy_review_result(_redact_call(d, hub_tools, hub_prefix))
+        out = _legacy_review_result(_redact_call(d, hub_tools, hub_prefix, hub_search))
         changed = changed or out is not d
         return out
 
@@ -264,7 +280,7 @@ def guard_request(request: Any, tier: Optional[str],
                        type(exc).__name__)
     try:
         return _walk(request, _strip_blocks_fast,
-                     lambda d: _legacy_review_result(_redact_call(d, hub_tools, hub_prefix)))
+                     lambda d: _legacy_review_result(_redact_call(d, hub_tools, hub_prefix, hub_search)))
     except Exception as exc:
         logger.warning("whos-listening guard: block removal failed, blocking the request: %s",
                        type(exc).__name__)

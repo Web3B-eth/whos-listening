@@ -231,7 +231,7 @@ def _parsed_args(obj):
 
 @pytest.mark.parametrize("case", GUARD["cases"], ids=lambda c: c["name"])
 def test_guard_cases(case):
-    out = guard.guard_request(case["request"], case["tier"], HELLO.redactions())
+    out = guard.guard_request(case["request"], case["tier"], HELLO.redactions(), "", HELLO.search_tools())
     if case["sent"] is None:
         assert out is None
     else:

@@ -219,7 +219,10 @@ def _check_call(name, args_in, args_out):
         if key == "wl_turn":
             continue
         blank = value is not None and key in tool["redact_args"]     # whatever its type
-        assert args_out[key] == (WITHHELD if blank else value), key
+        # A search query (or any argument of a search tool) goes to "", so a model doesn't copy
+        # the placeholder into a later save; the rest to the placeholder.
+        search = key == "query" or tool.get("role") in ("search", "context", "list")
+        assert args_out[key] == (("" if search else WITHHELD) if blank else value), key
 
 
 @pytest.mark.parametrize("case", GUARD["cases"], ids=lambda c: c["name"])

@@ -385,7 +385,7 @@ def hub_checks(hermes: str, keep: bool, results: list) -> None:
                   and not outside, json.dumps(saves[-1:] + outside)[:300])
 
         # The same chat, switched to a Shared route: the replayed block and tool result lose their
-        # Private text, and the replayed hub call its query and token.
+        # Private text, and the replayed hub calls their words and token.
         run.chat("/model shared-model --provider shared-sim", resume=sid_tool)
         _, reqs = run.chat("Anything else? (second turn)", resume=sid_tool)
         main = main_requests(reqs)
@@ -394,7 +394,10 @@ def hub_checks(hermes: str, keep: bool, results: list) -> None:
         calls = replayed_hub_calls(reqs)
         run.check("hub: route switch: the replayed hub calls lost their words and token",
                   len(calls) == 2 and all("wl_turn" not in c for c in calls)
-                  and {c.get("query") or c.get("text") for c in calls} == {"[private memory withheld]"}, json.dumps(calls))
+                  # The search query goes to "" (a model copied the placeholder from a replayed
+                  # search into its next save); the saved text keeps the placeholder.
+                  and [c.get("query") for c in calls if "query" in c] == [""]
+                  and [c.get("text") for c in calls if "text" in c] == ["[private memory withheld]"], json.dumps(calls))
         run.check("hub: route switch: the replayed tool result lost its Private text",
                   bool(tool_results(reqs)) and not any("m_2" in t and PRIVATE_WORD in t for t in tool_results(reqs)))
         run.check("hub: route switch: guard left a marker", has(main, "private memory withheld"))

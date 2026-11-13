@@ -24,6 +24,17 @@
       "expect": {"ready": true, "tools": ["mcp__hub__memory_search", "mcp__hub__memory_save", "mcp__hub__memory_tidy"], "roles": ["search", "save", ""], "save_tool": "mcp__hub__memory_save"}
     },
     {
+      "name": "hello: a role that isn't text is ignored, not a failure",
+      "call": "hello",
+      "mcp_server": "hub",
+      "answer": {"status": 200, "body": {"protocol": 1, "ok": true, "hub": {"name": "Example hub"}, "tools": [
+        {"name": "memory_save", "outside_content": false, "redact_args": ["text"], "role": ["save"]},
+        {"name": "memory_search", "outside_content": false, "redact_args": ["query"], "role": {"kind": "search"}},
+        {"name": "memory_forget", "outside_content": false, "redact_args": ["reason"], "role": 3}
+      ]}},
+      "expect": {"ready": true, "tools": ["mcp__hub__memory_save", "mcp__hub__memory_search", "mcp__hub__memory_forget"], "roles": ["", "", ""], "save_tool": null}
+    },
+    {
       "name": "hello: a server name with a hyphen",
       "call": "hello",
       "mcp_server": "my-hub",
