@@ -104,6 +104,11 @@ def test_answer_cases(case):
             if client.ready:
                 h = client.hello
                 assert [t.wire for t in h.tools] == expect["tools"]
+                if "roles" in expect:
+                    assert [t.role for t in h.tools] == expect["roles"]
+                if "save_tool" in expect:
+                    save = h.tool_for("save")
+                    assert (save.wire if save else None) == expect["save_tool"]
                 for key in ("server_outside_content", "verdict_ttl_seconds", "hello_interval_seconds",
                             "wants_user_messages"):
                     if key in expect:
@@ -437,6 +442,20 @@ def test_hub_tools_and_outside_content():
     assert h.counts_as_outside("mcp__hub__log_walk") is False          # server_outside_content
     assert h.counts_as_outside("web_extract") is None                   # not the hub's: the usual rule
     assert hub.parse_hello({"tools": []}, "hub").counts_as_outside("mcp__hub__x") is True   # default
+
+
+def test_prompt_note_without_a_save_role_still_says_when_to_save(monkeypatch):
+    from whos_listening import provider as prov
+
+    class Client:
+        hello = hub.parse_hello({"hub": {"name": "Example hub"},
+                                 "tools": [{"name": "memory_save", "outside_content": False, "redact_args": ["text"]}]},
+                                "hub")
+    monkeypatch.setattr(prov, "_hub_hello", lambda *a, **k: None)
+    monkeypatch.setattr(prov, "_hub_ready", lambda client: True)
+    note = prov._hub_prompt_note(None, Client())
+    assert "save it with the hub's memory tool for saving without being asked" in note
+    assert "mcp__hub__memory_save" in note       # still listed among the hub's tools
 
 
 def test_held_back_reason_is_one_short_line():

@@ -212,6 +212,12 @@ class HubTool:
     wire: str                       # the name Hermes gives it (mcp_tool_name)
     outside_content: bool
     redact_args: tuple[str, ...]
+    role: str = ""                  # what the tool is for (TOOL_ROLES), "" when the hub didn't say
+
+
+# What a hub tool is for, from its optional ``role`` in ``hello``. Any other value is ignored, so a
+# hub can add roles later; the system prompt note names the save tool from it.
+TOOL_ROLES = frozenset({"save", "search", "forget", "list", "context"})
 
 
 @dataclass(frozen=True)
@@ -226,6 +232,10 @@ class Hello:
 
     def tool(self, wire_name: str) -> Optional[HubTool]:
         return next((t for t in self.tools if t.wire == wire_name), None)
+
+    def tool_for(self, role: str) -> Optional[HubTool]:
+        """The first hub tool with this ``role``, or None."""
+        return next((t for t in self.tools if t.role == role), None)
 
     def redactions(self) -> dict[str, tuple[str, ...]]:
         """What the guard blanks: each hub memory tool's Hermes name and its ``redact_args``."""
@@ -265,7 +275,8 @@ def parse_hello(body: Mapping, mcp_server: str) -> Hello:
             raise HubError("bad_answer")
         parsed.append(HubTool(name=name, wire=mcp_tool_name(mcp_server, name),
                               outside_content=t.get("outside_content") is not False,   # anything else counts
-                              redact_args=tuple(dict.fromkeys(redact))))
+                              redact_args=tuple(dict.fromkeys(redact)),
+                              role=t.get("role") if t.get("role") in TOOL_ROLES else ""))
     hub = body.get("hub")
     name = hub.get("name") if isinstance(hub, Mapping) else ""
     return Hello(hub_name=str(name or "the hub")[:80].replace("\n", " "), tools=tuple(parsed),

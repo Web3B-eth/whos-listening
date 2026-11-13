@@ -10,7 +10,18 @@
         {"name": "memory_search", "outside_content": false, "redact_args": ["query"]},
         {"name": "memory_save", "outside_content": false, "redact_args": ["text"]}
       ]}},
-      "expect": {"ready": true, "tools": ["mcp__hub__memory_search", "mcp__hub__memory_save"], "server_outside_content": true, "verdict_ttl_seconds": 300, "hello_interval_seconds": 3600, "wants_user_messages": false}
+      "expect": {"ready": true, "tools": ["mcp__hub__memory_search", "mcp__hub__memory_save"], "roles": ["", ""], "save_tool": null, "server_outside_content": true, "verdict_ttl_seconds": 300, "hello_interval_seconds": 3600, "wants_user_messages": false}
+    },
+    {
+      "name": "hello: tool roles name the save tool; an unknown role is ignored",
+      "call": "hello",
+      "mcp_server": "hub",
+      "answer": {"status": 200, "body": {"protocol": 1, "ok": true, "hub": {"name": "Example hub"}, "tools": [
+        {"name": "memory_search", "outside_content": false, "redact_args": ["query"], "role": "search"},
+        {"name": "memory_save", "outside_content": false, "redact_args": ["text"], "role": "save"},
+        {"name": "memory_tidy", "outside_content": false, "redact_args": [], "role": "tidy"}
+      ]}},
+      "expect": {"ready": true, "tools": ["mcp__hub__memory_search", "mcp__hub__memory_save", "mcp__hub__memory_tidy"], "roles": ["search", "save", ""], "save_tool": "mcp__hub__memory_save"}
     },
     {
       "name": "hello: a server name with a hyphen",

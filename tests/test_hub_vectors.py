@@ -105,7 +105,7 @@ def test_every_call_has_an_example():
 
 ANSWERS = load("answers.json")
 EXPECT_KEYS = {
-    "hello": {"ready", "tools", "server_outside_content", "verdict_ttl_seconds", "hello_interval_seconds",
+    "hello": {"ready", "tools", "roles", "save_tool", "server_outside_content", "verdict_ttl_seconds", "hello_interval_seconds",
               "wants_user_messages"},
     "context": {"block"},
     "verdict": {"tier", "keep_seconds"},
